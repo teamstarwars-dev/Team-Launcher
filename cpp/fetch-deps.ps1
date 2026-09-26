@@ -9,6 +9,25 @@
 param([switch]$Force)
 
 $ErrorActionPreference = 'Stop'
+
+# git ecrit ses messages de progression ("Cloning into...", avertissement
+# "detached HEAD") sur STDERR. Sous Windows PowerShell 5.1, une commande native
+# qui ecrit sur stderr leve une NativeCommandError quand $ErrorActionPreference
+# vaut 'Stop' : le clone reussissait mais le script s'arretait quand meme.
+# On relache donc la preference le temps de l'appel, et on se fie au code de
+# sortie de git, seul indicateur fiable ici.
+function Invoke-Git {
+  param([string[]]$GitArgs)
+  $saved = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & git @GitArgs 2>&1 | Out-Null
+    return $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $saved
+  }
+}
+
 $root = Join-Path $PSScriptRoot 'third_party'
 New-Item -ItemType Directory -Force $root | Out-Null
 
@@ -22,20 +41,35 @@ $deps = @(
   @{ Name = 'miniz';         Url = 'https://github.com/richgel999/miniz.git';   Tag = '3.1.2' }
 )
 
+$failed = @()
+
 foreach ($d in $deps) {
   $dest = Join-Path $root $d.Name
   if (Test-Path $dest) {
     if (-not $Force) { Write-Host ("OK   {0,-14} deja present" -f $d.Name); continue }
     Remove-Item -LiteralPath $dest -Recurse -Force
   }
-  Write-Host ("---> {0,-14} {1}" -f $d.Name, $d.Tag)
-  # --depth 1 : on ne veut que l'arbre du tag, pas l'historique amont
-  git clone --quiet --depth 1 --branch $d.Tag $d.Url $dest
-  if ($LASTEXITCODE -ne 0) { throw "echec du clone de $($d.Name)" }
+
+  # GitHub etrangle parfois plusieurs clones d'affilee (SDL fait 75 Mo) :
+  # on reessaie plutot que d'abandonner toute la recuperation.
+  $ok = $false
+  foreach ($try in 1..3) {
+    Write-Host ("---> {0,-14} {1}{2}" -f $d.Name, $d.Tag,
+                $(if ($try -gt 1) { " (tentative $try/3)" } else { "" }))
+    # --depth 1 : on ne veut que l'arbre du tag, pas l'historique amont.
+    $rc = Invoke-Git @('clone', '--depth', '1', '--branch', $d.Tag, $d.Url, $dest)
+    if ($rc -eq 0) { $ok = $true; break }
+    # Ne jamais laisser un dossier a moitie clone derriere soi.
+    if (Test-Path $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+    Start-Sleep -Seconds (2 * $try)
+  }
+  # Une dependance en echec n'interrompt pas les suivantes : on releve tout
+  # a la fin, l'utilisateur relance le script pour completer.
+  if (-not $ok) { $failed += $d.Name; Write-Warning "echec du clone de $($d.Name)" }
 }
 
 # miniz : le build amont genere miniz_export.h ; on le synthetise (build
-# statique, aucun symbole exporte) — cf. journal de portage, module 2.
+# statique, aucun symbole exporte) - cf. journal de portage, module 2.
 $exp = Join-Path $root 'miniz\miniz_export.h'
 if (-not (Test-Path $exp)) {
   @'
@@ -50,10 +84,17 @@ if (-not (Test-Path $exp)) {
   Write-Host "---> miniz_export.h genere"
 }
 
-# stb : un seul en-tete, versionne dans le depot (0,3 Mo) — rien a faire.
+# stb : un seul en-tete, versionne dans le depot (0,3 Mo) - rien a faire.
 $stb = Join-Path $root 'stb\stb_image.h'
 if (-not (Test-Path $stb)) {
   Write-Warning "third_party/stb/stb_image.h manquant (normalement versionne)."
+}
+
+if ($failed.Count -gt 0) {
+  Write-Host ""
+  Write-Warning ("Manquantes : " + ($failed -join ', ') +
+                 " - relance le script pour completer.")
+  exit 1
 }
 
 Write-Host "`nDependances pretes. Build : cpp\build-release.bat"
