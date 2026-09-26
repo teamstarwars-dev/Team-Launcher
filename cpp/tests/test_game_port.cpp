@@ -1,0 +1,324 @@
+#include "game_installer.hpp"
+#include "game_launcher.hpp"
+#include "http_win.hpp"
+#include "util_hash.hpp"
+#include "util_parallel.hpp"
+#include "util_zip.hpp"
+
+#include "miniz.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+namespace fs = std::filesystem;
+
+static int g_failures = 0;
+
+#define CHECK(cond)                                                          \
+    do {                                                                     \
+        if (!(cond)) {                                                       \
+            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);      \
+            ++g_failures;                                                    \
+        }                                                                    \
+    } while (0)
+
+#define CHECK_EQ(a, b)                                                       \
+    do {                                                                     \
+        const auto va = (a);                                                 \
+        const auto vb = (b);                                                 \
+        if (!(va == vb)) {                                                   \
+            std::printf("FAIL %s:%d: %s != %s\n", __FILE__, __LINE__, #a, #b); \
+            ++g_failures;                                                    \
+        }                                                                    \
+    } while (0)
+
+int main() {
+    const fs::path tmp = fs::temp_directory_path() / "tl-game-port-test";
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    fs::create_directories(tmp);
+#ifdef _WIN32
+    _putenv_s("TL_DATA_DIR", tmp.string().c_str());
+    _putenv_s("TL_RUNTIME_DIR", (tmp / "runtime").string().c_str());
+#endif
+
+    using namespace tl;
+
+    // --- 1. MavenNameToPath ---
+    CHECK_EQ(maven_name_to_path("com.mojang:brigadier:1.0.18"),
+             (fs::path("com") / "mojang" / "brigadier" / "1.0.18" /
+              "brigadier-1.0.18.jar").string());
+    CHECK_EQ(maven_name_to_path("org.lwjgl:lwjgl:3.3.1:natives-windows"),
+             (fs::path("org") / "lwjgl" / "lwjgl" / "3.3.1" /
+              "lwjgl-3.3.1-natives-windows.jar").string());
+    CHECK(maven_name_to_path("net.minecraftforge:mcp_config:1.16.5@zip").empty());
+    CHECK(maven_name_to_path("trop-court").empty());
+
+    // --- 2. RulesAllow ---
+    CHECK(rules_allow(nlohmann::json::object())); // pas de rules -> true
+    {
+        const nlohmann::json winAllow = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}, {"os", {{"name", "windows"}}}}})}};
+        CHECK(rules_allow(winAllow));
+        const nlohmann::json linuxOnly = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}, {"os", {{"name", "linux"}}}}})}};
+        CHECK(!rules_allow(linuxOnly));
+        const nlohmann::json allowThenDenyWindows = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}},
+            {{"action", "disallow"}, {"os", {{"name", "windows"}}}}})}};
+        CHECK(!rules_allow(allowThenDenyWindows));
+        const nlohmann::json noOs = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}}})}};
+        CHECK(rules_allow(noOs));
+    }
+
+    // --- 3. ExtractJvmArgs ---
+    {
+        const nlohmann::json root = {
+            {"arguments", {{"jvm", nlohmann::json::array({
+                "-cp", "${classpath}",
+                nlohmann::json{{"rules", nlohmann::json::array(
+                    {{{"action", "allow"}, {"os", {{"name", "windows"}}}}})},
+                    {"value", "-Djava.library.path=${natives_directory}"}},
+                nlohmann::json{{"rules", nlohmann::json::array(
+                    {{{"action", "allow"}, {"os", {{"name", "osx"}}}}})},
+                    {"value", "-XstartOnFirstThread"}},
+            })}}}};
+            const auto jvm = extract_jvm_args(root);
+            CHECK_EQ(jvm.size(), size_t{3});
+            CHECK_EQ(jvm[0], std::string("-cp"));
+            CHECK_EQ(jvm[2], std::string("-Djava.library.path=${natives_directory}"));
+        }
+        CHECK(extract_jvm_args(nlohmann::json::object()).empty());
+
+        // --- 4. OfflineSession (reference .NET Guid) ---
+        {
+            const McSession s = offline_session("Steve");
+            CHECK_EQ(s.name, std::string("Steve"));
+            CHECK_EQ(s.accessToken, std::string("0"));
+            CHECK_EQ(s.uuid, std::string("98dd2756bee621bcf8a8e92344183641"));
+        }
+
+        // --- 5. SHA1 ---
+        {
+            const fs::path f = tmp / "sha1-abc.txt";
+            { std::ofstream o(f, std::ios::binary); o << "abc"; }
+            const auto h = sha1_hex(f);
+            CHECK(h.has_value());
+            if (h) CHECK_EQ(*h, std::string("a9993e364706816aba3e25717850c26c9cd0d89d"));
+            CHECK(!sha1_hex(tmp / "absent.txt").has_value());
+        }
+
+        // --- 6. BuildJvmArgs ---
+        {
+            const auto args = build_jvm_args("CP", "NAT", false, nullptr, 6,
+                                             "  -XX:+UseG1GC  -Xss1m ");
+            CHECK_EQ(args[0], std::string("-Xmx6G"));
+            CHECK_EQ(args[1], std::string("-Djava.library.path=NAT"));
+            CHECK_EQ(args[2], std::string("-cp"));
+            CHECK_EQ(args[3], std::string("CP"));
+            CHECK_EQ(args[4], std::string("-XX:+UseG1GC"));
+            CHECK_EQ(args[5], std::string("-Xss1m"));
+            CHECK(std::find(args.begin(), args.end(),
+                            "-Dsun.java2d.d3d=false") == args.end());
+
+            const std::vector<std::string> official = {
+                "-Djava.library.path=${natives_directory}",
+                "-cp", "${classpath}",
+                "-Dfoo=${classpath_separator}",
+                "", // ignore
+            };
+            const auto off = build_jvm_args("CP", "NAT", false, &official, 4, "");
+            CHECK_EQ(off[1], std::string("-Djava.library.path=NAT"));
+            CHECK_EQ(off[3], std::string("CP"));
+            CHECK_EQ(off[4], std::string("-Dfoo=;"));
+            CHECK_EQ(off.size(), size_t{5}); // "" ignore
+
+            const auto forge = build_jvm_args("CP", "NAT", true, nullptr, 4, "");
+            CHECK(std::find(forge.begin(), forge.end(),
+                            "-Dsun.java2d.d3d=false") != forge.end());
+            CHECK(std::find(forge.begin(), forge.end(),
+                            "-XX:ParallelGCThreads=2") != forge.end());
+            CHECK(std::find(forge.begin(), forge.end(),
+                            "-Dfml.ignorePatchDiscrepancies=true") != forge.end());
+            const auto forge8 = build_jvm_args("CP", "NAT", true, nullptr, 8, "");
+            CHECK(std::find(forge8.begin(), forge8.end(),
+                            "-XX:ParallelGCThreads=2") == forge8.end());
+        }
+
+        // --- 7. BuildGameArgs moderne + joinServer ---
+        {
+            const McSession s = offline_session("Steve");
+            const auto a = build_game_args("1.20.1", s, "17", nullptr, false,
+                                           nullptr);
+            CHECK_EQ(a[0], std::string("--username"));
+            CHECK_EQ(a[1], std::string("Steve"));
+            CHECK_EQ(a[9], std::string("17"));
+            CHECK_EQ(a[11], std::string("98dd2756bee621bcf8a8e92344183641"));
+
+            const std::string join = "mc.hypixel.net:25565";
+            const auto b = build_game_args("1.20.1", s, "17", nullptr, false, &join);
+            CHECK_EQ(b[b.size() - 4], std::string("--server"));
+            CHECK_EQ(b[b.size() - 3], std::string("mc.hypixel.net"));
+            CHECK_EQ(b[b.size() - 2], std::string("--port"));
+            CHECK_EQ(b[b.size() - 1], std::string("25565"));
+
+            const std::string joinNoPort = "serveur.local";
+            const auto c = build_game_args("1.20.1", s, "17", nullptr, false,
+                                           &joinNoPort);
+            CHECK_EQ(c[c.size() - 2], std::string("--server"));
+            CHECK_EQ(c[c.size() - 1], std::string("serveur.local"));
+        }
+
+        // --- 8. BuildGameArgs legacy ---
+        {
+            const McSession s = offline_session("Steve");
+            const std::string legacy =
+                "--username ${auth_player_name} --version ${version_name} "
+                "--assetIndex ${assets_index_name} --userProperties ${user_properties}";
+            const auto a = build_game_args("1.5.2", s, "legacy", &legacy, false,
+                                           nullptr);
+            CHECK_EQ(a[1], std::string("Steve"));
+            CHECK_EQ(a[3], std::string("1.5.2"));
+            CHECK_EQ(a[5], std::string("legacy"));
+            CHECK_EQ(a[7], std::string("{}"));
+        }
+
+        // --- 9. parallel_for : compte + propagation d'exception ---
+        {
+            std::atomic<int> count{0};
+            parallel_for(100, 8, [&](int) { count.fetch_add(1); });
+            CHECK_EQ(count.load(), 100);
+
+            bool threw = false;
+            try {
+                parallel_for(100, 8, [&](int i) {
+                    if (i == 42) throw std::runtime_error("boom");
+                });
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            CHECK(threw);
+        }
+
+        // --- 10. zip : extraction + garde-fou zip-slip ---
+        {
+            const fs::path z = tmp / "t.zip";
+            mz_zip_archive arch{};
+            CHECK(mz_zip_writer_init_file(&arch, z.string().c_str(), 0));
+            CHECK(mz_zip_writer_add_mem(&arch, "sub/a.dll", "AAA", 3,
+                                        MZ_DEFAULT_COMPRESSION));
+            CHECK(mz_zip_writer_add_mem(&arch, "../evil.dll", "BBB", 3,
+                                        MZ_DEFAULT_COMPRESSION));
+            CHECK(mz_zip_writer_add_mem(&arch, "install_profile.json", "{}", 2,
+                                        MZ_DEFAULT_COMPRESSION));
+            CHECK(mz_zip_writer_finalize_archive(&arch));
+            mz_zip_writer_end(&arch);
+
+            const fs::path outDir = tmp / "zipout";
+            const int n = zip_extract_dlls(z, outDir);
+            CHECK_EQ(n, 1);
+            CHECK(fs::exists(outDir / "sub" / "a.dll"));
+            CHECK(!fs::exists(tmp / "evil.dll")); // traversal rejete
+            CHECK(!fs::exists(outDir / ".." / "evil.dll"));
+
+            const fs::path prof = tmp / "extracted-profile.json";
+            CHECK(zip_extract_entry(z, "install_profile.json", prof));
+            CHECK(fs::exists(prof));
+            CHECK(!zip_extract_entry(z, "absent.json", prof));
+        }
+
+        // --- 11. RAM + FindJava (machine reelle, sans assert dur) ---
+        {
+            const long long total = total_ram_mb();
+            const long long avail = available_ram_mb();
+            std::printf("INFO ram total=%lld avail=%lld\n", total, avail);
+            CHECK(total == -1 || total > 0);
+
+            const auto java = find_java(8);
+            if (java) {
+                const int major = detect_java_major(*java);
+                std::printf("INFO find_java -> %s (major %d)\n", java->c_str(), major);
+                CHECK(major >= 8);
+            } else {
+                std::printf("INFO find_java: aucun Java 8+ trouve (normal si absent)\n");
+            }
+        }
+
+        // --- 12. Reseau (gated TL_TEST_NET=1) : manifeste Mojang + WinHTTP ---
+        if (std::getenv("TL_TEST_NET")) {
+            const auto body = http::get_string(
+                "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+            CHECK(body.has_value());
+            if (body) {
+                CHECK(body->find("\"latest\"") != std::string::npos);
+                const auto doc = nlohmann::json::parse(*body);
+                CHECK(doc.contains("latest"));
+            }
+            // redirection (Adoptium -> GitHub) : entete only, limite 3s
+            const bool redirected = http::get_string(
+                "https://api.adoptium.net/v3/info/available_releases")
+                .has_value();
+            CHECK(redirected);
+
+            const auto rel = latest_release();
+            std::printf("INFO latest release: %s\n",
+                        rel ? rel->c_str() : "(null)");
+            CHECK(rel.has_value());
+        }
+
+        // --- 13. Installeur : parsing sans reseau (echec attendu propre) ---
+        if (std::getenv("TL_TEST_NET")) {
+            std::atomic<bool> cancel{false};
+            // ForceVerify + version inexistante -> exception propre, pas de crash
+            bool threw = false;
+            try {
+                install("version-qui-nexiste-pas-9.9.9", "Vanilla",
+                        nullptr, cancel, false);
+            } catch (const std::exception& ex) {
+                threw = true;
+                std::printf("INFO install echec propre: %s\n", ex.what());
+            }
+            CHECK(threw);
+        }
+
+        // --- 14. zip roundtrip : export d'instance (zip_create_from_dir) ---
+        {
+            const fs::path src = tmp / "zip-src";
+            fs::create_directories(src / "sub");
+            std::ofstream(src / "a.txt") << "hello";
+            std::ofstream(src / "sub" / "b.txt") << "world";
+            const fs::path z = tmp / "export.zip";
+            CHECK(zip_create_from_dir(src, z));
+            CHECK(fs::is_regular_file(z));
+            const fs::path out = tmp / "zip-out";
+            CHECK_EQ(zip_extract_all(z, out), 2);
+            std::string a, b;
+            {
+                std::ifstream ia(out / "a.txt");
+                std::getline(ia, a);
+            }
+            {
+                std::ifstream ib(out / "sub" / "b.txt");
+                std::getline(ib, b);
+            }
+            CHECK_EQ(a, std::string("hello"));
+            CHECK_EQ(b, std::string("world"));
+            // dossier inexistant -> echec propre
+            CHECK(!zip_create_from_dir(tmp / "absent-zip", tmp / "no.zip"));
+        }
+
+        fs::remove_all(tmp, ec);
+
+        if (g_failures) {
+            std::printf("TESTS FAILED: %d\n", g_failures);
+            return 1;
+        }
+        std::printf("ALL TESTS PASSED\n");
+        return 0;
+}

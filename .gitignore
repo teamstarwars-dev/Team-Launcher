@@ -29,3 +29,18 @@ installer-output/
 
 # FTP credentials
 ftp.env
+
+# AOT build artifacts
+publish-avalonia/
+run-link*.bat
+link-out.txt
+link-err.txt
+link-rsp.txt
+obj/
+bin/
+test-update/
+
+# Portage C++ : artefacts locaux
+imgui.ini
+.obj/
+

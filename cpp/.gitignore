@@ -1,0 +1,11 @@
+build/
+build-*/
+*.user
+.vs/
+out/
+
+# Dependances tierces (~106 Mo, clones amont) : recuperees par fetch-deps.ps1
+# sur des tags epingles. Exception : stb, un seul en-tete, versionne ici.
+third_party/*
+!third_party/.gitkeep
+!third_party/stb/

@@ -1,0 +1,487 @@
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#include <bcrypt.h>
+
+#include "datastore.hpp"
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <condition_variable>
+#include <cstdio>
+#include <fstream>
+#include <mutex>
+#include <random>
+#include <sstream>
+#include <thread>
+
+namespace fs = std::filesystem;
+using nlohmann::json;
+
+namespace tl {
+
+// ---------------------------------------------------------------------------
+// Utilitaires
+// ---------------------------------------------------------------------------
+
+bool CaseInsensitiveLess::operator()(const std::string& a, const std::string& b) const noexcept {
+    return _stricmp(a.c_str(), b.c_str()) < 0;
+}
+
+static std::string trim(const std::string& s) {
+    size_t b = 0, e = s.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+}
+
+static bool equalsIgnoreCase(const std::string& a, const char* b) {
+    return _stricmp(a.c_str(), b) == 0;
+}
+
+static fs::path exeDir() {
+    wchar_t buf[4096];
+    DWORD n = GetModuleFileNameW(nullptr, buf, 4096);
+    if (n == 0 || n >= 4096) return fs::current_path();
+    return fs::path(buf).parent_path();
+}
+
+static std::string readFile(const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+static std::string newInstallationId() {
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dist;
+    char buf[33];
+    std::snprintf(buf, sizeof(buf), "%016llx%016llx",
+                  static_cast<unsigned long long>(dist(gen)),
+                  static_cast<unsigned long long>(dist(gen)));
+    return std::string(buf, 32);
+}
+
+// ---------------------------------------------------------------------------
+// Debouncer (equiv. System.Threading.Timer 500 ms de DataStore.Save)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+class Debouncer {
+public:
+    void request() {
+        {
+            std::lock_guard<std::mutex> g(m_);
+            pending_ = true;
+            ensureThread_nolock();
+        }
+        cv_.notify_one();
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> g(m_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (th_.joinable()) th_.join();
+    }
+
+    void restart() { // apres stop() pour un nouveau cycle
+        std::lock_guard<std::mutex> g(m_);
+        stop_ = false;
+        ensureThread_nolock();
+    }
+
+private:
+    void ensureThread_nolock() {
+        if (!th_.joinable()) th_ = std::thread([this] { run(); });
+    }
+
+    void run() {
+        std::unique_lock<std::mutex> lk(m_);
+        while (!stop_) {
+            cv_.wait(lk, [this] { return pending_ || stop_; });
+            if (stop_) break;
+            pending_ = false;
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+            for (;;) {
+                if (stop_) return;
+                if (pending_) {
+                    pending_ = false;
+                    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+                }
+                if (std::chrono::steady_clock::now() >= deadline) break;
+                cv_.wait_until(lk, deadline);
+            }
+            if (stop_) break;
+            lk.unlock();
+            DataStore::saveNow(); // ecriture reelle (dirty gere en interne)
+            lk.lock();
+        }
+    }
+
+    std::mutex m_;
+    std::condition_variable cv_;
+    std::thread th_;
+    bool pending_ = false;
+    bool stop_ = false;
+};
+
+// Heap singleton : pas de problemes d'ordre de destruction statique
+Debouncer& debouncer() {
+    static Debouncer* d = new Debouncer();
+    return *d;
+}
+
+std::mutex& saveMutex() {
+    static std::mutex m;
+    return m;
+}
+
+bool& saveDirty() {
+    static bool dirty = false;
+    return dirty;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Paths
+// ---------------------------------------------------------------------------
+
+bool DataStore::isPortable = false;
+
+fs::path DataStore::dir() {
+    if (const char* td = std::getenv("TL_DATA_DIR"); td && *td)
+        return fs::path(td);
+    if (isPortable)
+        return exeDir() / "data";
+    if (const char* la = std::getenv("LOCALAPPDATA"); la && *la)
+        return fs::path(la) / "TeamLauncher";
+    return exeDir() / "data";
+}
+
+fs::path DataStore::instancesRoot() { return fs::path(settings.instancesDir); }
+fs::path DataStore::skinsDir() { return dir() / "skins"; }
+fs::path DataStore::imagesDir() { return dir() / "images"; }
+fs::path DataStore::configPath() { return dir() / "config.json"; }
+
+// ---------------------------------------------------------------------------
+// Defaults (default.env — fichier externe, jamais embarque)
+// ---------------------------------------------------------------------------
+
+std::map<std::string, std::string, CaseInsensitiveLess>& DataStore::defaults() {
+    static std::map<std::string, std::string, CaseInsensitiveLess> d;
+    return d;
+}
+
+void DataStore::loadDefaults() {
+    auto& d = defaults();
+    d.clear();
+
+    const fs::path candidates[] = {
+        exeDir() / "assets" / "default.env",
+        exeDir() / "default.env",
+        fs::current_path() / "assets" / "default.env",
+    };
+    for (const auto& p : candidates) {
+        const std::string content = readFile(p);
+        if (content.empty()) continue;
+        std::istringstream ss(content);
+        std::string line;
+        while (std::getline(ss, line)) {
+            line = trim(line);
+            if (line.empty() || line[0] == '#' || line.rfind("//", 0) == 0) continue;
+            const size_t eq = line.find('=');
+            if (eq == std::string::npos || eq == 0) continue;
+            d[trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
+        }
+        if (!d.empty()) break;
+    }
+
+    // Fallback dur si le fichier est absent (identique au C#)
+    if (d.empty()) {
+        d["DISCORD_APP_ID"] = "1541468112740941844";
+        d["DISCORD_ENABLED"] = "true";
+        d["TELEMETRY_ENABLED"] = "true";
+        d["DISCORD_TELEMETRY_WEBHOOK"] =
+            "https://discord.com/api/webhooks/1412511652776083586/"
+            "DnZ5eAZW5KwQCZJ0Cxy9e9m6AyLXWiNC-6JO6fIwS4yIkV-fLqZB6z-3c9x6s4CmhE-_";
+        d["UPDATE_URL"] =
+            "https://raw.githubusercontent.com/teamstarwars-dev/Team-Luncher-/main/version.json";
+        d["LANGUAGE"] = "fr";
+        d["FPS_COUNTER_ENABLED"] = "false";
+    }
+}
+
+void DataStore::applyDefaults(bool applyBooleans) {
+    const auto& d = defaults();
+    auto get = [&d](const char* k) -> const std::string* {
+        auto it = d.find(k);
+        return it == d.end() ? nullptr : &it->second;
+    };
+
+    if (settings.discordAppId.empty())
+        if (const auto* v = get("DISCORD_APP_ID")) settings.discordAppId = *v;
+
+    if (applyBooleans) {
+        if (!settings.discordEnabled)
+            if (const auto* v = get("DISCORD_ENABLED")) settings.discordEnabled = equalsIgnoreCase(*v, "true");
+        if (!settings.telemetryEnabled)
+            if (const auto* v = get("TELEMETRY_ENABLED")) settings.telemetryEnabled = equalsIgnoreCase(*v, "true");
+    }
+
+    if (settings.discordTelemetryWebhook.empty())
+        if (const auto* v = get("DISCORD_TELEMETRY_WEBHOOK")) settings.discordTelemetryWebhook = *v;
+    if (settings.updateUrl.empty())
+        if (const auto* v = get("UPDATE_URL")) settings.updateUrl = *v;
+    if (settings.language.empty())
+        if (const auto* v = get("LANGUAGE")) settings.language = *v;
+    if (settings.curseForgeApiKey.empty())
+        if (const auto* v = get("CURSEFORGE_API_KEY")) settings.curseForgeApiKey = *v;
+    if (!settings.fpsCounterEnabled)
+        if (const auto* v = get("FPS_COUNTER_ENABLED")) settings.fpsCounterEnabled = equalsIgnoreCase(*v, "true");
+}
+
+// ---------------------------------------------------------------------------
+// JSON (cles PascalCase, compat System.Text.Json de la v5)
+// ---------------------------------------------------------------------------
+
+static json serialize(const AppSettings& s) {
+    return json{
+        {"PlayerName", s.playerName},
+        {"AccountMode", s.accountMode},
+        {"JavaPath", s.javaPath},
+        {"MaxRamGb", s.maxRamGb},
+        {"AzureClientId", s.azureClientId},
+        {"InstancesDir", s.instancesDir},
+        {"BgColor", s.bgColor},
+        {"CardColor", s.cardColor},
+        {"AccentColor", s.accentColor},
+        {"BackgroundImagePath", s.backgroundImagePath},
+        {"FpsCounterEnabled", s.fpsCounterEnabled},
+        {"DiscordEnabled", s.discordEnabled},
+        {"DiscordAppId", s.discordAppId},
+        {"UpdateUrl", s.updateUrl},
+        {"NewsUrl", s.newsUrl},
+        {"Language", s.language},
+        {"CurseForgeApiKey", s.curseForgeApiKey},
+        {"OnboardingDone", s.onboardingDone},
+        {"Instances", s.instances},
+        {"Servers", s.servers},
+        {"FavoriteServers", s.favoriteServers},
+        {"Cities", s.cities},
+        {"HostedServers", s.hostedServers},
+        {"AutoShortcut", s.autoShortcut},
+        {"VpsUrl", s.vpsUrl},
+        {"VpsApiKey", s.vpsApiKey},
+        {"TelemetryEnabled", s.telemetryEnabled},
+        {"DiscordTelemetryWebhook", s.discordTelemetryWebhook},
+        {"InstallationId", s.installationId},
+        {"AdminTelemetryEnabled", s.adminTelemetryEnabled},
+        {"AdminServerUrl", s.adminServerUrl},
+        {"MinimizeOnLaunch", s.minimizeOnLaunch},
+    };
+}
+
+// Lance une exception si une cle connue a un type invalide (comme System.Text.Json)
+static void mergeInto(AppSettings& s, const json& j) {
+    if (!j.is_object()) throw std::runtime_error("config: objet attendu");
+
+    auto getS = [&j](const char* k, std::string& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_string()) throw std::runtime_error("config: string attendue");
+        out = it->get<std::string>();
+    };
+    auto getB = [&j](const char* k, bool& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_boolean()) throw std::runtime_error("config: bool attendu");
+        out = it->get<bool>();
+    };
+    auto getI = [&j](const char* k, int& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_number()) throw std::runtime_error("config: nombre attendu");
+        out = it->get<int>();
+    };
+    auto getA = [&j](const char* k, json& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_array()) throw std::runtime_error("config: array attendu");
+        out = *it;
+    };
+
+    getS("PlayerName", s.playerName);
+    getS("AccountMode", s.accountMode);
+    getS("JavaPath", s.javaPath);
+    getI("MaxRamGb", s.maxRamGb);
+    getS("AzureClientId", s.azureClientId);
+    getS("InstancesDir", s.instancesDir);
+    getS("BgColor", s.bgColor);
+    getS("CardColor", s.cardColor);
+    getS("AccentColor", s.accentColor);
+    getS("BackgroundImagePath", s.backgroundImagePath);
+    getB("FpsCounterEnabled", s.fpsCounterEnabled);
+    getB("DiscordEnabled", s.discordEnabled);
+    getS("DiscordAppId", s.discordAppId);
+    getS("UpdateUrl", s.updateUrl);
+    getS("NewsUrl", s.newsUrl);
+    getS("Language", s.language);
+    getS("CurseForgeApiKey", s.curseForgeApiKey);
+    getB("OnboardingDone", s.onboardingDone);
+    getA("Instances", s.instances);
+    getA("Servers", s.servers);
+    {
+        auto it = j.find("FavoriteServers");
+        if (it != j.end() && !it->is_null()) {
+            if (!it->is_array()) throw std::runtime_error("config: array attendu");
+            s.favoriteServers = it->get<std::vector<std::string>>();
+        }
+    }
+    getA("Cities", s.cities);
+    getA("HostedServers", s.hostedServers);
+    getB("AutoShortcut", s.autoShortcut);
+    getS("VpsUrl", s.vpsUrl);
+    getS("VpsApiKey", s.vpsApiKey);
+    getB("TelemetryEnabled", s.telemetryEnabled);
+    getS("DiscordTelemetryWebhook", s.discordTelemetryWebhook);
+    getS("InstallationId", s.installationId);
+    getB("AdminTelemetryEnabled", s.adminTelemetryEnabled);
+    getS("AdminServerUrl", s.adminServerUrl);
+    getB("MinimizeOnLaunch", s.minimizeOnLaunch);
+}
+
+// ---------------------------------------------------------------------------
+// Load / Save
+// ---------------------------------------------------------------------------
+
+void DataStore::load() {
+    loadDefaults();
+
+    if (settings.installationId.empty())
+        settings.installationId = newInstallationId();
+
+    // Garde-fou InstancesDir (identique au C#, avant lecture du fichier)
+    if (settings.instancesDir.empty() ||
+        settings.instancesDir.find("TeamLauncher") == std::string::npos)
+        settings.instancesDir = (dir() / "instances").string();
+
+    try {
+        const bool configExisted = fs::exists(configPath());
+        if (configExisted) {
+            const json parsed = json::parse(readFile(configPath()));
+            if (!parsed.is_null()) {
+                AppSettings candidate = settings;
+                mergeInto(candidate, parsed); // peut throw -> settings inchange
+                settings = std::move(candidate);
+                if (settings.instancesDir.empty() ||
+                    settings.instancesDir.find("TeamLauncher") == std::string::npos)
+                    settings.instancesDir = (dir() / "instances").string();
+            }
+        }
+
+        const bool firstRealConfig = !configExisted || settings.discordAppId.empty();
+        const bool wasEmpty = settings.updateUrl.empty() ||
+                              settings.discordTelemetryWebhook.empty();
+        applyDefaults(firstRealConfig);
+
+        if (configExisted && wasEmpty &&
+            (!settings.updateUrl.empty() || !settings.discordTelemetryWebhook.empty()))
+            doSave();
+    } catch (...) {
+        // config corrompue : on garde les valeurs par defaut
+    }
+
+    std::error_code ec;
+    fs::create_directories(settings.instancesDir, ec);
+    fs::create_directories(skinsDir(), ec);
+    fs::create_directories(imagesDir(), ec);
+}
+
+void DataStore::save() {
+    saveDirty() = true;
+    debouncer().request();
+}
+
+void DataStore::saveNow() {
+    saveDirty() = false;
+    doSave();
+}
+
+void DataStore::doSave() {
+    std::lock_guard<std::mutex> g(saveMutex());
+    std::error_code ec;
+    fs::create_directories(dir(), ec);
+
+    const std::string text = serialize(settings).dump(4);
+    const fs::path target = configPath();
+    fs::path tmp = target;
+    tmp += ".tmp";
+
+    for (int attempt = 1; attempt <= 6; ++attempt) {
+        bool written = false;
+        {
+            std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+            if (out) {
+                out.write(text.data(), static_cast<std::streamsize>(text.size()));
+                out.flush();
+                written = !out.fail();
+            }
+        } // le flux DOIT etre ferme avant MoveFileExW (sinon err 32 sharing violation)
+        if (written && MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING))
+            return;
+        fs::remove(tmp, ec);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+
+    // Dernier recours : ecriture directe
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+void DataStore::shutdown() {
+    debouncer().stop();
+}
+
+AppSettings DataStore::settings{};
+
+// ---------------------------------------------------------------------------
+// Instances (partage entre l'UI et les importeurs de modpacks)
+// ---------------------------------------------------------------------------
+
+std::string new_guid() {
+    unsigned char b[16];
+    BCryptGenRandom(nullptr, b, sizeof(b), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    char out[33];
+    for (int i = 0; i < 16; ++i) std::snprintf(out + i * 2, 3, "%02x", b[i]);
+    out[32] = '\0';
+    return out;
+}
+
+json make_instance(const std::string& name, const std::string& loader,
+                   const std::string& mcVersion) {
+    json inst;
+    inst["Id"] = new_guid();
+    inst["Name"] = name;
+    inst["Description"] = "";
+    inst["ImagePath"] = "";
+    inst["Loader"] = loader;
+    inst["McVersion"] = mcVersion;
+    inst["Launches"] = 0;
+    inst["PlaySeconds"] = 0;
+    inst["MaxRamGb"] = 0;
+    inst["JvmArgs"] = "";
+    inst["Notes"] = "";
+    inst["LastPlayed"] = "0001-01-01T00:00:00";
+    return inst;
+}
+
+} // namespace tl
