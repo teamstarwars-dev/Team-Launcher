@@ -536,7 +536,7 @@ void ptero_card(const ptero::Host& h, int idx) {
         ImGui::TextUnformatted(tr("Actualisation...", "Refreshing..."));
     } else if (st.running) {
         ImGui::PushStyleColor(ImGuiCol_Text, kOk);
-        ImGui::Text("%s — CPU %d%% · RAM %lld Mo · %d/%d %s",
+        ImGui::Text("%s - CPU %d%% · RAM %lld Mo · %d/%d %s",
                     tr("En ligne", "Online"), st.state.cpuPercent,
                     st.state.memUsedBytes / 1024 / 1024, st.state.players,
                     st.state.maxPlayers, tr("joueurs", "players"));
@@ -998,7 +998,7 @@ void server_modals() {
             break;
         }
     const std::string cmdTitle =
-        std::string(tr("Console")) + (cmdName.empty() ? "" : " — " + cmdName) +
+        std::string(tr("Console")) + (cmdName.empty() ? "" : " - " + cmdName) +
         "###pterocmd";
     if (ImGui::BeginPopupModal(cmdTitle.c_str(), &openCmd,
                                ImGuiWindowFlags_NoCollapse |

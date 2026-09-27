@@ -264,9 +264,9 @@ void instance_detail_modal() {
             ImGui::PushStyleColor(ImGuiCol_Text, kDim);
             ImGui::TextWrapped(
                 "%s", tr("Shaders, resource packs, configs et screenshots : "
-                         "non portés — utilisez le dossier de l'instance.",
+                         "non portés - utilisez le dossier de l'instance.",
                          "Shaders, resource packs, configs and screenshots: "
-                         "not ported — use the instance folder."));
+                         "not ported - use the instance folder."));
             ImGui::PopStyleColor();
         } else if (s_detailTab == 1) {
             // ---- onglet Mods (C# LoadMods) ----

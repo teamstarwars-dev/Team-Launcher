@@ -77,7 +77,7 @@ void start_job(bool write) {
         C.running = true;
         C.ok = false;
         C.summary.clear();
-        C.status = tr("Interrogation d'Overpass…", "Querying Overpass…");
+        C.status = tr("Interrogation d'Overpass...", "Querying Overpass...");
     }
     const std::string bbox = C.bbox;
     const int baseY = C.baseY;
@@ -101,7 +101,7 @@ void start_job(bool write) {
 
             const auto data = citygen::fetch_osm(box, say, &cancel);
             say("Rasterisation de " + std::to_string(data.entities.size()) +
-                " entite(s)…");
+                " entite(s)...");
             const auto blocks = citygen::rasterize(data, baseY);
 
             {

@@ -210,7 +210,7 @@ std::optional<File> parse_region_name(const fs::path& p) {
 std::vector<File> list_regions(const fs::path& worldDir) {
     std::vector<File> out;
     std::error_code ec;
-    // …/region, ou directement le dossier s'il contient deja les .mca.
+    // .../region, ou directement le dossier s'il contient deja les .mca.
     fs::path dir = worldDir / "region";
     if (!fs::is_directory(dir, ec)) dir = worldDir;
     if (!fs::is_directory(dir, ec)) return out;

@@ -13,7 +13,7 @@
 
 namespace tl::packs {
 
-// progress("Téléchargement des mods (3/42)…")
+// progress("Téléchargement des mods (3/42)...")
 using Progress = std::function<void(const std::string&)>;
 
 struct Result {

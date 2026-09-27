@@ -48,7 +48,7 @@ struct ChunkInfo {
     std::int64_t timestamp = 0;  // epoch s. de derniere ecriture
 };
 
-// r.<x>.<z>.mca d'un dossier de monde (…/region). Trie par (rz, rx).
+// r.<x>.<z>.mca d'un dossier de monde (.../region). Trie par (rz, rx).
 std::vector<File> list_regions(const std::filesystem::path& worldDir);
 
 // Coordonnees d'apres le nom de fichier. nullopt si le nom ne correspond pas.

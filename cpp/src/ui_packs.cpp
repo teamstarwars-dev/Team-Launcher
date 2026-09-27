@@ -75,7 +75,7 @@ void import_modpack_start(const std::string& path) {
         P.running = true;
         P.done = false;
         P.cancel = false;
-        P.status = tr("Lecture de l'archive…");
+        P.status = tr("Lecture de l'archive...");
         P.result = packs::Result{};
         // Tache de fond visible dans le panneau (Annuler -> P.cancel).
         tid = P.taskId = apptasks_begin(title, P.status, &P.cancel);
@@ -129,7 +129,7 @@ void share_instance_start(const nlohmann::json& inst) {
         P.running = true;
         P.done = false;
         P.cancel = false;
-        P.status = tr("Analyse de l'instance…", "Scanning the instance…");
+        P.status = tr("Analyse de l'instance...", "Scanning the instance...");
         tid = P.taskId = apptasks_begin(title, P.status, &P.cancel);
         s_job = ShareJob::Export;
         s_shareReady = false;
@@ -171,7 +171,7 @@ void import_shared_start(const std::string& text) {
         P.running = true;
         P.done = false;
         P.cancel = false;
-        P.status = tr("Lecture du pack partagé…", "Reading the shared pack…");
+        P.status = tr("Lecture du pack partagé...", "Reading the shared pack...");
         tid = P.taskId = apptasks_begin(title, P.status, &P.cancel);
         s_job = ShareJob::Import;
         s_shareReady = false;
@@ -343,7 +343,7 @@ void packs_frame() {
                       std::to_string(r.downloaded) +
                       tr(" fichier(s).", " file(s).");
     if (r.failed > 0)
-        msg += " " + std::to_string(r.failed) + tr(" échec(s) — voir launcher.log.",
+        msg += " " + std::to_string(r.failed) + tr(" échec(s) - voir launcher.log.",
                                                    " failure(s) - see launcher.log.");
     notify_toast(tr("Modpack importé"), msg);
 }

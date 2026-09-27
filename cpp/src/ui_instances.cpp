@@ -71,7 +71,7 @@ void instances_page() {
     if (ImGui::BeginPopup("import_popup")) {
         if (ImGui::MenuItem(tr("Importer (.zip)"))) import_zip();
         if (ImGui::MenuItem(tr("Importer un dossier"))) import_folder();
-        if (ImGui::MenuItem(tr("Modpack CurseForge / Modrinth…")))
+        if (ImGui::MenuItem(tr("Modpack CurseForge / Modrinth...")))
             import_modpack_pick();
         if (ImGui::MenuItem(tr("Importer partagé (presse-papiers)")))
             import_shared_from_clipboard();

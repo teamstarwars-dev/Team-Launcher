@@ -60,7 +60,7 @@ json scan_and_resolve(const fs::path& instDir, const char* subDir, const char* e
         if (cancel.load()) return items;
         report(progress, std::string("Empreinte ") + subDir + " (" +
                              std::to_string(i + 1) + "/" +
-                             std::to_string(files.size()) + ")…");
+                             std::to_string(files.size()) + ")...");
         auto h = sha1_hex(files[i]);
         if (!h) continue;
         hashes.push_back(*h);
@@ -69,7 +69,7 @@ json scan_and_resolve(const fs::path& instDir, const char* subDir, const char* e
     if (hashes.empty()) return items;
 
     // 2. Resolution groupee sur Modrinth
-    report(progress, std::string("Recherche des ") + subDir + " sur Modrinth…");
+    report(progress, std::string("Recherche des ") + subDir + " sur Modrinth...");
     const auto matches = mr::version_files(hashes, &cancel);
 
     // 3. Construction de la liste
@@ -135,7 +135,7 @@ int download_items(const json& items, const fs::path& destDir,
         const std::string url = it.value("Url", std::string{});
         const std::string name = it.value("Filename", std::string{});
         report(progress, std::string(label) + " (" + std::to_string(i) + "/" +
-                             std::to_string(total) + ")…");
+                             std::to_string(total) + ")...");
         if (url.empty() || name.empty()) {
             // Fichier non reconnu par Modrinth : rien a telecharger.
             ++failed;
@@ -175,14 +175,14 @@ ExportResult export_pack(const json& inst, const Progress& progress,
         }
         const fs::path dir = DataStore::instancesRoot() / id;
 
-        report(progress, "Analyse des mods…");
+        report(progress, "Analyse des mods...");
         json mods = scan_and_resolve(dir, "mods", ".jar", progress, cancel,
                                      &res.stats.recognizedMods);
         if (cancel.load()) {
             res.cancelled = true;
             return res;
         }
-        report(progress, "Analyse des shaders…");
+        report(progress, "Analyse des shaders...");
         json shaders = scan_and_resolve(dir, "shaderpacks", ".zip", progress, cancel,
                                         &res.stats.recognizedShaders);
         if (cancel.load()) {
@@ -192,11 +192,11 @@ ExportResult export_pack(const json& inst, const Progress& progress,
         res.stats.mods = static_cast<int>(mods.size());
         res.stats.shaders = static_cast<int>(shaders.size());
 
-        report(progress, "Analyse des resource packs…");
+        report(progress, "Analyse des resource packs...");
         json resourcePacks = scan_files(dir, "resourcepacks", false);
-        report(progress, "Analyse des configs…");
+        report(progress, "Analyse des configs...");
         json configs = scan_files(dir, "config", false);
-        report(progress, "Analyse des mondes…");
+        report(progress, "Analyse des mondes...");
         json worlds = scan_files(dir, "saves", true);
 
         // Memes noms de champs que le C# (compat descriptifs v5).

@@ -169,7 +169,7 @@ bool valid_mc_name(const std::string& s) {
     return true;
 }
 
-// Ellipsis ASCII (« … » hors plage Latin-1 de la police par defaut).
+// Ellipsis ASCII (« ... » hors plage Latin-1 de la police par defaut).
 std::string ellipsis(const std::string& s, float maxW) {
     if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
     std::string o = s;

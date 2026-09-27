@@ -167,7 +167,7 @@ OsmData fetch_osm(const BBox& box, const Progress& progress,
     if (!box.valid)
         throw std::runtime_error(
             "Emprise invalide. Format attendu : minLon,minLat,maxLon,maxLat");
-    if (progress) progress("Récupération des données OpenStreetMap…");
+    if (progress) progress("Récupération des données OpenStreetMap...");
 
     auto num = [](double v) {
         char b[32];
@@ -200,7 +200,7 @@ OsmData fetch_osm(const BBox& box, const Progress& progress,
         throw std::runtime_error("HTTP " + std::to_string(r->status) +
                                  " depuis overpass-api.de.");
 
-    if (progress) progress("Analyse des données…");
+    if (progress) progress("Analyse des données...");
     OsmData d = parse_overpass(r->body, box);
     if (d.entities.empty())
         throw std::runtime_error(

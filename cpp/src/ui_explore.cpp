@@ -105,11 +105,11 @@ void start_search() {
     {
         std::lock_guard<std::mutex> lk(E.m);
         E.rows.clear();
-        E.status = tr("Recherche…", "Searching…");
+        E.status = tr("Recherche...", "Searching...");
         E.searched = true;
     }
     const std::string taskTitle = tr("Recherche de contenus", "Content search");
-    const std::string taskStatus = tr("Recherche…", "Searching…");
+    const std::string taskStatus = tr("Recherche...", "Searching...");
     start_job(taskTitle, taskStatus, [q, cf_, cat](int tid) {
         std::vector<Row> rows;
         std::string status;
@@ -171,11 +171,11 @@ void start_install(const Row& row, const nlohmann::json& target) {
         E.installing = true;
         E.installTitle = row.title;
         E.outcomeReady = false;
-        E.status = tr("Téléchargement…", "Downloading…");
+        E.status = tr("Téléchargement...", "Downloading...");
     }
     const std::string taskTitle =
         tr("Installation : ", "Installing: ") + row.title;
-    const std::string taskStatus = tr("Téléchargement…", "Downloading…");
+    const std::string taskStatus = tr("Téléchargement...", "Downloading...");
     start_job(taskTitle, taskStatus, [cf_, key, inst, cat](int tid) {
         content::Outcome o = content::install(cf_, key, inst, cat, E.cancel);
         const bool ok = o.ok;
@@ -327,7 +327,7 @@ void explore_page() {
     // ---- Barre de recherche ----
     ImGui::SetNextItemWidth(320.0f);
     const bool enter = ImGui::InputTextWithHint(
-        "##q", tr("Recherche un mod, un modpack…"), E.query, sizeof(E.query),
+        "##q", tr("Recherche un mod, un modpack..."), E.query, sizeof(E.query),
         ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     const char* sources[] = {"Modrinth", "CurseForge"};

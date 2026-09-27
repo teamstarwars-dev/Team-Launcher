@@ -376,7 +376,7 @@ void run_we(const std::string& title,
         if (M.weRunning) return;
         M.weRunning = true;
         M.weResult.clear();
-        M.weStatus = title + "…";
+        M.weStatus = title + "...";
     }
     const auto world = M.worldPath;
     tasks::run(title, [world, op](const std::atomic<bool>& cancel,
@@ -489,8 +489,8 @@ void worldedit_panel() {
                        "Selection: %d x %d x %d = %lld block(s)%s"),
                     b.x2 - b.x1 + 1, b.y2 - b.y1 + 1, b.z2 - b.z1 + 1,
                     static_cast<long long>(vol),
-                    volOk ? "" : tr(" — au-delà du plafond de 8 000 000",
-                                    " — over the 8,000,000 cap"));
+                    volOk ? "" : tr(" - au-delà du plafond de 8 000 000",
+                                    " - over the 8,000,000 cap"));
     ImGui::PopStyleColor();
 
     ImGui::Spacing();

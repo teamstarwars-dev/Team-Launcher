@@ -268,7 +268,7 @@ void news_page() {
     }
     if (loading) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::TextUnformatted(tr("Chargement…"));
+        ImGui::TextUnformatted(tr("Chargement..."));
         ImGui::PopStyleColor();
     } else if (news.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
@@ -284,7 +284,7 @@ void news_page() {
     ImGui::Spacing();
     if (changelog.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::TextUnformatted(tr("Chargement…"));
+        ImGui::TextUnformatted(tr("Chargement..."));
         ImGui::PopStyleColor();
     } else {
         int idx = 1000;

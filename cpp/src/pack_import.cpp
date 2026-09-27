@@ -88,7 +88,7 @@ Result import_curseforge(const fs::path& zip, const Progress& progress,
         fs::create_directories(gameDir, ec);
 
         // 1. overrides/ -> racine de l'instance
-        report(progress, "Extraction des fichiers du modpack…");
+        report(progress, "Extraction des fichiers du modpack...");
         zip_extract_prefix(zip, "overrides/", gameDir);
         if (cancel.load()) {
             res.cancelled = true;
@@ -107,7 +107,7 @@ Result import_curseforge(const fs::path& zip, const Progress& progress,
         }
 
         report(progress, "Résolution des mods (" + std::to_string(fileIds.size()) +
-                             " fichiers)…");
+                             " fichiers)...");
         const auto details = cf::get_files_by_ids(fileIds, &cancel);
         const auto classes = cf::get_project_classes(projectIds, &cancel);
         if (cancel.load()) {
@@ -126,7 +126,7 @@ Result import_curseforge(const fs::path& zip, const Progress& progress,
                 return res;
             }
             report(progress, "Téléchargement des mods (" + std::to_string(i + 1) +
-                                 "/" + std::to_string(fileIds.size()) + ")…");
+                                 "/" + std::to_string(fileIds.size()) + ")...");
             auto it = byId.find(fileIds[i]);
             if (it == byId.end()) {
                 ++res.failed; // fichier introuvable : on saute, comme le C#
@@ -193,7 +193,7 @@ Result import_modrinth(const fs::path& mrpack, const Progress& progress,
         std::error_code ec;
         fs::create_directories(gameDir, ec);
 
-        report(progress, "Extraction des fichiers du modpack…");
+        report(progress, "Extraction des fichiers du modpack...");
         zip_extract_prefix(mrpack, "overrides/", gameDir);
         if (cancel.load()) {
             res.cancelled = true;
@@ -212,7 +212,7 @@ Result import_modrinth(const fs::path& mrpack, const Progress& progress,
             }
             ++done;
             report(progress, "Mods et fichiers (" + std::to_string(done) + "/" +
-                                 std::to_string(total) + ")…");
+                                 std::to_string(total) + ")...");
             const std::string rel = f.value("path", std::string{});
             if (!safe_relative(rel)) {
                 ++res.failed;

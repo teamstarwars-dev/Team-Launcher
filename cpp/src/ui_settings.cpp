@@ -565,7 +565,7 @@ void tab_integrations() {
         presence::reload();
         notify_toast(tr("Discord"),
                      presence::enabled()
-                         ? tr("Rich Presence activée — ouvre Discord pour voir "
+                         ? tr("Rich Presence activée - ouvre Discord pour voir "
                               "ton statut.",
                               "Rich Presence enabled - open Discord to see your "
                               "status.")
