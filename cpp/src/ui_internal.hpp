@@ -158,6 +158,7 @@ void open_in_explorer(const std::filesystem::path& p);
 std::string wstr_to_utf8(const wchar_t* w);
 void notify_log(const std::string& msg);
 std::optional<std::string> pick_zip_open();
+std::optional<std::string> pick_model_file();
 std::optional<std::string> pick_zip_save(const std::string& defaultName);
 std::optional<std::string> pick_folder(const wchar_t* title);
 void import_zip();
@@ -193,6 +194,7 @@ void explorer_page();    // ui_explorer.cpp (page 10) : fichiers et mondes
 void mapeditor_page();   // ui_mapeditor.cpp (page 11) : grille de chunks
 void citygen_page();     // ui_citygen.cpp (page 12) : ville OpenStreetMap
 void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
+void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
 bool onboarding_needed();  // ui_onboarding.cpp
 void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
 void explore_stop();     // ui_explore.cpp : joint le worker

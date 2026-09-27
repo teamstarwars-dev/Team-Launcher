@@ -335,6 +335,22 @@ std::optional<std::string> pick_zip_open() {
     return wstr_to_utf8(file);
 }
 
+// Modeles 3D : .bbmodel, modele Java .json, geometrie Bedrock .geo.json.
+// Le C# proposait aussi « *.obj », format qu aucun code ne lisait.
+std::optional<std::string> pick_model_file() {
+    wchar_t file[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter =
+        L"Modeles 3D (*.bbmodel;*.json)\0*.bbmodel;*.json\0Tous les fichiers\0*.*\0";
+    ofn.lpstrTitle = L"Ouvrir un modele 3D";
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return std::nullopt;
+    return wstr_to_utf8(file);
+}
+
 std::optional<std::string> pick_zip_save(const std::string& defaultName) {
     wchar_t file[MAX_PATH] = L"";
     MultiByteToWideChar(CP_UTF8, 0, defaultName.c_str(), -1, file, MAX_PATH);
@@ -859,6 +875,7 @@ void frame(SDL_Window* window) {
     if (nav_button(tr("Édition de carte"), g.page == 11)) g.page = 11;
     if (nav_button(tr("Ville OSM"), g.page == 12)) g.page = 12;
     if (nav_button(tr("Mods (dev)"), g.page == 13)) g.page = 13;
+    if (nav_button(tr("Modèles 3D"), g.page == 14)) g.page = 14;
     if (nav_button(tr("Jouer"), g.page == 2)) g.page = 2;
     if (nav_button(tr("Serveurs"), g.page == 3)) g.page = 3;
     if (nav_button(tr("Skins"), g.page == 4)) g.page = 4;
@@ -889,6 +906,7 @@ void frame(SDL_Window* window) {
     case 11: mapeditor_page(); break;
     case 12: citygen_page(); break;
     case 13: moddev_page(); break;
+    case 14: modelviewer_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
