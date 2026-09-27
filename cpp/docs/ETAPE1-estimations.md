@@ -552,3 +552,40 @@ Outils et sources (instantané du 27/09/2026 vers 11:12 ; l'arbre est modifié e
 3. Redemander la connexion à chaque lancement sous Linux — sûr, mais c'est exactement ce que l'utilisateur voulait éviter.
 
 Recommandation : libsecret quand il est disponible, repli sur le fichier 0600 avec avertissement visible.
+
+## Installeur Windows (27/09/2026)
+
+`cpp/installer/TeamLauncher.iss` + `cpp/make-installer.ps1`. Inno Setup 6, déjà présent sur la machine.
+
+**Résultat : `TeamLauncher-6.0.0-Setup.exe`, 3 425 Ko.** Il contient toute l'application : l'exécutable (2 665 Ko), `SDL2.dll` (1 637 Ko) et `assets/default.env`, compressés en LZMA2. À comparer au C# : ~46 Mo en AOT, ou un installeur léger mais exigeant le runtime .NET 8.
+
+Ajouté au passage : `cpp/src/app.rc`, ressources Win32 (icône + bloc `VERSIONINFO`). Sans icône, le raccourci et l'entrée « Applications installées » restaient vides, et `make-installer.ps1` s'en sert pour vérifier que le binaire et l'installeur annoncent bien la même version — un build périmé est refusé plutôt qu'emballé.
+
+Corrections par rapport au script du C# (`installer.iss` à la racine) :
+
+1. **Plus de dépendance .NET.** L'ancien embarquait `*.deps.json` et `*.runtimeconfig.json`, et définissait une fonction `IsDotNet8Installed` **jamais appelée** : rien ne vérifiait le runtime, l'installation réussissait sur une machine sans .NET et l'application échouait au premier lancement.
+2. **`taskkill /f` retiré.** `InitializeSetup` tuait de force `TeamLauncher.exe` avant même le premier écran, donc y compris quand l'utilisateur annulait ensuite — au risque de perdre une configuration en cours d'écriture. `CloseApplications` demande poliment la fermeture.
+3. **`Source: "dist\*.dll"` remplacé par des fichiers nommés un par un** : le joker embarquait tout ce qui traînait dans le dossier de sortie.
+4. **Désinstallation propre** : `launcher.log`, écrit à côté de l'exécutable, laissait le dossier d'installation derrière lui.
+
+### Incident du 27/09/2026 — perte de données pendant un test
+
+Le premier script proposait à la désinstallation de supprimer aussi `%LOCALAPPDATA%\TeamLauncher`, avec « Non » comme bouton par défaut (`MB_DEFBUTTON2`). J'ai lancé la désinstallation de test avec `/SUPPRESSMSGBOXES` **en supposant** que la suppression des boîtes de dialogue renverrait ce défaut.
+
+**C'est faux : Inno Setup renvoie `IDYES` pour un `MB_YESNO` supprimé, sans tenir compte du bouton par défaut.** Les données réelles de la machine (réglages, session Microsoft, clé API CurseForge, dossier d'instances) ont été effacées. `DelTree` ne passe pas par la corbeille ; aucun cliché instantané ni point de restauration n'existait. **Irrécupérable.**
+
+Deux garde-fous, vérifiés par un test qui installe, désinstalle en silencieux et contrôle qu'un fichier témoin survit :
+
+1. **`if UninstallSilent then Exit`** — aucune automatisation ne peut détruire des données sans clic humain. C'est le garde-fou qui compte.
+2. **Deux confirmations successives**, la seconde énumérant ce qui sera perdu, toutes deux avec « Non » par défaut.
+
+Leçon générale, au-delà de l'installeur : **ne jamais tester une action destructrice sur les données réelles de la machine**, même quand on croit que le mode silencieux choisit l'option sûre. Le test aurait dû tourner avec `TL_DATA_DIR` pointant sur un dossier jetable.
+
+### Non signé
+
+Décision de l'utilisateur du 27/09/2026 : pas de certificat de signature de code. SmartScreen avertira au premier lancement d'un installeur téléchargé. Attendu, ce n'est pas un défaut du script.
+
+### Reste à faire
+
+- **Logo** : l'icône actuelle vient du projet C# et n'est plus la bonne. Le nouveau logo doit remplacer `cpp/assets/TeamLauncher.ico` et servir aussi d'illustration Discord Rich Presence.
+- **Installeur Linux** : à faire une fois la cible Linux compilée (`.desktop` + AppImage, ou `.deb`).

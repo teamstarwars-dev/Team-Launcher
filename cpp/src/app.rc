@@ -1,0 +1,57 @@
+// Ressources Win32 : icone de l'application et bloc de version.
+//
+// Sans icone, le raccourci cree par l'installeur et l'entree « Applications
+// installees » de Windows restent vides, et SDL donne a la fenetre l'icone
+// generique. L'identifiant 1 est important : Windows prend la PREMIERE icone
+// par ordre d'identifiant comme icone du fichier, et SDL2 sous Windows charge
+// l'icone de l'executable pour sa classe de fenetre.
+//
+// Le bloc VERSIONINFO alimente l'onglet « Details » des proprietes du
+// fichier, et c'est ce que lit Inno Setup pour comparer les versions lors
+// d'une mise a jour.
+
+#include <windows.h>
+
+1 ICON "TeamLauncher.ico"
+
+#ifndef TL_VERSION_MAJOR
+#define TL_VERSION_MAJOR 0
+#endif
+#ifndef TL_VERSION_MINOR
+#define TL_VERSION_MINOR 0
+#endif
+#ifndef TL_VERSION_PATCH
+#define TL_VERSION_PATCH 0
+#endif
+#ifndef TL_VERSION_STRING
+#define TL_VERSION_STRING "0.0.0"
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    TL_VERSION_MAJOR, TL_VERSION_MINOR, TL_VERSION_PATCH, 0
+PRODUCTVERSION TL_VERSION_MAJOR, TL_VERSION_MINOR, TL_VERSION_PATCH, 0
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 040c = francais, 04b0 = Unicode
+        BLOCK "040c04b0"
+        BEGIN
+            VALUE "CompanyName",      "Team Launcher"
+            VALUE "FileDescription",  "Team Launcher - launcher Minecraft"
+            VALUE "FileVersion",      TL_VERSION_STRING
+            VALUE "InternalName",     "TeamLauncher"
+            VALUE "OriginalFilename", "TeamLauncher.exe"
+            VALUE "ProductName",      "Team Launcher"
+            VALUE "ProductVersion",   TL_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x040c, 1200
+    END
+END
