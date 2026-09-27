@@ -515,3 +515,40 @@ Outils et sources (instantané du 27/09/2026 vers 11:12 ; l'arbre est modifié e
 | RAM idle / temps de démarrage / pic pendant un import | **à mesurer au build final** |
 
 (mesures ponctuelles ; la RAM idle est affectée ±10 Mo par la machine)
+
+## Étape 5 — cible Linux : inventaire et premiers pas (27/09/2026)
+
+**Blocage matériel constaté** : cette machine n'a ni WSL ni chaîne de compilation Linux. Écrire les backends POSIX sans jamais les compiler n'aurait aucune valeur de vérification. Décision de l'utilisateur le 27/09/2026 : **installer WSL** (`wsl --install`, droits admin + redémarrage), puis reprendre le portage module par module avec compilation et tests réels, comme sous Windows.
+
+### Inventaire des dépendances Windows
+
+56 fichiers `.cpp` dans `cpp/src`, dont **30 touchent une API Windows**. Par ordre de densité :
+
+| Fichier | Occurrences | Ce qu'il faudra côté POSIX |
+|---|---|---|
+| `http_win.cpp` | 50 | libcurl (ou une pile TLS) — le plus gros morceau |
+| ~~`util_hash.cpp`~~ | ~~19~~ | **fait** : SHA-1 et MD5 portables |
+| `game_launcher.cpp` | 15 | `posix_spawn` / `fork` + tubes |
+| `moddev.cpp` | 11 | idem, via la couche plateforme |
+| `ui.cpp` | 8 | sélecteurs de fichiers (portail XDG ou GTK), `ShellExecute` → `xdg-open` |
+| `shortcut.cpp` | 8 | fichier `.desktop` au lieu d'`IShellLink` |
+| `presence.cpp` | 8 | socket Unix `$XDG_RUNTIME_DIR/discord-ipc-N` (même format de trame) |
+| `maintenance.cpp`, `game_installer.cpp`, `admin.cpp` | 6 | `/proc`, `uname`, `sysconf`, lancement de processus |
+| `worldsync.cpp`, `secrets.cpp` | 5 | chemins CurseForge ; **DPAPI n'a pas d'équivalent** |
+| `datastore.cpp` | 4 | XDG pour les chemins, `getrandom()` pour `BCryptGenRandom` |
+| autres (18 fichiers) | 1 à 3 | conversions UTF-8/UTF-16 (sans objet sous Linux), `_stricmp` |
+
+### Fait dans cette passe (vérifiable sous Windows)
+
+- **SHA-1 et MD5 portables** (`src/util_hash.cpp`) : les deux algorithmes passaient par BCrypt. Plutôt que d'écrire une deuxième implémentation pour Linux ou d'ajouter OpenSSL en dépendance, il n'y en a plus qu'**une seule pour les deux plateformes**, ~120 lignes, sans dépendance système.
+  - Verrouillée par les **vecteurs officiels des RFC** : SHA-1 sur chaîne vide, « abc », le vecteur à deux blocs de la RFC 3174, 55 / 56 / 64 octets (les cas de bourrage qui cassent les implémentations naïves) et le million de « a » ; MD5 sur la suite complète de la RFC 1321 plus 56 octets. Deux valeurs attendues que j'avais d'abord écrites de mémoire étaient fausses — recalculées, l'implémentation était juste.
+  - `bcrypt.lib` reste liée : `datastore.cpp` utilise encore `BCryptGenRandom`. Ce sera `getrandom()` côté POSIX.
+
+### Point dur identifié : le stockage du jeton
+
+`secrets.cpp` chiffre le jeton de rafraîchissement Microsoft avec **DPAPI**, qui lie le secret au compte Windows. Il n'y a pas d'équivalent direct sous Linux. Trois options, à trancher :
+1. **libsecret / Secret Service** (GNOME Keyring, KWallet) — la bonne réponse, mais ajoute une dépendance et échoue sur une session sans trousseau.
+2. **Fichier en 0600** sous `$XDG_DATA_HOME` — simple, mais c'est du stockage en clair protégé par les seules permissions. À ne faire qu'en le **disant explicitement** dans l'interface.
+3. Redemander la connexion à chaque lancement sous Linux — sûr, mais c'est exactement ce que l'utilisateur voulait éviter.
+
+Recommandation : libsecret quand il est disponible, repli sur le fichier 0600 avec avertissement visible.

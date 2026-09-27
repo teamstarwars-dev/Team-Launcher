@@ -153,6 +153,9 @@ target_include_directories(tl_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz
 )
 # crypt32 : DPAPI + base64 (jetons MsAuth) ; shell32 : ouverture du navigateur
+# bcrypt : plus utilise pour SHA-1/MD5 (portables depuis l etape 5), mais
+# encore requis par datastore.cpp (BCryptGenRandom). A remplacer par
+# getrandom() cote POSIX quand la couche plateforme arrivera.
 target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid)
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher
 target_compile_definitions(tl_core PUBLIC TL_VERSION_STRING="${PROJECT_VERSION}")

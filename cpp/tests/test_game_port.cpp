@@ -104,14 +104,66 @@ int main() {
             CHECK_EQ(s.uuid, std::string("98dd2756bee621bcf8a8e92344183641"));
         }
 
-        // --- 5. SHA1 ---
+        // --- 5. SHA1 et MD5 : vecteurs officiels ---
+        // Etape 5 : ces deux fonctions ne passent plus par BCrypt mais par une
+        // implementation portable. Les vecteurs des RFC verrouillent le
+        // resultat, y compris les cas de bourrage delicats (55, 56, 64
+        // octets, et un flux de plusieurs blocs).
         {
-            const fs::path f = tmp / "sha1-abc.txt";
-            { std::ofstream o(f, std::ios::binary); o << "abc"; }
-            const auto h = sha1_hex(f);
-            CHECK(h.has_value());
-            if (h) CHECK_EQ(*h, std::string("a9993e364706816aba3e25717850c26c9cd0d89d"));
+            auto sha1_of = [&](const std::string& data, const char* tag) {
+                const fs::path f = tmp / (std::string("sha1-") + tag + ".bin");
+                { std::ofstream o(f, std::ios::binary); o << data; }
+                return sha1_hex(f);
+            };
+            auto expect = [&](const std::string& data, const char* tag,
+                              const char* hex) {
+                const auto h = sha1_of(data, tag);
+                CHECK(h.has_value());
+                if (h) CHECK_EQ(*h, std::string(hex));
+            };
+
+            expect("", "vide", "da39a3ee5e6b4b0d3255bfef95601890afd80709");
+            expect("abc", "abc", "a9993e364706816aba3e25717850c26c9cd0d89d");
+            expect("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                   "rfc2", "84983e441c3bd26ebaae4aa1f95129e5e54670f1");
+            // 55 octets : dernier cas tenant dans un bloc avec le bourrage.
+            expect(std::string(55, 'a'), "a55",
+                   "c1c8bbdc22796e28c0e15163d20899b65621d65a");
+            // 56 octets : force un bloc de bourrage supplementaire.
+            expect(std::string(56, 'a'), "a56",
+                   "c2db330f6083854c99d4b5bfb6e8f29f201be699");
+            expect(std::string(64, 'a'), "a64",
+                   "0098ba824b5c16427bd7a1122a5a442a25ec644d");
+            // 1 million de 'a' : le vecteur long de la RFC 3174, qui exerce le
+            // decoupage en blocs et le compteur de longueur sur 64 bits.
+            expect(std::string(1000000, 'a'), "a1m",
+                   "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+
             CHECK(!sha1_hex(tmp / "absent.txt").has_value());
+
+            auto md5_hex = [](const std::string& s) {
+                const auto d = md5_digest(s);
+                std::string out;
+                if (!d) return out;
+                static const char* kHex = "0123456789abcdef";
+                for (unsigned char c : *d) {
+                    out.push_back(kHex[c >> 4]);
+                    out.push_back(kHex[c & 0x0F]);
+                }
+                return out;
+            };
+            CHECK_EQ(md5_hex(""), std::string("d41d8cd98f00b204e9800998ecf8427e"));
+            CHECK_EQ(md5_hex("a"), std::string("0cc175b9c0f1b6a831c399e269772661"));
+            CHECK_EQ(md5_hex("abc"), std::string("900150983cd24fb0d6963f7d28e17f72"));
+            CHECK_EQ(md5_hex("message digest"),
+                     std::string("f96b697d7cb7938d525a2f31aaf161d0"));
+            CHECK_EQ(md5_hex("abcdefghijklmnopqrstuvwxyz"),
+                     std::string("c3fcd3d76192e4007dfb496cca67e13b"));
+            CHECK_EQ(md5_hex("123456789012345678901234567890123456789012345678"
+                             "90123456789012345678901234567890"),
+                     std::string("57edf4a22be3c955ac49da2e2107b67a"));
+            CHECK_EQ(md5_hex(std::string(56, 'a')),
+                     std::string("3b0c8ac703f828b04c6c197006d17218"));
         }
 
         // --- 6. BuildJvmArgs ---

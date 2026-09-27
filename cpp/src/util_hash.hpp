@@ -1,6 +1,9 @@
 #pragma once
 
-// SHA1/MD5 via BCrypt (systeme) — verifications de telechargement Mojang.
+// SHA-1 et MD5 : implementations portables (RFC 3174 / RFC 1321).
+// Verifications d integrite des telechargements Mojang et empreintes
+// Modrinth. Plus aucune dependance a BCrypt : une seule implementation pour
+// Windows et Linux.
 
 #include <array>
 #include <filesystem>
