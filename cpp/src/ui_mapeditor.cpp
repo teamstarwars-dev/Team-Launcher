@@ -1,21 +1,26 @@
 #include "ui_internal.hpp"
 
+#include "apptasks.hpp"
 #include "region.hpp"
 #include "world.hpp"
+#include "worldedit.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <set>
 
 // ---------------------------------------------------------------------------
 // Editeur de cartes (portage d'EditorCanvas.cs / MapEditorPage.cs) : grille des
 // chunks d'un monde, selection au glisser, suppression de la selection.
 //
-// Ce qui n'est PAS porte ici : les operations WorldEdit sur les blocs
-// (pos1/pos2, //set, //replace, //copy, //paste, //undo). Elles supposent
-// l'ECRITURE des chunks (ChunkWriter.cs), pas seulement la lecture — c'est un
-// chantier a part, note dans le journal de portage.
+// Les operations WorldEdit (pos1/pos2, //set, //replace, //copy, //paste,
+// //undo, //redo) vivent dans `worldedit.hpp` : cette page n'en est que la
+// facade. Double-clic sur un chunk = pos1, Maj+double-clic = pos2, au centre
+// du chunk et a la hauteur du plus haut bloc non-air (comme le C#).
 // ---------------------------------------------------------------------------
 
 namespace tl::ui {
@@ -49,8 +54,41 @@ struct MapState {
 
     std::string status;
     bool confirmDelete = false;
+
+    // --- WorldEdit ---
+    std::optional<worldedit::Pos> pos1;
+    std::optional<worldedit::Pos> pos2;
+    char blockSet[64] = "minecraft:stone";
+    char blockFrom[64] = "*";
+    char blockTo[64] = "minecraft:air";
+    worldedit::History hist;
+    worldedit::Clipboard clip;
+
+    std::mutex wm;          // protege les champs ci-dessous
+    bool weRunning = false;
+    std::string weStatus;
+    std::string weResult;
+    bool weOk = false;
+    // Compteurs recopies a la fin de chaque operation : l UI ne touche jamais
+    // `hist` ni `clip` pendant qu un worker les modifie.
+    std::size_t undoN = 0, redoN = 0, histKo = 0, clipN = 0;
 };
 MapState M;
+
+// Hauteur du plus haut bloc non-air d'une colonne, 64 par defaut.
+int top_y(const std::filesystem::path& worldDir, int bx, int bz) {
+    const int cx = static_cast<int>(std::floor(bx / 16.0));
+    const int cz = static_cast<int>(std::floor(bz / 16.0));
+    auto chunk = region::read_chunk(worldDir, cx, cz);
+    if (!chunk) return 64;
+    // CORRECTIF vs C# : celui-ci reconstruisait tous les blocs du chunk puis
+    // sondait 384 hauteurs. `heightmap` calcule par section, sans materialiser.
+    const auto hm = region::heightmap(*chunk);
+    const int lx = ((bx % 16) + 16) % 16;
+    const int lz = ((bz % 16) + 16) % 16;
+    const std::int32_t h = hm[static_cast<std::size_t>(lz) * 16 + lx];
+    return h == INT32_MIN ? 64 : h;
+}
 
 void load_world(const std::filesystem::path& worldDir) {
     M.regions.clear();
@@ -59,6 +97,18 @@ void load_world(const std::filesystem::path& worldDir) {
     M.loaded = false;
     M.zoom = 0.0f;
     M.pan = ImVec2(0, 0);
+    // L'historique et le presse-papier portent des coordonnees et des chunks
+    // du monde precedent : les garder d'un monde a l'autre corromprait le
+    // nouveau au premier //undo.
+    if (M.worldPath != worldDir) {
+        M.pos1.reset();
+        M.pos2.reset();
+        M.hist.clear();
+        M.clip = worldedit::Clipboard{};
+        std::lock_guard<std::mutex> lk(M.wm);
+        M.undoN = M.redoN = M.histKo = M.clipN = 0;
+        M.weResult.clear();
+    }
     M.worldPath = worldDir;
     if (worldDir.empty()) return;
 
@@ -215,6 +265,30 @@ void draw_canvas() {
         }
     }
 
+    // --- pos1 / pos2 : double-clic (Maj = pos2), centre du chunk ---
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+        const auto c = chunk_at(ImGui::GetIO().MousePos);
+        const int bx = c.first * 16 + 8, bz = c.second * 16 + 8;
+        const worldedit::Pos p{bx, top_y(M.worldPath, bx, bz), bz};
+        if (ImGui::GetIO().KeyShift)
+            M.pos2 = p;
+        else
+            M.pos1 = p;
+        M.dragSel = false; // le clic simple avait amorce un glisser
+    }
+
+    // Reperes pos1 (rouge) et pos2 (vert), au chunk qui les contient.
+    auto draw_marker = [&](const worldedit::Pos& p, ImU32 col, const char* tag) {
+        const ImVec2 q = cell_pos(static_cast<int>(std::floor(p.x / 16.0)),
+                                  static_cast<int>(std::floor(p.z / 16.0)));
+        const float s = (std::max)(cell, 8.0f);
+        dl->AddRect(ImVec2(q.x - 1, q.y - 1), ImVec2(q.x + s + 1, q.y + s + 1),
+                    col, 0.0f, 0, 2.0f);
+        dl->AddText(ImVec2(q.x + s + 3, q.y - 2), col, tag);
+    };
+    if (M.pos1) draw_marker(*M.pos1, IM_COL32(230, 70, 70, 255), "1");
+    if (M.pos2) draw_marker(*M.pos2, IM_COL32(80, 220, 110, 255), "2");
+
     // --- selection au glisser ---
     if (hovered && !coarse) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
@@ -286,6 +360,243 @@ int delete_selection() {
         done += region::clear_chunks(f, locals);
     }
     return done;
+}
+
+// --- Operations WorldEdit --------------------------------------------------
+
+// Lance une operation sur un thread de fond. `op` recoit le monde, la
+// progression et le drapeau d'annulation, et renvoie son resultat.
+void run_we(const std::string& title,
+            std::function<worldedit::OpResult(const std::filesystem::path&,
+                                              const worldedit::Progress&,
+                                              const std::atomic<bool>&)>
+                op) {
+    {
+        std::lock_guard<std::mutex> lk(M.wm);
+        if (M.weRunning) return;
+        M.weRunning = true;
+        M.weResult.clear();
+        M.weStatus = title + "…";
+    }
+    const auto world = M.worldPath;
+    tasks::run(title, [world, op](const std::atomic<bool>& cancel,
+                                  const std::function<void(const std::string&,
+                                                           double)>& report) {
+        const auto r = op(
+            world,
+            [&](const std::string& s) {
+                report(s, -1.0);
+                std::lock_guard<std::mutex> lk(M.wm);
+                M.weStatus = s;
+            },
+            cancel);
+        std::string msg;
+        if (!r.error.empty()) {
+            msg = r.error;
+        } else {
+            msg = std::to_string(r.changed) + " bloc(s), " +
+                  std::to_string(r.chunks) + " chunk(s).";
+            if (r.skipped > 0)
+                msg += " " + std::to_string(r.skipped) +
+                       " hors des chunks générés (ignorés).";
+            if (r.unsupported > 0)
+                msg += " " + std::to_string(r.unsupported) +
+                       " sans équivalent en 1.12.";
+        }
+        std::lock_guard<std::mutex> lk(M.wm);
+        M.weRunning = false;
+        M.weOk = r.error.empty();
+        M.weResult = msg;
+        M.weStatus.clear();
+        M.undoN = M.hist.undo_count();
+        M.redoN = M.hist.redo_count();
+        M.histKo = M.hist.bytes() / 1024;
+        M.clipN = M.clip.blocks.size();
+        if (!r.error.empty()) throw std::runtime_error(r.error);
+    });
+}
+
+void worldedit_panel() {
+    // TL_AUTO_WE=1 : deplie le panneau sans clic (capture et test).
+    static bool weAuto = std::getenv("TL_AUTO_WE") != nullptr;
+    if (weAuto) {
+        ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+        weAuto = false;
+    }
+    if (!ImGui::CollapsingHeader(tr("Opérations WorldEdit", "WorldEdit tools")))
+        return;
+
+    bool running;
+    std::string weStatus, weResult;
+    bool weOk;
+    std::size_t undoN, redoN, histKo, clipN;
+    {
+        std::lock_guard<std::mutex> lk(M.wm);
+        running = M.weRunning;
+        weStatus = M.weStatus;
+        weResult = M.weResult;
+        weOk = M.weOk;
+        undoN = M.undoN;
+        redoN = M.redoN;
+        histKo = M.histKo;
+        clipN = M.clipN;
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped(
+        "%s",
+        tr("Double-clic sur un chunk : pos1 (au centre, sur le plus haut bloc). "
+           "Maj+double-clic : pos2. Les chunks jamais générés sont ignorés, "
+           "jamais créés. Sauvegarde ton monde avant.",
+           "Double-click a chunk for pos1 (centre, topmost block). "
+           "Shift+double-click for pos2. Chunks never generated are skipped, "
+           "never created. Back up your world first."));
+    ImGui::PopStyleColor();
+
+    auto pos_row = [&](const char* label, std::optional<worldedit::Pos>& p,
+                       const char* id) {
+        ImGui::TextUnformatted(label);
+        ImGui::SameLine(70.0f);
+        int v[3] = {p ? p->x : 0, p ? p->y : 64, p ? p->z : 0};
+        ImGui::SetNextItemWidth(230.0f);
+        if (ImGui::InputInt3(id, v)) p = worldedit::Pos{v[0], v[1], v[2]};
+        ImGui::SameLine();
+        if (!p) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextUnformatted(tr("non définie", "unset"));
+            ImGui::PopStyleColor();
+        } else if (ImGui::SmallButton(
+                       (std::string(tr("Effacer", "Clear")) + id).c_str())) {
+            p.reset();
+        }
+    };
+    pos_row("pos1", M.pos1, "##we1");
+    pos_row("pos2", M.pos2, "##we2");
+
+    const bool haveSel = M.pos1.has_value() && M.pos2.has_value();
+    worldedit::Bounds b;
+    if (haveSel) b = worldedit::bounds_of(*M.pos1, *M.pos2);
+    const std::int64_t vol = haveSel ? b.volume() : 0;
+    const bool volOk = haveSel && vol > 0 && vol <= worldedit::kMaxVolume;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, volOk || !haveSel ? kDim : kDanger);
+    if (!haveSel)
+        ImGui::TextUnformatted(
+            tr("Définis pos1 et pos2 pour délimiter un cuboïde.",
+               "Set pos1 and pos2 to define a cuboid."));
+    else
+        ImGui::Text(tr("Sélection : %d x %d x %d = %lld bloc(s)%s",
+                       "Selection: %d x %d x %d = %lld block(s)%s"),
+                    b.x2 - b.x1 + 1, b.y2 - b.y1 + 1, b.z2 - b.z1 + 1,
+                    static_cast<long long>(vol),
+                    volOk ? "" : tr(" — au-delà du plafond de 8 000 000",
+                                    " — over the 8,000,000 cap"));
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
+    ImGui::TextUnformatted(tr("Bloc", "Block"));
+    ImGui::SameLine(110.0f);
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::InputText("##weset", M.blockSet, sizeof(M.blockSet));
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running || !volOk);
+    if (ImGui::Button("//set")) {
+        const std::string name = M.blockSet;
+        run_we(tr("Remplissage", "Fill"),
+               [b, name](const std::filesystem::path& w,
+                         const worldedit::Progress& pr,
+                         const std::atomic<bool>& c) {
+                   return worldedit::set_region(w, b, name, &M.hist, pr, &c);
+               });
+    }
+    ImGui::EndDisabled();
+
+    ImGui::TextUnformatted(tr("Remplacer", "Replace"));
+    ImGui::SameLine(110.0f);
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputText("##wefrom", M.blockFrom, sizeof(M.blockFrom));
+    ImGui::SameLine();
+    ImGui::TextUnformatted("->");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputText("##weto", M.blockTo, sizeof(M.blockTo));
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running || !volOk);
+    if (ImGui::Button("//replace")) { // « * » dans le champ de gauche = tout
+        const std::string from = M.blockFrom, to = M.blockTo;
+        run_we(tr("Remplacement", "Replace"),
+               [b, from, to](const std::filesystem::path& w,
+                             const worldedit::Progress& pr,
+                             const std::atomic<bool>& c) {
+                   return worldedit::replace_region(w, b, from, to, &M.hist, pr,
+                                                    &c);
+               });
+    }
+    ImGui::EndDisabled();
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextUnformatted(
+        tr("« * » remplace tout ce qui n'est pas déjà le bloc d'arrivée.",
+           "\"*\" replaces everything that is not already the target block."));
+    ImGui::PopStyleColor();
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(running || !volOk);
+    if (ImGui::Button("//copy")) {
+        run_we(tr("Copie", "Copy"),
+               [b](const std::filesystem::path& w, const worldedit::Progress& pr,
+                   const std::atomic<bool>& c) {
+                   return worldedit::copy_region(w, b, M.clip, pr, &c);
+               });
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running || clipN == 0 || !M.pos1.has_value());
+    if (ImGui::Button("//paste")) {
+        const worldedit::Pos o = *M.pos1;
+        run_we(tr("Collage", "Paste"),
+               [o](const std::filesystem::path& w, const worldedit::Progress& pr,
+                   const std::atomic<bool>& c) {
+                   return worldedit::paste(w, M.clip, o, &M.hist, pr, &c);
+               });
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running || undoN == 0);
+    if (ImGui::Button("//undo")) {
+        run_we(tr("Annulation", "Undo"),
+               [](const std::filesystem::path& w, const worldedit::Progress&,
+                  const std::atomic<bool>&) { return M.hist.undo(w); });
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(running || redoN == 0);
+    if (ImGui::Button("//redo")) {
+        run_we(tr("Rétablissement", "Redo"),
+               [](const std::filesystem::path& w, const worldedit::Progress&,
+                  const std::atomic<bool>&) { return M.hist.redo(w); });
+    }
+    ImGui::EndDisabled();
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::Text(tr("Presse-papier : %zu bloc(s)  ·  historique : %zu annulation(s), "
+                   "%zu rétablissement(s), %zu Ko",
+                   "Clipboard: %zu block(s)  ·  history: %zu undo, %zu redo, %zu KB"),
+                clipN, undoN, redoN, histKo);
+    ImGui::PopStyleColor();
+
+    if (running) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+        ImGui::TextWrapped("%s", weStatus.c_str());
+        ImGui::PopStyleColor();
+    } else if (!weResult.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, weOk ? kAccent : kDanger);
+        ImGui::TextWrapped("%s", weResult.c_str());
+        ImGui::PopStyleColor();
+    }
+    ImGui::Spacing();
 }
 
 } // namespace
@@ -403,6 +714,10 @@ void mapeditor_page() {
         ImGui::TextUnformatted(M.status.c_str());
     }
     ImGui::Spacing();
+
+    ImGui::BeginDisabled(!M.loaded);
+    worldedit_panel();
+    ImGui::EndDisabled();
 
     draw_canvas();
 

@@ -33,6 +33,10 @@ struct Tag;
 using Compound = std::map<std::string, Tag>;
 using List = std::vector<Tag>;
 
+// ATTENTION : copier un `Tag` (donc un `Compound` ou une `List`) ne duplique
+// PAS le sous-arbre — `comp` et `list` sont des `shared_ptr`, la copie les
+// partage. Modifier la copie modifie l'original. Pour un veritable
+// instantane, serialiser (`write` / `write_zlib`) puis re-analyser.
 struct Tag {
     Type type = Type::End;
     std::int64_t num = 0;  // Byte, Short, Int, Long

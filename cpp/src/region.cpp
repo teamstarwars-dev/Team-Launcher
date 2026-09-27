@@ -412,6 +412,47 @@ std::vector<std::string> unique_blocks(const nbt::Compound& chunk) {
     return {seen.begin(), seen.end()};
 }
 
+// --- ChunkView : sections decodees une seule fois ---------------------------
+
+struct ChunkView::Impl {
+    // Une entree par section : la section decodee, et le compound d'origine
+    // (necessaire aux blocs <= 1.12, dont les identifiants sont lus a la
+    // demande dans `Blocks`/`Data`/`Add`).
+    std::map<int, std::pair<Section, const nbt::Compound*>> secs;
+};
+
+ChunkView::ChunkView(const nbt::Compound& chunk) : p_(std::make_unique<Impl>()) {
+    const nbt::List* secs = sections_of(chunk);
+    if (!secs) return;
+    const std::int64_t dv = data_version(chunk);
+    for (const auto& t : *secs) {
+        if (t.type != nbt::Type::Compound || !t.comp) continue;
+        Section s = decode_section(*t.comp, dv);
+        if (!s.valid) continue;
+        const int y = s.y;
+        p_->secs.emplace(y, std::make_pair(std::move(s), t.comp.get()));
+    }
+}
+
+ChunkView::~ChunkView() = default;
+ChunkView::ChunkView(ChunkView&&) noexcept = default;
+ChunkView& ChunkView::operator=(ChunkView&&) noexcept = default;
+
+std::string ChunkView::at(int x, int y, int z) const {
+    if (x < 0 || x > 15 || z < 0 || z > 15) return {};
+    const int sy = static_cast<int>(std::floor(y / 16.0));
+    const auto it = p_->secs.find(sy);
+    if (it == p_->secs.end()) return {};
+    const Section& s = it->second.first;
+    const int i = index_of(x, y - sy * 16, z);
+    if (s.bits < 0) return legacy_name(legacy_block_id(*it->second.second, i));
+    if (s.palette.empty()) return {};
+    if (s.single) return s.palette[0];
+    const int pi = palette_index(s.data, i, s.bits, s.packed);
+    if (pi < 0 || static_cast<std::size_t>(pi) >= s.palette.size()) return {};
+    return s.palette[static_cast<std::size_t>(pi)];
+}
+
 int clear_chunks(const fs::path& regionFile,
                  const std::vector<std::pair<int, int>>& localCoords) {
     auto data = read_all(regionFile);

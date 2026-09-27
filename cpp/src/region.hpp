@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -76,6 +77,29 @@ std::vector<std::int32_t> heightmap(const nbt::Compound& chunk);
 
 // Noms de blocs distincts du chunk (coloration de carte).
 std::vector<std::string> unique_blocks(const nbt::Compound& chunk);
+
+// Vue decodee d'un chunk : toutes les sections sont decodees UNE fois, puis
+// interrogees en O(1). `block_at` redecode les sections a chaque appel — pour
+// parcourir un volume (operations WorldEdit) le cout serait d'un decodage de
+// palette par bloc. La vue emprunte le chunk : il doit lui survivre, et toute
+// modification du chunk la perime.
+class ChunkView {
+public:
+    explicit ChunkView(const nbt::Compound& chunk);
+    ~ChunkView();
+    ChunkView(ChunkView&&) noexcept;
+    ChunkView& operator=(ChunkView&&) noexcept;
+    ChunkView(const ChunkView&) = delete;
+    ChunkView& operator=(const ChunkView&) = delete;
+
+    // Nom du bloc en (x, y, z) : x et z locaux au chunk (0-15), y en altitude
+    // monde. "" si la section n'existe pas ou si le format est illisible.
+    std::string at(int x, int y, int z) const;
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> p_;
+};
 
 // --- Ecriture ---
 

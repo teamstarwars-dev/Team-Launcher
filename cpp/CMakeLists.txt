@@ -139,6 +139,7 @@ set(TL_CORE_SOURCES
   src/world.cpp
   src/worldsync.cpp
   src/citygen.cpp
+  src/worldedit.cpp
   third_party/miniz/miniz.c
   third_party/miniz/miniz_tdef.c
   third_party/miniz/miniz_tinfl.c
@@ -164,7 +165,7 @@ tl_release_flags(tl_core)
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen)
+foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 add_executable(TeamLauncher ${TL_SOURCES})
@@ -238,6 +239,7 @@ if(TL_BUILD_TESTS)
     "tests/test_world.cpp|TLTestWorld"
     "tests/test_worldsync.cpp|TLTestWorldSync"
     "tests/test_citygen.cpp|TLTestCityGen"
+    "tests/test_worldedit.cpp|TLTestWorldEdit"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")
