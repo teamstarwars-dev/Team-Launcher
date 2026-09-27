@@ -5,7 +5,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
+#include <cstdlib>
+#include <map>
 #include <set>
 
 namespace fs = std::filesystem;
@@ -429,6 +432,308 @@ int clear_chunks(const fs::path& regionFile,
     out.write(reinterpret_cast<const char*>(data.data()),
               static_cast<std::streamsize>(kHeader));
     return out ? n : 0;
+}
+
+bool write_chunk_local(const fs::path& regionFile, int lx, int lz,
+                       const nbt::Compound& chunk) {
+    if (lx < 0 || lx > 31 || lz < 0 || lz > 31) return false;
+
+    const auto payload = nbt::write_zlib(chunk);
+    if (payload.empty()) return false;
+    // 4 octets de longueur + 1 de schema de compression.
+    const std::size_t need = payload.size() + 5;
+    const std::uint32_t sectors =
+        static_cast<std::uint32_t>((need + kSector - 1) / kSector);
+    // Le champ « nombre de secteurs » de l'en-tete tient sur un octet.
+    if (sectors == 0 || sectors > 255) return false;
+
+    std::error_code ec;
+    fs::create_directories(regionFile.parent_path(), ec);
+
+    // Fichier existant relu en entier : on va le reecrire. Les regions font
+    // quelques Mo, c'est acceptable pour une ecriture (contrairement au
+    // listing, appele en boucle par l'editeur).
+    std::vector<std::uint8_t> data = read_all(regionFile);
+    if (data.size() < kHeader) data.assign(kHeader, 0);
+    // Taille alignee sur un secteur : l'en-tete occupe les secteurs 0 et 1.
+    if (data.size() % kSector) data.resize(((data.size() / kSector) + 1) * kSector, 0);
+
+    // Secteurs deja occupes par les autres chunks.
+    std::vector<bool> used(data.size() / kSector, false);
+    used[0] = used[1] = true;
+    const int self = lz * 32 + lx;
+    for (int i = 0; i < 1024; ++i) {
+        if (i == self) continue; // l'ancien emplacement est libere
+        const std::uint32_t off = be24(&data[i * 4]);
+        const std::uint32_t cnt = data[i * 4 + 3];
+        for (std::uint32_t s = 0; s < cnt; ++s)
+            if (off + s < used.size()) used[off + s] = true;
+    }
+
+    // Premiere plage libre assez grande, sinon on etend le fichier.
+    std::uint32_t start = 0;
+    for (std::size_t i = 2; i + sectors <= used.size(); ++i) {
+        bool okRun = true;
+        for (std::uint32_t s = 0; s < sectors && okRun; ++s)
+            if (used[i + s]) okRun = false;
+        if (okRun) {
+            start = static_cast<std::uint32_t>(i);
+            break;
+        }
+    }
+    if (start == 0) {
+        start = static_cast<std::uint32_t>(data.size() / kSector);
+        data.resize(data.size() + static_cast<std::size_t>(sectors) * kSector, 0);
+    }
+
+    // Charge utile : longueur (schema compris), schema, donnees, bourrage.
+    const std::size_t pos = static_cast<std::size_t>(start) * kSector;
+    const std::uint32_t len = static_cast<std::uint32_t>(payload.size() + 1);
+    std::fill(data.begin() + pos,
+              data.begin() + pos + static_cast<std::size_t>(sectors) * kSector, 0);
+    data[pos] = (len >> 24) & 0xFF;
+    data[pos + 1] = (len >> 16) & 0xFF;
+    data[pos + 2] = (len >> 8) & 0xFF;
+    data[pos + 3] = len & 0xFF;
+    data[pos + 4] = 2; // zlib
+    std::copy(payload.begin(), payload.end(), data.begin() + pos + 5);
+
+    // En-tete : offset, nombre de secteurs, horodatage.
+    data[self * 4] = (start >> 16) & 0xFF;
+    data[self * 4 + 1] = (start >> 8) & 0xFF;
+    data[self * 4 + 2] = start & 0xFF;
+    data[self * 4 + 3] = static_cast<std::uint8_t>(sectors);
+    const std::uint32_t now = static_cast<std::uint32_t>(std::time(nullptr));
+    for (int k = 0; k < 4; ++k)
+        data[kSector + self * 4 + k] = (now >> (24 - k * 8)) & 0xFF;
+
+    // Ecriture atomique : temporaire puis remplacement.
+    const fs::path tmp = fs::path(regionFile).concat(".tmp");
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(reinterpret_cast<const char*>(data.data()),
+                  static_cast<std::streamsize>(data.size()));
+        if (!out) return false;
+    }
+    fs::rename(tmp, regionFile, ec);
+    if (ec) {
+        fs::remove(regionFile, ec);
+        fs::rename(tmp, regionFile, ec);
+    }
+    if (ec) {
+        fs::remove(tmp, ec);
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Modification des blocs
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Table nom -> identifiant 1.12, limitee aux blocs que le generateur de ville
+// et l'editeur posent reellement. La table complete fait ~250 entrees et
+// n'apporterait rien tant que rien ne s'en sert.
+struct LegacyId {
+    const char* name;
+    int id;
+};
+constexpr LegacyId kLegacy[] = {
+    {"minecraft:air", 0},          {"minecraft:stone", 1},
+    {"minecraft:grass_block", 2},  {"minecraft:dirt", 3},
+    {"minecraft:cobblestone", 4},  {"minecraft:oak_planks", 5},
+    {"minecraft:water", 9},        {"minecraft:sand", 12},
+    {"minecraft:gravel", 13},      {"minecraft:glass", 20},
+    {"minecraft:iron_block", 42},  {"minecraft:bricks", 45},
+    {"minecraft:stone_bricks", 98},
+};
+
+// Ecrit une section au format moderne a partir d'indices de palette.
+void encode_section(nbt::Compound& sec, const std::vector<std::string>& palette,
+                    const std::vector<int>& indices, bool modern, bool packed) {
+    nbt::List pal;
+    for (const auto& n : palette) {
+        nbt::Compound e;
+        e["Name"] = nbt::make_string(n);
+        pal.push_back(nbt::make_compound(std::move(e)));
+    }
+
+    // Palette a une seule entree : Minecraft accepte l'absence de `data`.
+    std::vector<std::int64_t> data;
+    if (palette.size() > 1) {
+        const int bits = bits_for(palette.size(), 4);
+        if (packed) {
+            const std::size_t total = (4096ull * bits + 63) / 64;
+            data.assign(total, 0);
+            for (int i = 0; i < 4096; ++i) {
+                const std::size_t bitPos = static_cast<std::size_t>(i) * bits;
+                const std::size_t idx = bitPos >> 6;
+                const int off = static_cast<int>(bitPos & 63);
+                const std::uint64_t v = static_cast<std::uint64_t>(indices[i]);
+                data[idx] |= static_cast<std::int64_t>(v << off);
+                if (off + bits > 64 && idx + 1 < data.size())
+                    data[idx + 1] |=
+                        static_cast<std::int64_t>(v >> (64 - off));
+            }
+        } else {
+            const int per = 64 / bits;
+            const std::size_t total = (4096 + per - 1) / per;
+            data.assign(total, 0);
+            for (int i = 0; i < 4096; ++i) {
+                const std::size_t idx = static_cast<std::size_t>(i / per);
+                const int off = (i % per) * bits;
+                data[idx] |= static_cast<std::int64_t>(
+                    static_cast<std::uint64_t>(indices[i]) << off);
+            }
+        }
+    }
+
+    if (modern) {
+        nbt::Compound bs;
+        bs["palette"] = nbt::make_list(nbt::Type::Compound, std::move(pal));
+        if (!data.empty()) bs["data"] = nbt::make_long_array(std::move(data));
+        sec["block_states"] = nbt::make_compound(std::move(bs));
+    } else {
+        sec["Palette"] = nbt::make_list(nbt::Type::Compound, std::move(pal));
+        if (!data.empty()) sec["BlockStates"] = nbt::make_long_array(std::move(data));
+    }
+}
+
+} // namespace
+
+int legacy_id_for(const std::string& name) {
+    for (const auto& e : kLegacy)
+        if (name == e.name) return e.id;
+    // « minecraft:id_<n> » rendu par la lecture d'un monde 1.12.
+    if (name.rfind("minecraft:id_", 0) == 0) {
+        const int v = std::atoi(name.c_str() + 13);
+        if (v >= 0 && v <= 4095) return v;
+    }
+    return -1;
+}
+
+EditResult set_blocks(nbt::Compound& chunk, const std::vector<BlockEdit>& edits) {
+    EditResult res;
+    nbt::List* secs = nullptr;
+    // On a besoin d'un acces MODIFIABLE : get_list rend du const.
+    if (auto it = chunk.find("sections");
+        it != chunk.end() && it->second.type == nbt::Type::List && it->second.list)
+        secs = it->second.list.get();
+    if (!secs)
+        if (auto lv = chunk.find("Level");
+            lv != chunk.end() && lv->second.type == nbt::Type::Compound &&
+            lv->second.comp)
+            if (auto it = lv->second.comp->find("Sections");
+                it != lv->second.comp->end() &&
+                it->second.type == nbt::Type::List && it->second.list)
+                secs = it->second.list.get();
+    if (!secs) {
+        res.skipped = static_cast<int>(edits.size());
+        return res;
+    }
+    const std::int64_t dv = data_version(chunk);
+
+    // Regroupement par section : chacune n'est decodee et re-encodee qu'une
+    // fois, meme pour des milliers de blocs.
+    std::map<int, std::vector<const BlockEdit*>> bySection;
+    for (const auto& e : edits) {
+        if (e.x < 0 || e.x > 15 || e.z < 0 || e.z > 15) {
+            ++res.skipped;
+            continue;
+        }
+        bySection[static_cast<int>(std::floor(e.y / 16.0))].push_back(&e);
+    }
+
+    for (auto& [secY, list] : bySection) {
+        // Section correspondante dans le NBT.
+        nbt::Compound* target = nullptr;
+        for (auto& t : *secs) {
+            if (t.type != nbt::Type::Compound || !t.comp) continue;
+            if (static_cast<int>(nbt::get_num(*t.comp, "Y", 0)) == secY) {
+                target = t.comp.get();
+                break;
+            }
+        }
+        if (!target) { // pas de section a cette altitude : on n'en cree pas
+            res.skipped += static_cast<int>(list.size());
+            continue;
+        }
+
+        const Section s = decode_section(*target, dv);
+        if (!s.valid) {
+            res.skipped += static_cast<int>(list.size());
+            continue;
+        }
+
+        // --- <= 1.12 : identifiants numeriques ---
+        if (s.bits < 0) {
+            auto it = target->find("Blocks");
+            if (it == target->end() || it->second.bytes.size() < 4096) {
+                res.skipped += static_cast<int>(list.size());
+                continue;
+            }
+            for (const BlockEdit* e : list) {
+                const int id = legacy_id_for(e->name);
+                if (id < 0 || id > 255) { // « Add » non gere a l'ecriture
+                    ++res.unsupported;
+                    continue;
+                }
+                const int i = index_of(e->x, e->y - secY * 16, e->z);
+                it->second.bytes[static_cast<std::size_t>(i)] =
+                    static_cast<std::uint8_t>(id);
+                ++res.applied;
+            }
+            continue;
+        }
+
+        // --- moderne : on reconstruit palette et indices ---
+        std::vector<std::string> palette = s.palette;
+        std::vector<int> indices(4096, 0);
+        if (!s.single)
+            for (int i = 0; i < 4096; ++i) {
+                const int pi = palette_index(s.data, i, s.bits, s.packed);
+                indices[i] = (pi < 0 || static_cast<std::size_t>(pi) >= palette.size())
+                                 ? 0
+                                 : pi;
+            }
+        // s.single : toute la section vaut palette[0], indices deja a 0.
+
+        for (const BlockEdit* e : list) {
+            int pi = -1;
+            for (std::size_t k = 0; k < palette.size(); ++k)
+                if (palette[k] == e->name) {
+                    pi = static_cast<int>(k);
+                    break;
+                }
+            if (pi < 0) {
+                palette.push_back(e->name);
+                pi = static_cast<int>(palette.size()) - 1;
+            }
+            indices[index_of(e->x, e->y - secY * 16, e->z)] = pi;
+            ++res.applied;
+        }
+
+        const bool modern = target->find("block_states") != target->end();
+        encode_section(*target, palette, indices, modern, s.packed);
+    }
+    return res;
+}
+
+bool write_chunk(const fs::path& worldDir, int cx, int cz,
+                 const nbt::Compound& chunk) {
+    const int rx = static_cast<int>(std::floor(cx / 32.0));
+    const int rz = static_cast<int>(std::floor(cz / 32.0));
+    std::error_code ec;
+    fs::path dir = worldDir / "region";
+    if (!fs::is_directory(dir, ec) && !fs::is_directory(worldDir / "level.dat", ec))
+        fs::create_directories(dir, ec);
+    if (!fs::is_directory(dir, ec)) dir = worldDir;
+    const fs::path f =
+        dir / ("r." + std::to_string(rx) + "." + std::to_string(rz) + ".mca");
+    return write_chunk_local(f, cx - rx * 32, cz - rz * 32, chunk);
 }
 
 } // namespace tl::region

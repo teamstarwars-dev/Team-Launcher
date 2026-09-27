@@ -293,6 +293,74 @@ int main() {
             std::printf("INFO aucun level.dat trouve (test sur monde reel saute)\n");
     }
 
+    // =====================================================================
+    // 6. Ecriture : aller-retour complet (le C# ecrivait en petit-boutiste)
+    // =====================================================================
+    {
+        Compound c;
+        c["octet"] = make_byte(-3);
+        c["court"] = make_short(-300);
+        c["entier"] = make_int(123456);
+        c["long"] = make_long(-9000000000LL);
+        c["flottant"] = make_float(1.25f);
+        c["double"] = make_double(-2.75);
+        c["texte"] = make_string("accents éàü");
+        c["octets"] = make_byte_array({1, 2, 255});
+        c["entiers"] = make_int_array({-1, 0, 7});
+        c["longs"] = make_long_array({-2, 99});
+        Compound sub;
+        sub["cle"] = make_string("valeur");
+        c["sous"] = make_compound(sub);
+        List items;
+        Compound e1; e1["n"] = make_int(1); items.push_back(make_compound(e1));
+        Compound e2; e2["n"] = make_int(2); items.push_back(make_compound(e2));
+        c["liste"] = make_list(Type::Compound, items);
+        c["vide"] = make_list(Type::Compound, {});
+
+        const auto raw = write(c, "Racine");
+        auto back = parse(raw.data(), raw.size());
+        CHECK(back.has_value());
+        if (back) {
+            CHECK_EQ(get_num(*back, "octet"), -3LL);
+            CHECK_EQ(get_num(*back, "court"), -300LL);
+            CHECK_EQ(get_num(*back, "entier"), 123456LL);
+            CHECK_EQ(get_num(*back, "long"), -9000000000LL);
+            CHECK_EQ(get_dbl(*back, "flottant"), 1.25);
+            CHECK_EQ(get_dbl(*back, "double"), -2.75);
+            CHECK_EQ(get_string(*back, "texte"), std::string("accents éàü"));
+            const Tag* oc = find(*back, "octets");
+            CHECK(oc && oc->bytes.size() == 3 && oc->bytes[2] == 255);
+            const Tag* en = find(*back, "entiers");
+            CHECK(en && en->ints.size() == 3 && en->ints[0] == -1);
+            const Tag* lo = find(*back, "longs");
+            CHECK(lo && lo->longs.size() == 2 && lo->longs[0] == -2);
+            const Compound* s2 = get_compound(*back, "sous");
+            CHECK(s2 && get_string(*s2, "cle") == "valeur");
+            const List* l2 = get_list(*back, "liste");
+            CHECK(l2 && l2->size() == 2);
+            const List* v2 = get_list(*back, "vide");
+            CHECK(v2 && v2->empty());
+        }
+        // Le premier octet est TAG_Compound et le nom de racine suit, en
+        // gros-boutiste : « 00 06 R a c i n e ».
+        CHECK(raw.size() > 9);
+        if (raw.size() > 9) {
+            CHECK_EQ(raw[0], 10);
+            CHECK_EQ(raw[1], 0);
+            CHECK_EQ(raw[2], 6);
+            CHECK_EQ(raw[3], static_cast<std::uint8_t>(0x52)); // R
+        }
+        // Aller-retour compresse
+        const auto gz = write_gzip(c, "Racine");
+        auto bg = parse_auto(gz.data(), gz.size());
+        CHECK(bg.has_value());
+        if (bg) CHECK_EQ(get_num(*bg, "entier"), 123456LL);
+        const auto zl = write_zlib(c, "Racine");
+        auto bz = parse_auto(zl.data(), zl.size());
+        CHECK(bz.has_value());
+        if (bz) CHECK_EQ(get_string(*bz, "texte"), std::string("accents éàü"));
+    }
+
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
         return 0;

@@ -2,6 +2,7 @@
 
 #include "miniz.h"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -14,7 +15,6 @@ namespace {
 // exploser la memoire ni boucler. Les valeurs sont tres au-dessus de ce
 // qu'un monde reel produit (un chunk fait quelques dizaines de Ko).
 constexpr std::size_t kMaxArray = 64u * 1024 * 1024;   // elements
-constexpr std::size_t kMaxString = 1u << 20;           // octets
 constexpr std::size_t kMaxInflated = 256u * 1024 * 1024;
 
 // Lecteur borne, GROS-BOUTISTE (c'est tout l'objet du correctif).
@@ -74,7 +74,9 @@ public:
     // Chaine NBT : longueur sur 2 octets gros-boutiste, puis UTF-8 (modifie).
     std::string str() {
         const std::uint16_t len = u16();
-        if (!ok_ || len > kMaxString || !need(len)) {
+        // La longueur tient sur 2 octets : kMaxString (1 Mo) ne peut pas etre
+        // depassee ici. La borne sert aux tableaux et a la decompression.
+        if (!ok_ || !need(len)) {
             fail();
             return {};
         }
@@ -287,6 +289,210 @@ std::optional<Compound> read_file(const std::string& path) {
     const std::string s = ss.str();
     if (s.empty()) return std::nullopt;
     return parse_auto(reinterpret_cast<const std::uint8_t*>(s.data()), s.size());
+}
+
+// ---------------------------------------------------------------------------
+// Ecriture (gros-boutiste)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct Writer {
+    std::vector<std::uint8_t> out;
+
+    void u8(int v) { out.push_back(static_cast<std::uint8_t>(v)); }
+    void i16(std::int16_t v) {
+        const std::uint16_t u = static_cast<std::uint16_t>(v);
+        u8((u >> 8) & 0xFF);
+        u8(u & 0xFF);
+    }
+    void i32(std::int32_t v) {
+        const std::uint32_t u = static_cast<std::uint32_t>(v);
+        for (int s = 24; s >= 0; s -= 8) u8((u >> s) & 0xFF);
+    }
+    void i64(std::int64_t v) {
+        const std::uint64_t u = static_cast<std::uint64_t>(v);
+        for (int s = 56; s >= 0; s -= 8) u8(static_cast<int>((u >> s) & 0xFF));
+    }
+    void f32(float v) {
+        std::int32_t bits = 0;
+        std::memcpy(&bits, &v, 4);
+        i32(bits);
+    }
+    void f64(double v) {
+        std::int64_t bits = 0;
+        std::memcpy(&bits, &v, 8);
+        i64(bits);
+    }
+    void str(const std::string& s) {
+        // La longueur tient sur 2 octets non signes : on tronque plutot que
+        // d'ecrire une longueur fausse.
+        const std::size_t n = (std::min)(s.size(), std::size_t{0xFFFF});
+        i16(static_cast<std::int16_t>(static_cast<std::uint16_t>(n)));
+        out.insert(out.end(), s.begin(), s.begin() + static_cast<long>(n));
+    }
+};
+
+void write_payload(Writer& w, const Tag& t, int depth);
+
+void write_compound_body(Writer& w, const Compound& c, int depth) {
+    for (const auto& [name, tag] : c) {
+        if (tag.type == Type::End) continue; // jamais serialisable tel quel
+        w.u8(static_cast<int>(tag.type));
+        w.str(name);
+        write_payload(w, tag, depth + 1);
+    }
+    w.u8(0); // TAG_End
+}
+
+void write_payload(Writer& w, const Tag& t, int depth) {
+    if (depth > kMaxDepth) return; // garde-fou symetrique de la lecture
+    switch (t.type) {
+    case Type::Byte: w.u8(static_cast<int>(t.num) & 0xFF); break;
+    case Type::Short: w.i16(static_cast<std::int16_t>(t.num)); break;
+    case Type::Int: w.i32(static_cast<std::int32_t>(t.num)); break;
+    case Type::Long: w.i64(t.num); break;
+    case Type::Float: w.f32(static_cast<float>(t.dbl)); break;
+    case Type::Double: w.f64(t.dbl); break;
+    case Type::String: w.str(t.str); break;
+    case Type::ByteArray:
+        w.i32(static_cast<std::int32_t>(t.bytes.size()));
+        w.out.insert(w.out.end(), t.bytes.begin(), t.bytes.end());
+        break;
+    case Type::IntArray:
+        w.i32(static_cast<std::int32_t>(t.ints.size()));
+        for (std::int32_t v : t.ints) w.i32(v);
+        break;
+    case Type::LongArray:
+        w.i32(static_cast<std::int32_t>(t.longs.size()));
+        for (std::int64_t v : t.longs) w.i64(v);
+        break;
+    case Type::List: {
+        const List* l = t.list ? t.list.get() : nullptr;
+        const std::size_t n = l ? l->size() : 0;
+        // Liste vide : TAG_End comme type d'element, c'est ce qu'ecrit Mojang.
+        const Type elem = (n == 0) ? Type::End : t.listElem;
+        w.u8(static_cast<int>(elem));
+        w.i32(static_cast<std::int32_t>(n));
+        if (l)
+            for (const auto& e : *l) write_payload(w, e, depth + 1);
+        break;
+    }
+    case Type::Compound:
+        if (t.comp)
+            write_compound_body(w, *t.comp, depth + 1);
+        else
+            w.u8(0);
+        break;
+    case Type::End:
+    default: break;
+    }
+}
+
+std::vector<std::uint8_t> deflate_raw(const std::vector<std::uint8_t>& in,
+                                      bool zlibHdr) {
+    mz_ulong bound = mz_compressBound(static_cast<mz_ulong>(in.size()));
+    std::vector<std::uint8_t> z(bound ? bound : 1);
+    if (mz_compress(z.data(), &bound, in.data(),
+                    static_cast<mz_ulong>(in.size())) != MZ_OK)
+        return {};
+    z.resize(bound);
+    if (zlibHdr) return z;
+    // On retire l'en-tete zlib (2 octets) et l'adler32 final (4) pour obtenir
+    // un flux deflate brut, ce qu'attend l'enveloppe gzip.
+    if (z.size() < 6) return {};
+    return std::vector<std::uint8_t>(z.begin() + 2, z.end() - 4);
+}
+
+} // namespace
+
+std::vector<std::uint8_t> write(const Compound& root, const std::string& rootName) {
+    Writer w;
+    w.u8(10); // TAG_Compound
+    w.str(rootName);
+    write_compound_body(w, root, 0);
+    return std::move(w.out);
+}
+
+std::vector<std::uint8_t> write_zlib(const Compound& root,
+                                     const std::string& rootName) {
+    return deflate_raw(write(root, rootName), /*zlibHdr=*/true);
+}
+
+std::vector<std::uint8_t> write_gzip(const Compound& root,
+                                     const std::string& rootName) {
+    const auto raw = write(root, rootName);
+    const auto def = deflate_raw(raw, /*zlibHdr=*/false);
+    if (def.empty()) return {};
+    // RFC 1952 : en-tete minimal, puis deflate, CRC32 et taille (LE).
+    std::vector<std::uint8_t> out = {0x1F, 0x8B, 0x08, 0, 0, 0, 0, 0, 0, 0xFF};
+    out.insert(out.end(), def.begin(), def.end());
+    const mz_ulong crc =
+        mz_crc32(MZ_CRC32_INIT, raw.data(), static_cast<std::size_t>(raw.size()));
+    for (int s = 0; s < 32; s += 8)
+        out.push_back(static_cast<std::uint8_t>((crc >> s) & 0xFF));
+    const std::uint32_t n = static_cast<std::uint32_t>(raw.size());
+    for (int s = 0; s < 32; s += 8)
+        out.push_back(static_cast<std::uint8_t>((n >> s) & 0xFF));
+    return out;
+}
+
+bool write_file_gzip(const std::string& path, const Compound& root,
+                     const std::string& rootName) {
+    const auto data = write_gzip(root, rootName);
+    if (data.empty()) return false;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    out.write(reinterpret_cast<const char*>(data.data()),
+              static_cast<std::streamsize>(data.size()));
+    return static_cast<bool>(out);
+}
+
+// --- fabrication ---
+
+Tag make_byte(std::int8_t v) { Tag t; t.type = Type::Byte; t.num = v; return t; }
+Tag make_short(std::int16_t v) { Tag t; t.type = Type::Short; t.num = v; return t; }
+Tag make_int(std::int32_t v) { Tag t; t.type = Type::Int; t.num = v; return t; }
+Tag make_long(std::int64_t v) { Tag t; t.type = Type::Long; t.num = v; return t; }
+Tag make_float(float v) { Tag t; t.type = Type::Float; t.dbl = v; return t; }
+Tag make_double(double v) { Tag t; t.type = Type::Double; t.dbl = v; return t; }
+
+Tag make_string(std::string v) {
+    Tag t;
+    t.type = Type::String;
+    t.str = std::move(v);
+    return t;
+}
+Tag make_byte_array(std::vector<std::uint8_t> v) {
+    Tag t;
+    t.type = Type::ByteArray;
+    t.bytes = std::move(v);
+    return t;
+}
+Tag make_int_array(std::vector<std::int32_t> v) {
+    Tag t;
+    t.type = Type::IntArray;
+    t.ints = std::move(v);
+    return t;
+}
+Tag make_long_array(std::vector<std::int64_t> v) {
+    Tag t;
+    t.type = Type::LongArray;
+    t.longs = std::move(v);
+    return t;
+}
+Tag make_compound(Compound v) {
+    Tag t;
+    t.type = Type::Compound;
+    t.comp = std::make_shared<Compound>(std::move(v));
+    return t;
+}
+Tag make_list(Type elem, List v) {
+    Tag t;
+    t.type = Type::List;
+    t.listElem = elem;
+    t.list = std::make_shared<List>(std::move(v));
+    return t;
 }
 
 // --- accesseurs ---

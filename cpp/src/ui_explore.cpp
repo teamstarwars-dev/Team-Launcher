@@ -317,13 +317,11 @@ void explore_page() {
     bool busy;
     std::string status;
     bool outcomeReady;
-    int taskId;
     {
         std::lock_guard<std::mutex> lk(E.m);
         busy = E.running;
         status = E.status;
         outcomeReady = E.outcomeReady;
-        taskId = E.taskId;
     }
 
     // ---- Barre de recherche ----

@@ -251,6 +251,8 @@ const Entry kTable[] = {
     // editeur de cartes
     {"Ajuster la vue", "Fit view"},
     {"Édition de carte", "Map editor"},
+    {"Générateur de ville", "City generator"},
+    {"Ville OSM", "OSM city"},
     {"Tout désélectionner", "Deselect all"},
     {"Supprimer la sélection", "Delete selection"},
     {"Supprimer des chunks", "Delete chunks"},

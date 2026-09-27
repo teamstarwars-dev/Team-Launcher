@@ -85,4 +85,50 @@ std::vector<std::string> unique_blocks(const nbt::Compound& chunk);
 int clear_chunks(const std::filesystem::path& regionFile,
                  const std::vector<std::pair<int, int>>& localCoords);
 
+// Ecrit (ou remplace) un chunk dans une region, coordonnees locales 0-31.
+// Le fichier est cree s'il n'existe pas. Le chunk est compresse en zlib
+// (schema 2, celui de Minecraft) et place dans des secteurs libres ; les
+// anciens secteurs ne sont pas recuperes, Minecraft les reutilisera.
+//
+// L'ecriture se fait dans un fichier temporaire puis remplacement atomique :
+// une coupure en cours d'ecriture ne laisse jamais une region a moitie ecrite
+// (le C#, lui, ecrasait le fichier en place).
+bool write_chunk_local(const std::filesystem::path& regionFile, int lx, int lz,
+                       const nbt::Compound& chunk);
+
+// Meme chose par coordonnees monde, en creant la region au besoin.
+bool write_chunk(const std::filesystem::path& worldDir, int cx, int cz,
+                 const nbt::Compound& chunk);
+
+// --- Modification des blocs d'un chunk ---
+
+struct BlockEdit {
+    int x = 0;  // 0-15, local au chunk
+    int y = 0;  // altitude monde
+    int z = 0;  // 0-15
+    std::string name; // « minecraft:stone »
+};
+
+// Applique des changements de blocs a un chunk deja lu, en place. Les sections
+// concernees sont re-encodees (palette + indices reconstruits).
+//
+// Formats pris en charge :
+//   - 1.18+       : block_states { palette, data }, indices non chevauchants
+//   - 1.13–1.17   : Palette + BlockStates, indices tasses avant la 1.16
+//   - <= 1.12     : Blocks + Data, identifiants numeriques — seuls les noms
+//                   presents dans la table interne sont acceptes (ceux du
+//                   generateur de ville), les autres sont comptes en echec.
+//
+// Retourne le nombre de blocs effectivement poses. Les sections absentes ne
+// sont pas creees : poser un bloc dans le vide est ignore (`skipped`).
+struct EditResult {
+    int applied = 0;
+    int skipped = 0;   // hors chunk, ou section absente
+    int unsupported = 0; // nom de bloc inconnu en <= 1.12
+};
+EditResult set_blocks(nbt::Compound& chunk, const std::vector<BlockEdit>& edits);
+
+// Identifiant numerique 1.12 d'un nom de bloc, -1 si inconnu.
+int legacy_id_for(const std::string& name);
+
 } // namespace tl::region

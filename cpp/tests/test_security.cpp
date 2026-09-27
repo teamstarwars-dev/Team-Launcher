@@ -64,6 +64,7 @@ int main() {
     CHECK(host_allowed("teamstarwars-dev.github.io"));
     // GitLab : hote autorise par Modrinth dans les .mrpack (sans lui, les
     // fichiers d'un modpack heberges la echouaient en silence).
+    CHECK(host_allowed("overpass-api.de"));
     CHECK(host_allowed("gitlab.com"));
     CHECK(host_allowed("cdn.gitlab.com"));
     CHECK(host_allowed("discord.com"));

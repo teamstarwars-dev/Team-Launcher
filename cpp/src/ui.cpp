@@ -857,6 +857,7 @@ void frame(SDL_Window* window) {
     if (nav_button(tr("Exploration"), g.page == 9)) g.page = 9;
     if (nav_button(tr("Explorateur"), g.page == 10)) g.page = 10;
     if (nav_button(tr("Édition de carte"), g.page == 11)) g.page = 11;
+    if (nav_button(tr("Ville OSM"), g.page == 12)) g.page = 12;
     if (nav_button(tr("Jouer"), g.page == 2)) g.page = 2;
     if (nav_button(tr("Serveurs"), g.page == 3)) g.page = 3;
     if (nav_button(tr("Skins"), g.page == 4)) g.page = 4;
@@ -885,6 +886,7 @@ void frame(SDL_Window* window) {
     case 9: explore_page(); break;
     case 10: explorer_page(); break;
     case 11: mapeditor_page(); break;
+    case 12: citygen_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();

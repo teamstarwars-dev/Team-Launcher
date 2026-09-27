@@ -89,7 +89,7 @@ bool restore(const std::string& instanceId, const fs::path& zip) {
 
     // Dossier temporaire a cote de l'instance (meme volume -> rename atomique).
     std::random_device rd;
-    char suffix[24];
+    char suffix[32]; // "restore-" + 16 hex + NUL = 25
     std::snprintf(suffix, sizeof(suffix), "restore-%08x%08x", rd(), rd());
     const fs::path temp = DataStore::instancesRoot() / instanceId / suffix;
 

@@ -266,6 +266,139 @@ int main() {
     }
 
     // =====================================================================
+    // 6bis. Ecriture de chunks : aller-retour, remplacement, agrandissement
+    // =====================================================================
+    {
+        const fs::path rp = tmp / "region" / "r.5.5.mca";
+        std::error_code e3;
+        fs::remove(rp, e3);
+
+        // Chunk minimal mais valide, ecrit dans une region inexistante.
+        nbt::Compound c;
+        c["DataVersion"] = nbt::make_int(3465);
+        c["Marqueur"] = nbt::make_string("premier");
+        CHECK(region::write_chunk_local(rp, 7, 9, c));
+        CHECK(fs::exists(rp, e3));
+        CHECK(fs::file_size(rp, e3) >= 8192 + 4096);
+        // Aucun fichier temporaire ne doit subsister
+        CHECK(!fs::exists(fs::path(rp).concat(".tmp"), e3));
+
+        auto back = region::read_chunk_local(rp, 7, 9);
+        CHECK(back.has_value());
+        if (back) {
+            CHECK_EQ(nbt::get_string(*back, "Marqueur"), std::string("premier"));
+            CHECK_EQ(nbt::get_num(*back, "DataVersion"), 3465LL);
+        }
+        auto chunks = region::list_chunks(rp);
+        CHECK_EQ(chunks.size(), size_t{1});
+        if (chunks.size() == 1) {
+            CHECK_EQ(chunks[0].localX, 7);
+            CHECK_EQ(chunks[0].localZ, 9);
+            CHECK(chunks[0].timestamp > 0); // horodatage pose
+        }
+
+        // Remplacement par un chunk beaucoup plus gros : il doit etre realloue
+        // sans ecraser un voisin.
+        nbt::Compound d;
+        d["Marqueur"] = nbt::make_string("second");
+        d["Charge"] = nbt::make_long_array(std::vector<std::int64_t>(20000, 42));
+        CHECK(region::write_chunk_local(rp, 7, 9, d));
+        auto b2 = region::read_chunk_local(rp, 7, 9);
+        CHECK(b2.has_value());
+        if (b2) {
+            CHECK_EQ(nbt::get_string(*b2, "Marqueur"), std::string("second"));
+            const nbt::Tag* t = nbt::find(*b2, "Charge");
+            CHECK(t && t->longs.size() == 20000);
+            if (t && !t->longs.empty()) CHECK_EQ(t->longs[19999], 42LL);
+        }
+
+        // Un second chunk dans la meme region ne doit pas abimer le premier.
+        nbt::Compound e;
+        e["Marqueur"] = nbt::make_string("voisin");
+        CHECK(region::write_chunk_local(rp, 0, 0, e));
+        auto b3 = region::read_chunk_local(rp, 0, 0);
+        auto b4 = region::read_chunk_local(rp, 7, 9);
+        CHECK(b3.has_value());
+        CHECK(b4.has_value());
+        if (b3) CHECK_EQ(nbt::get_string(*b3, "Marqueur"), std::string("voisin"));
+        if (b4) CHECK_EQ(nbt::get_string(*b4, "Marqueur"), std::string("second"));
+        CHECK_EQ(region::list_chunks(rp).size(), size_t{2});
+
+        // Coordonnees hors bornes refusees
+        CHECK(!region::write_chunk_local(rp, 32, 0, c));
+        CHECK(!region::write_chunk_local(rp, -1, 0, c));
+
+        // Ecriture par coordonnees monde, region creee au besoin
+        CHECK(region::write_chunk(tmp, -33, 5, c));
+        auto b5 = region::read_chunk(tmp, -33, 5);
+        CHECK(b5.has_value());
+        if (b5) CHECK_EQ(nbt::get_string(*b5, "Marqueur"), std::string("premier"));
+    }
+
+    // =====================================================================
+    // 6ter. Modification de blocs : palette reconstruite, aller-retour disque
+    // =====================================================================
+    {
+        const fs::path rp = tmp / "region" / "r.6.6.mca";
+        std::error_code e4;
+        fs::remove(rp, e4);
+        CHECK(write_region(rp, 2, 3, make_chunk_modern(0, 3465), 2));
+        auto c = region::read_chunk_local(rp, 2, 3);
+        CHECK(c.has_value());
+        if (c) {
+            // Depart : (0,0,0) air, le reste stone.
+            CHECK_EQ(region::block_at(*c, 0, 0, 0), std::string("minecraft:air"));
+            std::vector<region::BlockEdit> edits = {
+                {0, 0, 0, "minecraft:gold_block"},   // nouveau nom -> palette
+                {5, 3, 7, "minecraft:water"},
+                {1, 0, 0, "minecraft:air"},          // nom deja en palette
+                {99, 0, 0, "minecraft:stone"},       // hors chunk -> ignore
+                {0, 500, 0, "minecraft:stone"},      // section absente -> ignore
+            };
+            const auto r = region::set_blocks(*c, edits);
+            CHECK_EQ(r.applied, 3);
+            CHECK_EQ(r.skipped, 2);
+            CHECK_EQ(r.unsupported, 0);
+
+            // Relecture en memoire
+            CHECK_EQ(region::block_at(*c, 0, 0, 0),
+                     std::string("minecraft:gold_block"));
+            CHECK_EQ(region::block_at(*c, 5, 3, 7), std::string("minecraft:water"));
+            CHECK_EQ(region::block_at(*c, 1, 0, 0), std::string("minecraft:air"));
+            // Un bloc non touche garde sa valeur
+            CHECK_EQ(region::block_at(*c, 15, 15, 15), std::string("minecraft:stone"));
+
+            // Aller-retour disque : la section re-encodee doit se relire
+            CHECK(region::write_chunk_local(rp, 2, 3, *c));
+            auto d = region::read_chunk_local(rp, 2, 3);
+            CHECK(d.has_value());
+            if (d) {
+                CHECK_EQ(region::block_at(*d, 0, 0, 0),
+                         std::string("minecraft:gold_block"));
+                CHECK_EQ(region::block_at(*d, 5, 3, 7),
+                         std::string("minecraft:water"));
+                CHECK_EQ(region::block_at(*d, 15, 15, 15),
+                         std::string("minecraft:stone"));
+                const auto uniq = region::unique_blocks(*d);
+                CHECK_EQ(uniq.size(), size_t{4}); // air, stone, gold, water
+            }
+        }
+
+        // Table 1.12
+        CHECK_EQ(region::legacy_id_for("minecraft:stone"), 1);
+        CHECK_EQ(region::legacy_id_for("minecraft:water"), 9);
+        CHECK_EQ(region::legacy_id_for("minecraft:air"), 0);
+        CHECK_EQ(region::legacy_id_for("minecraft:id_57"), 57);
+        CHECK_EQ(region::legacy_id_for("minecraft:inconnu"), -1);
+
+        // Chunk sans sections : tout est ignore, rien ne plante
+        nbt::Compound vide;
+        const auto rv = region::set_blocks(vide, {{0, 0, 0, "minecraft:stone"}});
+        CHECK_EQ(rv.applied, 0);
+        CHECK_EQ(rv.skipped, 1);
+    }
+
+    // =====================================================================
     // 7. Monde reel de la machine, s'il y en a un
     // =====================================================================
     {

@@ -191,6 +191,7 @@ void settings_stop();    // ui_settings.cpp : joint le worker de maintenance
 void explore_page();     // ui_explore.cpp (page 9)
 void explorer_page();    // ui_explorer.cpp (page 10) : fichiers et mondes
 void mapeditor_page();   // ui_mapeditor.cpp (page 11) : grille de chunks
+void citygen_page();     // ui_citygen.cpp (page 12) : ville OpenStreetMap
 bool onboarding_needed();  // ui_onboarding.cpp
 void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
 void explore_stop();     // ui_explore.cpp : joint le worker

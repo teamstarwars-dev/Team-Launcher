@@ -62,6 +62,36 @@ std::optional<Compound> parse_zlib(const std::uint8_t* data, std::size_t n);
 std::optional<Compound> parse_auto(const std::uint8_t* data, std::size_t n);
 std::optional<Compound> read_file(const std::string& path);
 
+// --- Ecriture ---
+//
+// Meme remarque que pour la lecture : le C# (CityGenerator.SerializeCompound)
+// serialisait avec un `BinaryWriter` petit-boutiste, donc produisait des
+// chunks que Minecraft ne peut pas relire. Ici tout est ecrit gros-boutiste.
+
+std::vector<std::uint8_t> write(const Compound& root, const std::string& rootName = {});
+std::vector<std::uint8_t> write_gzip(const Compound& root,
+                                     const std::string& rootName = {});
+std::vector<std::uint8_t> write_zlib(const Compound& root,
+                                     const std::string& rootName = {});
+bool write_file_gzip(const std::string& path, const Compound& root,
+                     const std::string& rootName = {});
+
+// --- Fabrication de tags ---
+Tag make_byte(std::int8_t v);
+Tag make_short(std::int16_t v);
+Tag make_int(std::int32_t v);
+Tag make_long(std::int64_t v);
+Tag make_float(float v);
+Tag make_double(double v);
+Tag make_string(std::string v);
+Tag make_byte_array(std::vector<std::uint8_t> v);
+Tag make_int_array(std::vector<std::int32_t> v);
+Tag make_long_array(std::vector<std::int64_t> v);
+Tag make_compound(Compound v);
+// elem doit correspondre au type des elements ; une liste vide est ecrite
+// avec TAG_End comme type d'element, ce qu'attend Minecraft.
+Tag make_list(Type elem, List v);
+
 // --- Acces confortable (nullptr / valeur par defaut si absent ou mal type) ---
 const Tag* find(const Compound& c, const std::string& key);
 const Compound* get_compound(const Compound& c, const std::string& key);
