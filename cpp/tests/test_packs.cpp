@@ -4,9 +4,13 @@
 // Le test reseau (TL_TEST_NET=1) fait UNE SEULE requete a l'API CurseForge :
 // le quota de la cle est limite, on ne le gaspille pas en tests.
 
+#include "content_install.hpp"
 #include "curseforge.hpp"
+#include "modrinth.hpp"
 #include "datastore.hpp"
 #include "pack_import.hpp"
+#include "pack_share.hpp"
+#include "util_hash.hpp"
 #include "util_zip.hpp"
 
 #include <atomic>
@@ -55,6 +59,13 @@ static bool make_zip(const fs::path& out,
     const bool ok = mz_zip_writer_finalize_archive(&z) != 0;
     mz_zip_writer_end(&z);
     return ok;
+}
+
+static void write_file(const fs::path& p, const std::string& s) {
+    std::error_code ec;
+    fs::create_directories(p.parent_path(), ec);
+    std::ofstream out(p, std::ios::binary | std::ios::trunc);
+    out.write(s.data(), static_cast<std::streamsize>(s.size()));
 }
 
 static std::string read_file(const fs::path& p) {
@@ -305,6 +316,195 @@ int main() {
     }
 
     // =====================================================================
+    // 7bis. Installation de contenu : fonctions pures (aucun reseau)
+    // =====================================================================
+    {
+        using namespace tl::content;
+
+        CHECK_EQ(std::string(category_key(Category::Modpacks)),
+                 std::string("modpack"));
+        CHECK_EQ(std::string(category_key(Category::Mods)), std::string("mod"));
+        CHECK_EQ(std::string(category_key(Category::Shaders)), std::string("shader"));
+        CHECK_EQ(curseforge_class(Category::Mods), cf::kClassMods);
+        CHECK_EQ(curseforge_class(Category::Shaders), cf::kClassShaders);
+        CHECK_EQ(curseforge_class(Category::Modpacks), cf::kClassModpacks);
+        CHECK_EQ(std::string(dest_subdir(Category::Shaders)),
+                 std::string("shaderpacks"));
+        CHECK_EQ(std::string(dest_subdir(Category::Mods)), std::string("mods"));
+
+        auto withLoader = [](const char* l) {
+            return json{{"Id", "i"}, {"Loader", l}, {"McVersion", "1.20.1"}};
+        };
+        CHECK_EQ(resolve_loader(withLoader("Forge")).value_or(""),
+                 std::string("forge"));
+        CHECK_EQ(resolve_loader(withLoader("fabric")).value_or(""),
+                 std::string("fabric"));
+        CHECK_EQ(resolve_loader(withLoader("NeoForge")).value_or(""),
+                 std::string("neoforge"));
+        // Quilt lit les mods Fabric (comportement du C#)
+        CHECK_EQ(resolve_loader(withLoader("Quilt")).value_or(""),
+                 std::string("fabric"));
+        CHECK(!resolve_loader(withLoader("Vanilla")).has_value());
+        CHECK(!resolve_loader(json::object()).has_value());
+
+        // McVersion explicite : aucun appel reseau
+        CHECK_EQ(resolve_mc_version(withLoader("Forge")), std::string("1.20.1"));
+
+        // --- pick_compatible ---
+        auto mk = [](long long id, std::vector<std::string> gv,
+                     std::vector<std::string> ld) {
+            cf::File f;
+            f.fileId = id;
+            f.gameVersions = std::move(gv);
+            f.loaders = std::move(ld);
+            return f;
+        };
+        const std::vector<cf::File> files = {
+            mk(1, {"1.19.2"}, {"forge"}),          // mauvaise version
+            mk(2, {"1.20.1"}, {"fabric"}),         // mauvais loader
+            mk(3, {"1.20.1"}, {"forge"}),          // bon
+            mk(4, {"1.20.1"}, {}),                 // sans loader declare
+        };
+        const auto* p = pick_compatible(files, "1.20.1", "forge");
+        CHECK(p != nullptr);
+        if (p) CHECK_EQ(p->fileId, 3LL);
+        // Sans contrainte de loader : le premier a la bonne version gagne
+        const auto* p2 = pick_compatible(files, "1.20.1", "");
+        CHECK(p2 != nullptr);
+        if (p2) CHECK_EQ(p2->fileId, 2LL);
+        // Un fichier sans loader declare est accepte (mods universels, shaders)
+        const auto* p3 = pick_compatible({files[3]}, "1.20.1", "neoforge");
+        CHECK(p3 != nullptr);
+        // Comparaison de version insensible a la casse
+        CHECK(pick_compatible({mk(9, {"1.20.1-PRE"}, {})}, "1.20.1-pre", "") != nullptr);
+        // Rien de compatible
+        CHECK(pick_compatible(files, "1.21.4", "forge") == nullptr);
+        CHECK(pick_compatible({}, "1.20.1", "forge") == nullptr);
+
+        // --- install() : garde-fous, sans reseau ---
+        std::atomic<bool> nocancel{false};
+        // Mod sans instance cible
+        auto r1 = install(false, "sodium", json(nullptr), Category::Mods, nocancel);
+        CHECK(!r1.ok);
+        CHECK(r1.error.find("instance") != std::string::npos);
+        // Mod sur une instance Vanilla : message explicite, rien de telecharge
+        auto r2 = install(false, "sodium", withLoader("Vanilla"), Category::Mods,
+                          nocancel);
+        CHECK(!r2.ok);
+        CHECK(r2.error.find("Vanilla") != std::string::npos);
+        // Annulation immediate
+        std::atomic<bool> stop{true};
+        auto r3 = install(false, "sodium", withLoader("Forge"), Category::Mods, stop);
+        CHECK(!r3.ok);
+    }
+
+    // =====================================================================
+    // 7ter. Partage de pack (PackShareService) — hors reseau
+    // =====================================================================
+    {
+        using namespace tl::share;
+        std::atomic<bool> nocancel{false};
+        auto noop = [](const std::string&) {};
+
+        // Instance avec 2 mods et 1 shader, plus des configs et un monde.
+        json inst = make_instance("Pack a partager", "Forge", "1.20.1");
+        inst["Description"] = "Ma description";
+        const fs::path dir = DataStore::instancesRoot() / inst.value("Id", "");
+        write_file(dir / "mods" / "alpha.jar", "MOD-ALPHA");
+        write_file(dir / "mods" / "beta.jar", "MOD-BETA");
+        write_file(dir / "mods" / "notes.txt", "pas un jar"); // ignore
+        write_file(dir / "shaderpacks" / "joli.zip", "SHADER");
+        write_file(dir / "config" / "a.cfg", "CFG");
+        write_file(dir / "saves" / "monde" / "level.dat", "LEVEL");
+        write_file(dir / "resourcepacks" / "rp.zip", "RP");
+
+        // Hors reseau : Modrinth ne repond pas, rien n'est reconnu, mais
+        // l'export doit quand meme produire un descriptif complet.
+        auto ex = export_pack(inst, noop, nocancel);
+        CHECK(ex.error.empty());
+        CHECK(!ex.cancelled);
+        CHECK(ex.pack.is_object());
+        CHECK_EQ(ex.pack.value("Format", ""), std::string(kFormatId));
+        CHECK_EQ(ex.pack.value("Name", ""), std::string("Pack a partager"));
+        CHECK_EQ(ex.pack.value("Loader", ""), std::string("Forge"));
+        CHECK_EQ(ex.pack.value("McVersion", ""), std::string("1.20.1"));
+        CHECK_EQ(ex.pack.value("Description", ""), std::string("Ma description"));
+        // 2 mods (.jar seulement), 1 shader
+        CHECK_EQ(ex.stats.mods, 2);
+        CHECK_EQ(ex.stats.shaders, 1);
+        CHECK_EQ(ex.pack["Mods"].size(), size_t{2});
+        CHECK_EQ(ex.pack["Shaders"].size(), size_t{1});
+        CHECK_EQ(ex.pack["Configs"].size(), size_t{1});
+        CHECK_EQ(ex.pack["ResourcePacks"].size(), size_t{1});
+        CHECK_EQ(ex.pack["Worlds"].size(), size_t{1});
+        // Le monde est liste recursivement, avec son chemin relatif
+        CHECK_EQ(ex.pack["Worlds"][0].value("Path", ""),
+                 std::string("monde/level.dat"));
+        // Chaque mod porte un SHA1 et une taille, meme non reconnu
+        for (const auto& m : ex.pack["Mods"]) {
+            CHECK_EQ(m.value("Sha1", "").size(), size_t{40});
+            CHECK(m.value("Size", 0LL) > 0);
+        }
+
+        // serialize() -> JSON relisible
+        const std::string text = serialize(ex.pack);
+        CHECK(text.find(kFormatId) != std::string::npos);
+        CHECK(looks_like_pack(text));
+        CHECK(!looks_like_pack("bonjour"));
+        CHECK(!looks_like_pack(""));
+        CHECK(!looks_like_pack("{\"autre\":1}"));
+        // Tolerance : objet avec Mods mais sans Format
+        CHECK(looks_like_pack("{\"Mods\":[]}"));
+
+        // --- Import ---
+        // Descriptif sans mod ni shader : refus explicite
+        auto empty = import_pack("{\"Format\":\"teamlauncher-pack-v2\","
+                                 "\"Mods\":[],\"Shaders\":[]}",
+                                 noop, nocancel);
+        CHECK(!empty.error.empty());
+        CHECK(!empty.instance.is_object());
+        // Texte invalide
+        auto bad = import_pack("pas du json", noop, nocancel);
+        CHECK(!bad.error.empty());
+
+        // Import du descriptif exporte : les URL sont vides (rien reconnu),
+        // donc tout compte en echec, mais l'instance est bien reconstituee.
+        auto im = import_pack(text, noop, nocancel);
+        CHECK(im.error.empty());
+        CHECK(im.instance.is_object());
+        CHECK_EQ(im.instance.value("Name", ""), std::string("Pack a partager"));
+        CHECK_EQ(im.instance.value("Loader", ""), std::string("Forge"));
+        CHECK_EQ(im.instance.value("McVersion", ""), std::string("1.20.1"));
+        CHECK_EQ(im.downloaded, 0);
+        CHECK_EQ(im.failed, 3); // 2 mods + 1 shader non resolus
+        // L'import ne touche pas au config : c'est a l'appelant de le faire
+        CHECK(DataStore::settings.instances.empty());
+
+        // Cles insensibles a la casse (le C# desserialisait ainsi)
+        auto lower = import_pack("{\"format\":\"teamlauncher-pack-v2\","
+                                 "\"name\":\"Minuscules\",\"loader\":\"Fabric\","
+                                 "\"mcversion\":\"1.21\","
+                                 "\"mods\":[{\"Filename\":\"x.jar\",\"Url\":\"\"}]}",
+                                 noop, nocancel);
+        CHECK(lower.error.empty());
+        CHECK_EQ(lower.instance.value("Name", ""), std::string("Minuscules"));
+        CHECK_EQ(lower.instance.value("Loader", ""), std::string("Fabric"));
+
+        // Valeurs par defaut quand les champs manquent
+        auto minimal = import_pack("{\"Mods\":[{\"Filename\":\"y.jar\"}]}", noop,
+                                   nocancel);
+        CHECK(minimal.error.empty());
+        CHECK_EQ(minimal.instance.value("Name", ""), std::string("Pack partagé"));
+        CHECK_EQ(minimal.instance.value("Loader", ""), std::string("Vanilla"));
+        CHECK_EQ(minimal.instance.value("McVersion", ""), std::string("latest"));
+
+        // Annulation
+        std::atomic<bool> stop{true};
+        auto cancelled = export_pack(inst, noop, stop);
+        CHECK(cancelled.cancelled || cancelled.pack.is_object());
+    }
+
+    // =====================================================================
     // 8. Reseau : UNE requete a l'API CurseForge (quota menage)
     // =====================================================================
     if (std::getenv("TL_TEST_NET")) {
@@ -333,6 +533,54 @@ int main() {
                 ++g_failures;
             }
             DataStore::settings.curseForgeApiKey.clear();
+        }
+        // Modrinth : pas de cle, pas de quota — une recherche de controle.
+        try {
+            const auto hits = mr::search("sodium", "mod");
+            std::printf("INFO recherche Modrinth : %zu resultats\n", hits.size());
+            CHECK(!hits.empty());
+            if (!hits.empty()) {
+                CHECK(!hits[0].slug.empty());
+                CHECK(!hits[0].title.empty());
+                CHECK_EQ(hits[0].type, std::string("mod"));
+                std::printf("INFO 1er : %s (%s) [%s]\n", hits[0].title.c_str(),
+                            hits[0].slug.c_str(), hits[0].loaders.c_str());
+            }
+        } catch (const std::exception& ex) {
+            std::printf("FAIL recherche Modrinth : %s\n", ex.what());
+            ++g_failures;
+        }
+
+        // Boucle fermee : telecharger un fichier Modrinth, le hacher, puis le
+        // faire reconnaitre par empreinte (c'est ce sur quoi repose le partage).
+        try {
+            const fs::path dl = tmp / "dl";
+            const std::string file =
+                mr::download_project_file("sodium", dl, "fabric", "1.20.1");
+            CHECK(!file.empty());
+            CHECK(fs::exists(file));
+            auto sha1 = tl::sha1_hex(file);
+            CHECK(sha1.has_value());
+            if (sha1) {
+                const auto found = mr::version_files({*sha1});
+                CHECK_EQ(found.size(), size_t{1});
+                auto it = found.find(*sha1);
+                CHECK(it != found.end());
+                if (it != found.end()) {
+                    std::printf("INFO empreinte resolue : projet=%s fichier=%s\n",
+                                it->second.projectId.c_str(),
+                                it->second.filename.c_str());
+                    CHECK(!it->second.projectId.empty());
+                    CHECK(!it->second.url.empty());
+                }
+                // Une empreinte inventee ne doit rien resoudre
+                const auto none = mr::version_files(
+                    {"0000000000000000000000000000000000000000"});
+                CHECK(none.empty());
+            }
+        } catch (const std::exception& ex) {
+            std::printf("FAIL empreinte Modrinth : %s\n", ex.what());
+            ++g_failures;
         }
     } else {
         std::printf("INFO test reseau saute (TL_TEST_NET non defini)\n");

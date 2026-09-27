@@ -111,6 +111,7 @@ endfunction()
 # ---- Core metier (portage C#) : DataStore + HTTP + hashes + zip + jeu ----
 set(TL_CORE_SOURCES
   src/datastore.cpp
+  src/secrets.cpp
   src/http_win.cpp
   src/util_hash.cpp
   src/util_zip.cpp
@@ -123,8 +124,15 @@ set(TL_CORE_SOURCES
   src/telemetry.cpp
   src/curseforge.cpp
   src/pack_import.cpp
+  src/modrinth.cpp
+  src/content_install.cpp
+  src/shortcut.cpp
+  src/presence.cpp
+  src/pack_share.cpp
   src/ms_auth.cpp
   src/launch_flow.cpp
+  src/server_host.cpp
+  src/apptasks.cpp
   third_party/miniz/miniz.c
   third_party/miniz/miniz_tdef.c
   third_party/miniz/miniz_tinfl.c
@@ -136,7 +144,7 @@ target_include_directories(tl_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz
 )
 # crypt32 : DPAPI + base64 (jetons MsAuth) ; shell32 : ouverture du navigateur
-target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32)
+target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid)
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher
 target_compile_definitions(tl_core PUBLIC TL_VERSION_STRING="${PROJECT_VERSION}")
 if(MSVC)
@@ -150,7 +158,7 @@ tl_release_flags(tl_core)
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import ms_auth launch_flow)
+foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 add_executable(TeamLauncher ${TL_SOURCES})
@@ -209,6 +217,10 @@ if(TL_BUILD_TESTS)
     "tests/test_lang.cpp|TLTestLang"
     "tests/test_services.cpp|TLTestServices"
     "tests/test_packs.cpp|TLTestPacks"
+    "tests/test_server_host.cpp|TLTestServerHost"
+    "tests/test_apptasks.cpp|TLTestApptasks"
+    "tests/test_instance_detail.cpp|TLTestInstanceDetail"
+    "tests/test_security.cpp|TLTestSecurity"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

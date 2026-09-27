@@ -1,10 +1,12 @@
 // Tests hors reseau du portage MsAuth.cs : base64, DPAPI, encodage de
-// formulaire, format d'UUID, caches disque (session + jeton) et logout.
+// formulaire, format d'UUID, caches disque (session + jeton), logout et
+// obfuscation de chaines (obf.hpp).
 // La chaine Xbox/XSTS/Minecraft n'est pas testable sans compte reel.
 
 #include "ms_auth.hpp"
 
 #include "datastore.hpp"
+#include "obf.hpp" // barriere « lecture de chaines » (securite S3)
 
 #include <nlohmann/json.hpp>
 
@@ -270,6 +272,47 @@ int main() {
     CHECK(!has_session());
     CHECK(!get_session().has_value());
 
+    // --- 8bis. Durcissement : wipe, ecriture atomique, sanitize, allowlist ---
+    {
+        std::string secret = "bearer-temporaire";
+        detail::secure_wipe(secret);
+        CHECK(secret.find_first_not_of('\0') == std::string::npos);
+        std::string vide;
+        detail::secure_wipe(vide); // sans effet, sans plantage
+    }
+    {
+        const fs::path dst = tmp / "atomique.json";
+        CHECK(detail::write_atomic(dst, "{\"a\":1}"));
+        CHECK_EQ(read_file(dst), std::string("{\"a\":1}"));
+        CHECK(!fs::exists(fs::path(dst).concat(".tmp")));
+        CHECK(detail::write_atomic(dst, "{\"a\":2}")); // reecriture atomique
+        CHECK_EQ(read_file(dst), std::string("{\"a\":2}"));
+        CHECK(!fs::exists(fs::path(dst).concat(".tmp")));
+    }
+    CHECK_EQ(detail::sanitize_file_stem("TeamUN6713"), std::string("TeamUN6713"));
+    CHECK_EQ(detail::sanitize_file_stem("a-b_c9"), std::string("a-b_c9"));
+    CHECK_EQ(detail::sanitize_file_stem("../../secret"), std::string("secret"));
+    CHECK_EQ(detail::sanitize_file_stem("..\\..\\win"), std::string("win"));
+    CHECK_EQ(detail::sanitize_file_stem(""), std::string("skin"));
+    CHECK_EQ(detail::sanitize_file_stem("!!!"), std::string("skin"));
+    CHECK(detail::sanitize_file_stem(std::string(200, 'a')).size() <= 64);
+    CHECK(detail::browser_url_allowed("https://login.live.com/oauth20_authorize.srf?x=1"));
+    CHECK(detail::browser_url_allowed("https://microsoft.com/devicelogin"));
+    CHECK(detail::browser_url_allowed("https://account.microsoft.com/"));
+    CHECK(detail::browser_url_allowed("https://login.microsoftonline.com/common/oauth2/v2.0/authorize"));
+    CHECK(detail::browser_url_allowed("https://auth.xbox.com/y"));
+    CHECK(!detail::browser_url_allowed("http://login.live.com/x")); // pas de http
+    CHECK(!detail::browser_url_allowed("file:///C:/pwned.txt"));
+    CHECK(!detail::browser_url_allowed("javascript:alert(1)"));
+    CHECK(!detail::browser_url_allowed("https://fakemicrosoft.com/devicelogin"));
+    CHECK(!detail::browser_url_allowed("https://microsoft.com.evil.io/"));
+    CHECK(!detail::browser_url_allowed(""));
+    CHECK(!detail::browser_url_allowed("https://"));
+    // save_session_cache : atomique elle aussi (pas de .tmp orphelin).
+    detail::save_session_cache(s);
+    CHECK(!fs::exists(fs::path(sessionFile).concat(".tmp")));
+    CHECK(fs::exists(sessionFile));
+
     // --- 9. Reseau (TL_TEST_NET=1) : vrai device code chez Microsoft ---
     if (std::getenv("TL_TEST_NET")) {
         std::printf("INFO test reseau : demande de device code...\n");
@@ -302,6 +345,34 @@ int main() {
         CHECK(!fs::exists(tokenFile));
     } else {
         std::printf("INFO test reseau saute (TL_TEST_NET non defini)\n");
+    }
+
+    // --- 10. Obfuscation de chaines (obf.hpp, securite S3) ---
+    // Round-trip : ce que rend TL_OBF est strictement l'entree.
+    CHECK_EQ(TL_OBF("https://exemple.test/webhooks/12345"),
+             std::string("https://exemple.test/webhooks/12345"));
+    // Traitement octet par octet : l'UTF-8 sort identique (pas de re-encodage).
+    CHECK_EQ(TL_OBF("jeton-café-éàü-123"),
+             std::string("jeton-café-éàü-123"));
+    // (Pas de test « clair absent de la memoire » : le decodeur remplit un
+    // buffer local par definition, cela ne serait pas observable ici.)
+    {
+        // Meme cle de site (777, 1) pour les deux encodages : la difference
+        // observee vient bien de la chaine, pas du site d'appel.
+        const std::string clair = "chaine-de-test-S3";
+        constexpr auto e1 = tl::obf::encode<777, 1>("chaine-de-test-S3");
+        constexpr auto e2 = tl::obf::encode<777, 1>("chaine-de-test-S4");
+        // Negatif : deux chaines differentes -> representations chiffrees
+        // differentes.
+        CHECK(e1.x != e2.x);
+        // Encode compile-time : aucun octet du clair ne subsiste tel quel
+        // (cle derivee jamais nulle).
+        bool octetClair = false;
+        for (std::size_t i = 0; i < e1.x.size(); ++i)
+            if (e1.x[i] == clair[i]) octetClair = true;
+        CHECK(!octetClair);
+        // Round-trip via l'API bas niveau (meme decodeur que TL_OBF).
+        CHECK_EQ(tl::obf::decode(e1), clair);
     }
 
     stop(); // sans thread en cours : doit etre sans effet

@@ -9,12 +9,14 @@
 #include "datastore.hpp"
 #include "game_launcher.hpp" // log_line
 #include "http_win.hpp"
+#include "obf.hpp" // endpoints et ID client obfusses (S3)
 
 #include <nlohmann/json.hpp>
 
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <condition_variable>
 #include <cstdio>
 #include <filesystem>
@@ -32,15 +34,35 @@ using namespace std::chrono_literals;
 
 namespace tl::auth {
 
-const char* const kDefaultClientId = "00000000402b5328";
+namespace {
+
+// L'ID client reste publique en `const char* const` (ms_auth.hpp, hors du
+// perimetre de modification ici) : la valeur obfusquee est donc dechiffree
+// une seule fois dans une string statique, dont c_str() reste valable tant
+// que le processus tourne. Seuls les lecteurs de kDefaultClientId sont dans
+// ce TU, et tous passent par une fonction definie ici (init garantie avant).
+const std::string& client_id() {
+    static const std::string v = TL_OBF("00000000402b5328");
+    return v;
+}
+
+} // namespace
+
+const char* const kDefaultClientId = client_id().c_str();
 
 // Toutes les aides internes vivent dans `detail` : le sous-ensemble declare
 // dans ms_auth.hpp est teste par tests/test_ms_auth.cpp, le reste n'est pas
 // declare ailleurs (equivalent d'une portee fichier, LTO + /OPT:REF nettoient).
 namespace detail {
 
-constexpr const char* kConnectEndpoint = "https://login.live.com/oauth20_connect.srf";
-constexpr const char* kTokenEndpoint = "https://login.live.com/oauth20_token.srf";
+// Endpoints Microsoft : obfusses (chaines d'infrastructure, jamais en clair
+// dans .rdata). `constexpr` impossible : TL_OBF dechiffre a l'execution.
+// Usages verifies : conversion implicite en std::string vers post_form(), ni
+// contexte constexpr ni comparaison de pointeurs.
+const std::string kConnectEndpoint =
+    TL_OBF("https://login.live.com/oauth20_connect.srf");
+const std::string kTokenEndpoint =
+    TL_OBF("https://login.live.com/oauth20_token.srf");
 constexpr const char* kAuthScope = "service::user.auth.xboxlive.com::MBI_SSL";
 // Duree de conservation du cache de session sur disque. Le C# gardait 7 jours
 // (604 800 s) alors que son commentaire annoncait 24 h. On garde desormais le
@@ -72,63 +94,15 @@ std::string truncate(const std::string& s, size_t n) {
 }
 
 // ---------------------------------------------------------------------------
-// base64 + DPAPI (formats interoperables avec ProtectedData/Convert C#)
+// base64 + DPAPI : deplaces dans secrets.cpp (tl::secrets) pour partage avec
+// DataStore ; re-exportes par ms_auth.hpp (detail::*).
 // ---------------------------------------------------------------------------
 
-std::string b64_encode(const unsigned char* data, size_t n) {
-    DWORD chars = 0;
-    const DWORD flags = CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF;
-    if (!CryptBinaryToStringA(data, static_cast<DWORD>(n), flags, nullptr, &chars))
-        return {};
-    std::string out(chars, '\0');
-    if (!CryptBinaryToStringA(data, static_cast<DWORD>(n), flags, out.data(), &chars))
-        return {};
-    out.resize(chars);
-    return out;
-}
-
-std::optional<std::string> b64_decode(const std::string& s) {
-    DWORD n = 0;
-    if (!CryptStringToBinaryA(s.c_str(), static_cast<DWORD>(s.size()),
-                              CRYPT_STRING_BASE64, nullptr, &n, nullptr, nullptr))
-        return std::nullopt;
-    std::string out(n, '\0');
-    if (!CryptStringToBinaryA(s.c_str(), static_cast<DWORD>(s.size()),
-                              CRYPT_STRING_BASE64,
-                              reinterpret_cast<BYTE*>(out.data()), &n, nullptr,
-                              nullptr))
-        return std::nullopt;
-    out.resize(n);
-    return out;
-}
-
-// DataProtectionScope.CurrentUser == CryptProtectData sans entropie.
-std::optional<std::string> dpapi_protect_b64(const std::string& clear) {
-    DATA_BLOB in{static_cast<DWORD>(clear.size()),
-                 reinterpret_cast<BYTE*>(const_cast<char*>(clear.data()))};
-    DATA_BLOB out{};
-    if (!CryptProtectData(&in, nullptr, nullptr, nullptr, nullptr,
-                          CRYPTPROTECT_UI_FORBIDDEN, &out))
-        return std::nullopt;
-    std::string b64 = b64_encode(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-    if (b64.empty()) return std::nullopt;
-    return b64;
-}
-
-std::optional<std::string> dpapi_unprotect_b64(const std::string& b64) {
-    auto raw = b64_decode(b64);
-    if (!raw || raw->empty()) return std::nullopt;
-    DATA_BLOB in{static_cast<DWORD>(raw->size()),
-                 reinterpret_cast<BYTE*>(raw->data())};
-    DATA_BLOB out{};
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr, nullptr,
-                            CRYPTPROTECT_UI_FORBIDDEN, &out))
-        return std::nullopt;
-    std::string clear(reinterpret_cast<char*>(out.pbData), out.cbData);
-    LocalFree(out.pbData);
-    return clear;
-}
+// RAII : le secret est ecrase sur TOUS les chemins de sortie (return/throw).
+struct WipeGuard {
+    std::string& s;
+    ~WipeGuard() { secure_wipe(s); }
+};
 
 // ---------------------------------------------------------------------------
 // Fichiers
@@ -149,6 +123,21 @@ bool write_all(const fs::path& p, const std::string& data) {
     if (!out) return false;
     out.write(data.data(), static_cast<std::streamsize>(data.size()));
     return static_cast<bool>(out);
+}
+
+// Ecriture atomique : le lecteur (autre instance, antivirus) ne voit jamais
+// un fichier tronqué. Si le rename échoue (destination verrouillée), on
+// retente après suppression — jamais de .tmp orphelin en cas de succès.
+bool write_atomic(const fs::path& dst, const std::string& data) {
+    const fs::path tmp = fs::path(dst).concat(".tmp");
+    if (!write_all(tmp, data)) return false;
+    std::error_code ec;
+    fs::rename(tmp, dst, ec);
+    if (ec) {
+        fs::remove(dst, ec);
+        fs::rename(tmp, dst, ec);
+    }
+    return !ec;
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +248,9 @@ struct Ctx {
     std::string error;
     bool running = false;
     bool diskChecked = false;
+    // Renouvellement silencieux : n'expose aucun etat a l'UI (set_state est
+    // ignore), la modale de connexion ne doit jamais s'ouvrir au demarrage.
+    bool quiet = false;
     std::atomic<bool> cancelReq{false};
     std::thread th;
 };
@@ -275,6 +267,7 @@ bool cancelled(const Cancel& c) {
 
 void set_state(AuthState s, const std::string& msg) {
     std::lock_guard<std::mutex> lk(ctx().m);
+    if (ctx().quiet) return;
     ctx().state = s;
     ctx().info.message = msg;
 }
@@ -298,6 +291,7 @@ std::optional<AuthSession> try_load_session_cache() {
             auth_log("Cache disque : introuvable.");
             return std::nullopt;
         }
+        WipeGuard rawGuard{*raw}; // contenu chiffré : écrasé dès la lecture
         json root = json::parse(*raw);
 
         long long ts = 0;
@@ -313,7 +307,8 @@ std::optional<AuthSession> try_load_session_cache() {
         AuthSession s;
         s.name = field_str(root, "name", "cache de session");
         s.uuid = field_str(root, "uuid", "cache de session");
-        const std::string tokenRaw = field_str(root, "token", "cache de session");
+        std::string tokenRaw = field_str(root, "token", "cache de session");
+        WipeGuard tokenGuard{tokenRaw};
         if (tokenRaw.empty() || tokenRaw == "0") {
             auth_log("Cache disque : token vide.");
             return std::nullopt;
@@ -335,12 +330,22 @@ std::optional<AuthSession> try_load_session_cache() {
 
 void save_session_cache(const AuthSession& s) {
     try {
+        // SÉCURITÉ : si DPAPI est indisponible, on NE PERSISTE RIEN. L'ancien
+        // repli « jeton en clair » du C# exposait un bearer token (~24 h
+        // d'accès complet au compte) à tout processus lisant le profil. La
+        // session reste utilisable en mémoire jusqu'à la fermeture ; seule la
+        // LECTURE du format clair est conservée (compat fichiers v5).
         auto cipher = dpapi_protect_b64(s.token);
+        if (!cipher) {
+            auth_log("SaveSessionCache : DPAPI indisponible, session non "
+                     "conservée (mémoire seule).");
+            return;
+        }
         json obj = {{"name", s.name},
                     {"uuid", s.uuid},
-                    {"token", cipher.value_or(s.token)},
+                    {"token", *cipher},
                     {"ts", now_unix()}};
-        if (!write_all(session_file(), obj.dump()))
+        if (!write_atomic(session_file(), obj.dump()))
             auth_log("SaveSessionCache : écriture impossible.");
     } catch (const std::exception& ex) {
         auth_log(std::string("SaveSessionCache : ") + ex.what());
@@ -354,11 +359,13 @@ void save_session_cache(const AuthSession& s) {
 std::optional<std::string> try_load_refresh_token() {
     auto raw = read_all(token_file());
     if (!raw) return std::nullopt;
+    WipeGuard rawGuard{*raw};
     // trim
     const auto b = raw->find_first_not_of(" \t\r\n");
     if (b == std::string::npos) return std::nullopt;
     const auto e = raw->find_last_not_of(" \t\r\n");
-    const std::string t = raw->substr(b, e - b + 1);
+    std::string t = raw->substr(b, e - b + 1);
+    WipeGuard tGuard{t};
     if (t.empty()) return std::nullopt;
     return dpapi_unprotect_b64(t).value_or(t); // ancien format en clair
 }
@@ -370,16 +377,8 @@ void save_refresh_token(const std::string& token) {
         auth_log("SaveRefreshToken : DPAPI indisponible, jeton non conservé.");
         return;
     }
-    // Ecriture atomique (autre instance, antivirus) — cf. C# File.Replace.
-    const fs::path dst = token_file();
-    const fs::path tmp = fs::path(dst).concat(".tmp");
-    if (!write_all(tmp, *cipher)) return;
-    std::error_code ec;
-    fs::rename(tmp, dst, ec);
-    if (ec) {
-        fs::remove(dst, ec);
-        fs::rename(tmp, dst, ec);
-    }
+    if (!write_atomic(token_file(), *cipher))
+        auth_log("SaveRefreshToken : écriture impossible.");
 }
 
 void delete_refresh_token() {
@@ -435,7 +434,9 @@ void save_official_skin(const std::string& name, const json& profile,
             }
             std::error_code ec;
             fs::create_directories(DataStore::skinsDir(), ec);
-            write_all(DataStore::skinsDir() / (name + ".png"), png->body);
+            // Le pseudo vient du serveur : jamais de chemin brut vers le disque.
+            write_all(DataStore::skinsDir() / (sanitize_file_stem(name) + ".png"),
+                      png->body);
             auth_log("Skin officiel enregistré (" + std::to_string(png->body.size()) +
                      " octets).");
             return;
@@ -467,7 +468,8 @@ AuthSession xbox_to_minecraft(const std::string& msAccessToken, const Cancel& c)
     if (!xui.is_array() || xui.empty())
         throw std::runtime_error("Réponse inattendue de Xbox Live : aucun profil.");
     const std::string uhs = field_str(xui[0], "uhs", "Xbox Live");
-    const std::string xblToken = field_str(xbl, "Token", "Xbox Live");
+    std::string xblToken = field_str(xbl, "Token", "Xbox Live");
+    WipeGuard xblGuard{xblToken};
     auth_log("Xbox Live : OK");
 
     // 4. XSTS
@@ -479,7 +481,8 @@ AuthSession xbox_to_minecraft(const std::string& msAccessToken, const Cancel& c)
                    {"RelyingParty", "rp://api.minecraftservices.com/"},
                    {"TokenType", "JWT"}},
                   c);
-    const std::string xstsToken = field_str(xsts, "Token", "XSTS");
+    std::string xstsToken = field_str(xsts, "Token", "XSTS");
+    WipeGuard xstsGuard{xstsToken};
     auth_log("XSTS : OK");
 
     // 5. Jeton Minecraft
@@ -489,7 +492,9 @@ AuthSession xbox_to_minecraft(const std::string& msAccessToken, const Cancel& c)
                   {{"identityToken", "XBL3.0 x=" + uhs + ";" + xstsToken}}, c);
     auto atIt = mcLogin.find("access_token");
     if (atIt == mcLogin.end() || !atIt->is_string()) {
-        const std::string brut = mcLogin.dump();
+        // Journal tronqué comme le message : un corps d'erreur ne doit jamais
+        // déverser un jeton complet dans launcher.log.
+        const std::string brut = truncate(mcLogin.dump(), 300);
         auth_log("login_with_xbox réponse inattendue : " + brut);
         if (contains_ci(brut, "Invalid app registration"))
             throw std::runtime_error(
@@ -550,8 +555,60 @@ AuthSession xbox_to_minecraft(const std::string& msAccessToken, const Cancel& c)
 // Flux complet
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Garde-fous durs (pseudo reseau -> disque, URL serveur -> navigateur)
+// ---------------------------------------------------------------------------
+
+// Pseudo serveur -> tige de fichier : seuls [A-Za-z0-9_-] survivent (64 car.
+// max, « skin » sinon). Les pseudos Minecraft sont déjà contraints côté
+// serveur, mais le nom de fichier ne doit jamais dépendre de la confiance.
+std::string sanitize_file_stem(const std::string& s) {
+    std::string out;
+    for (unsigned char ch : s) {
+        if (std::isalnum(ch) || ch == '_' || ch == '-') {
+            if (out.size() >= 64) break;
+            out.push_back(static_cast<char>(ch));
+        }
+    }
+    return out.empty() ? "skin" : out;
+}
+
+// L'URL de validation vient du JSON Microsoft : on ne l'ouvre que si c'est du
+// https vers un hôte Microsoft/Xbox connu. Tout le reste (http, file:, Pseudo...,
+// hôte inconnu) est refusé et journalisé.
+bool browser_url_allowed(const std::string& url) {
+    std::string head = url.substr(0, 8);
+    for (auto& ch : head) ch = static_cast<char>(std::tolower((unsigned char)ch));
+    if (head != "https://") return false;
+    std::string host = url.substr(8);
+    for (const char sep : {'/', '?', '#'}) {
+        const auto p = host.find(sep);
+        if (p != std::string::npos) host.resize(p);
+    }
+    for (auto& ch : host) ch = static_cast<char>(std::tolower((unsigned char)ch));
+    if (host.empty()) return false;
+    // Hôtes exacts du flux device code + suffixes de confiance (avec frontière
+    // de point : « fakemicrosoft.com » ne passe pas « .microsoft.com »).
+    if (host == "login.live.com" || host == "login.microsoftonline.com" ||
+        host == "microsoft.com" || host == "account.microsoft.com")
+        return true;
+    for (const char* suf :
+         {".live.com", ".microsoft.com", ".microsoftonline.com", ".xbox.com"}) {
+        const size_t n = std::strlen(suf);
+        if (host.size() > n && host.compare(host.size() - n, n, suf) == 0)
+            return true;
+    }
+    return false;
+}
+
 void open_browser(const std::string& uri) {
     if (std::getenv("TL_NO_BROWSER")) return; // tests
+    if (!browser_url_allowed(uri)) {
+        auth_log("Navigateur : URL de validation inattendue, ouverture "
+                 "refusée (" +
+                 truncate(uri, 120) + ").");
+        return;
+    }
     const int n = MultiByteToWideChar(CP_UTF8, 0, uri.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
     std::wstring w(static_cast<size_t>(n), L'\0');
@@ -570,7 +627,8 @@ void open_browser(const std::string& uri) {
 // exigence de nouvelle authentification forte...). Ce cas n'est donc pas une
 // anomalie : on supprime le jeton mort et on retombe proprement sur l'ecran de
 // connexion par code d'appareil — jamais de plantage ni d'echec muet.
-std::optional<std::string> try_refresh(const std::string& refreshToken, const Cancel& c) {
+std::optional<std::string> try_refresh(std::string refreshToken, const Cancel& c) {
+    WipeGuard guard{refreshToken}; // écrasé sur tous les chemins de sortie
     try {
         const json tok = post_form(kTokenEndpoint,
                                    {{"client_id", kDefaultClientId},
@@ -596,11 +654,18 @@ std::optional<std::string> try_refresh(const std::string& refreshToken, const Ca
 
 AuthSession run_flow(bool force, const Cancel& c) {
     std::string msAccessToken;
+    WipeGuard msGuard{msAccessToken}; // jeton Microsoft : écrasé après la chaîne
 
     // force : on saute le jeton conserve pour permettre « changer de compte ».
     if (!force) {
-        if (auto rt = try_load_refresh_token())
-            if (auto renewed = try_refresh(*rt, c)) msAccessToken = *renewed;
+        if (auto rt = try_load_refresh_token()) {
+            auto renewed = try_refresh(*rt, c);
+            secure_wipe(*rt); // la copie transmise est déjà protégée par garde
+            if (renewed) {
+                msAccessToken = *renewed;
+                secure_wipe(*renewed);
+            }
+        }
     }
 
     if (msAccessToken.empty()) {
@@ -622,7 +687,8 @@ AuthSession run_flow(bool force, const Cancel& c) {
         // Lien avec le code pre-rempli si Microsoft le fournit, sinon page standard.
         std::string verifyUri = dc.value("verification_uri_complete", std::string{});
         if (verifyUri.empty()) verifyUri = field_str(dc, "verification_uri", "Microsoft");
-        const std::string deviceCode = field_str(dc, "device_code", "Microsoft");
+        std::string deviceCode = field_str(dc, "device_code", "Microsoft");
+        WipeGuard deviceGuard{deviceCode};
         int interval = 5;
 
         open_browser(verifyUri);
@@ -633,7 +699,9 @@ AuthSession run_flow(bool force, const Cancel& c) {
         }
         set_state(AuthState::WaitingCode,
                   "Entre ce code sur la page Microsoft qui vient de s'ouvrir.");
-        auth_log("Code appareil obtenu (" + userCode + ").");
+        // Le code reste affiché à l'écran et au presse-papiers : inutile de
+        // l'écrire aussi dans le journal (qui finit souvent copié-collé).
+        auth_log("Code appareil obtenu, en attente de validation.");
 
         // 2. Attente de la validation par le joueur
         for (;;) {
@@ -712,6 +780,7 @@ std::optional<AuthSession> silent_renew(const Cancel& c, RenewFail* why = nullpt
     // try_refresh() supprime le jeton s'il est refuse : c'est le seul cas ou la
     // session est reellement finie cote Microsoft.
     auto access = try_refresh(*rt, c);
+    secure_wipe(*rt);
     if (!access) {
         set(RenewFail::RefreshRefused);
         return std::nullopt;
@@ -880,6 +949,7 @@ void startup_refresh() {
         if (c.th.joinable()) c.th.join();
         if (DataStore::settings.accountMode != "microsoft") return; // hors ligne
         c.running = true;
+        c.quiet = true; // aucun etat expose a l'UI pendant le renouvellement
         c.cancelReq.store(false);
     }
     c.th = std::thread([] {
@@ -913,6 +983,7 @@ void startup_refresh() {
         }
         std::lock_guard<std::mutex> lk(ctx().m);
         ctx().running = false;
+        ctx().quiet = false;
         // Etat volontairement laisse a Idle : ce rafraichissement est
         // silencieux, il ne doit jamais ouvrir la modale de connexion.
         ctx().state = AuthState::Idle;
@@ -930,6 +1001,7 @@ void logout() {
     // le cache de session reconnecte tout seul pendant 7 jours.
     fs::remove(session_file(), ec);
     std::lock_guard<std::mutex> lk(ctx().m);
+    if (ctx().session) secure_wipe(ctx().session->token); // pas de résidu
     ctx().session.reset();
     ctx().diskChecked = true;
     ctx().state = AuthState::Idle;

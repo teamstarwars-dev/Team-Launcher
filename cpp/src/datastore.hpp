@@ -7,6 +7,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "obf.hpp" // adminServerUrl obfusquee (S3, barriere `strings`)
+
 namespace tl {
 
 struct CaseInsensitiveLess {
@@ -38,6 +40,7 @@ struct AppSettings {
     std::vector<std::string> favoriteServers;
     nlohmann::json cities = nlohmann::json::array();
     nlohmann::json hostedServers = nlohmann::json::array();
+    nlohmann::json pteroHosts = nlohmann::json::array(); // hotes Pterodactyl (server_host)
     bool autoShortcut = false;
     std::string vpsUrl;
     std::string vpsApiKey;
@@ -45,7 +48,9 @@ struct AppSettings {
     std::string discordTelemetryWebhook;
     std::string installationId;
     bool adminTelemetryEnabled = false;
-    std::string adminServerUrl = "http://51.255.207.183:3000";
+    // IP du serveur d'admin : obfusquee (S3) pour ne pas la laisser en clair
+    // dans .rdata (elle est de toute facon chiffree DPAPI dans config.json).
+    std::string adminServerUrl = TL_OBF("http://51.255.207.183:3000");
     bool minimizeOnLaunch = true;
 };
 

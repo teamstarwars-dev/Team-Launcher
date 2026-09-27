@@ -1,6 +1,11 @@
 #include "ui_internal.hpp"
 
 #include "maintenance.hpp"
+#include "presence.hpp"
+#include "shortcut.hpp"
+
+#define SDL_MAIN_HANDLED
+#include <SDL.h>
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -256,6 +261,286 @@ void tab_appearance() {
     ImGui::PopStyleColor();
 }
 
+void tab_integrations();
+void update_panel();
+
+// Etat du panneau de mise a jour (onglet Integrations) : workers reseau hors
+// UI, progression atomique lue chaque frame. Sans ImGui dans maintenance.* :
+// tout le tissage est ici.
+struct UpdState {
+    std::mutex m;
+    std::thread th;
+    bool busy = false;
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> downloading{false};
+    std::atomic<long long> done{0};
+    std::atomic<long long> total{-1};
+    std::string status;
+    std::optional<updates::Info> info;
+    bool stagedReady = false;
+    std::string stagedVer;
+    bool stagedInit = false;
+    int taskId = 0; // entree AppTasks du job en cours (sous m)
+};
+UpdState upd;
+
+void upd_reap() {
+    std::lock_guard<std::mutex> lk(upd.m);
+    if (!upd.busy && upd.th.joinable()) upd.th.join();
+}
+
+void upd_set(const std::string& status, const std::optional<updates::Info>& info,
+             bool stagedReady, const std::string& stagedVer) {
+    std::lock_guard<std::mutex> lk(upd.m);
+    upd.status = status;
+    upd.info = info;
+    upd.stagedReady = stagedReady;
+    upd.stagedVer = stagedVer;
+}
+
+// Demarre un worker ET sa tache AppTasks associee. Le job recoit l'id de la
+// tache et doit la cloturer lui-meme (apptasks_end) : le panneau reste juste
+// si l'utilisateur quitte la page. false = deja en vol, aucune tache creee.
+bool upd_start(const std::string& title, const std::string& status,
+               const std::function<void(int)>& job) {
+    upd_reap();
+    int tid = 0;
+    {
+        std::lock_guard<std::mutex> lk(upd.m);
+        if (upd.busy) return false;
+        upd.busy = true;
+        upd.cancel.store(false);
+        upd.done.store(0);
+        upd.total.store(-1);
+        // Verrous : upd.m -> verrous du registre (aucun chemin inverse).
+        tid = upd.taskId = apptasks_begin(title, status, &upd.cancel);
+    }
+    upd.th = std::thread([job, tid] {
+        job(tid);
+        upd.downloading.store(false);
+        std::lock_guard<std::mutex> lk(upd.m);
+        upd.busy = false;
+        upd.taskId = 0;
+    });
+    return true;
+}
+
+// Portage du bloc « MISES À JOUR AUTOMATIQUES » de SettingsPage.cs (bouton
+// « Vérifier maintenant », confirmation, telechargement puis installation).
+// Velopack appliquait en cours d'execution ; ici le paquet est stage puis le
+// script apply-update.bat deploie APRES la sortie (bouton Installer).
+void update_panel() {
+    upd_reap();
+
+    // Au premier affichage (donc a chaque demarrage si l'onglet est ouvert,
+    // et de toute facon sans reseau) : un marqueur pending.json survivant
+    // propose directement « Installer et redémarrer ».
+    if (!upd.stagedInit) {
+        upd.stagedInit = true;
+        if (auto s = updates::staged()) {
+            std::lock_guard<std::mutex> lk(upd.m);
+            upd.stagedReady = true;
+            upd.stagedVer = s->info.version;
+            upd.info = s->info;
+            upd.status = "Mise à jour v" + s->info.version +
+                         " prête (téléchargée précédemment).";
+        }
+    }
+
+    bool busy, downloading, stagedReady;
+    std::string status, stagedVer;
+    std::optional<updates::Info> info;
+    int taskId;
+    {
+        std::lock_guard<std::mutex> lk(upd.m);
+        busy = upd.busy;
+        stagedReady = upd.stagedReady;
+        status = upd.status;
+        stagedVer = upd.stagedVer;
+        info = upd.info;
+        taskId = upd.taskId;
+    }
+    downloading = upd.downloading.load();
+
+    ImGui::Spacing();
+    ImGui::BeginDisabled(busy);
+    if (ImGui::Button(tr("Vérifier les mises à jour"), ImVec2(260, 34))) {
+        // Textes resolus ici (fil UI) : ni tr() ni upd sans verrou dans le job.
+        const std::string checking = tr("Vérification...");
+        const std::string cancelledTxt = tr("Vérification annulée.",
+                                            "Check cancelled.");
+        const std::string upToDate = std::string("Tu es déjà à la dernière version (v") +
+                                     updates::current_version() + ").";
+        bool stagedSnap;
+        std::string stagedVerSnap;
+        {
+            std::lock_guard<std::mutex> lk(upd.m);
+            stagedSnap = upd.stagedReady;
+            stagedVerSnap = upd.stagedVer;
+        }
+        upd_start(tr("Vérification des mises à jour", "Update check"),
+                  checking,
+                  [checking, cancelledTxt, upToDate, stagedSnap,
+                   stagedVerSnap](int tid) {
+            upd_set(checking, std::nullopt, stagedSnap, stagedVerSnap);
+            std::string err;
+            auto found = updates::check(&err);
+            // updates::check() n'est pas annulable : si l'annulation est
+            // arrivee entre-temps, on ne publie pas le resultat et la tache
+            // reste « Annulee ».
+            if (upd.cancel.load()) {
+                (void)tl::tasks::cancel(tid);
+                upd_set(cancelledTxt, std::nullopt, stagedSnap, stagedVerSnap);
+                apptasks_end(tid);
+                return;
+            }
+            if (found) {
+                const std::string msg =
+                    "Nouvelle version disponible : v" + found->version +
+                    " (tu es en v" + updates::current_version() + ").";
+                upd_set(msg, found, stagedSnap, stagedVerSnap);
+                tl::tasks::update(tid, msg);
+                apptasks_end(tid);
+            } else if (!err.empty()) {
+                upd_set(err, std::nullopt, stagedSnap, stagedVerSnap);
+                apptasks_end(tid, err);
+            } else {
+                upd_set(upToDate, std::nullopt, stagedSnap, stagedVerSnap);
+                tl::tasks::update(tid, upToDate);
+                apptasks_end(tid);
+            }
+        });
+    }
+    ImGui::EndDisabled();
+
+    if (busy && downloading) {
+        const long long d = upd.done.load(), t = upd.total.load();
+        if (t > 0) {
+            const float f = static_cast<float>(
+                static_cast<double>(d) / static_cast<double>(t));
+            char overlay[64];
+            std::snprintf(overlay, sizeof(overlay), "%lld / %lld Ko", d / 1024,
+                          t / 1024);
+            ImGui::ProgressBar(f, ImVec2(420, 0), overlay);
+        } else {
+            ImGui::ProgressBar(-1.0f, ImVec2(420, 0), tr("Téléchargement..."));
+        }
+        if (ImGui::Button(tr("Annuler"), ImVec2(160, 30))) {
+            upd.cancel.store(true);
+            // Meme annulation que celle du panneau de taches.
+            if (taskId) (void)tl::tasks::cancel(taskId);
+        }
+    } else if (busy) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted(tr("Vérification..."));
+        ImGui::PopStyleColor();
+    }
+
+    // Release trouvee et rien de stage : changelog + telechargement (equivaut
+    // au dialogue « Mettre à jour maintenant ? » du C#).
+    if (!busy && !stagedReady && info && !info->notes.empty()) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped("%.800s", info->notes.c_str());
+        ImGui::PopStyleColor();
+    }
+    if (!busy && !stagedReady && info) {
+        ImGui::Spacing();
+        if (!info->assetUrl.empty()) {
+            if (accent_button(tr("Télécharger la mise à jour"), ImVec2(280, 34))) {
+                updates::Info copy = *info;
+                const std::string downloadingTxt = tr("Téléchargement...");
+                const std::string cancelledTxt = tr("Téléchargement annulé.");
+                const std::string failTxt =
+                    tr("Échec du téléchargement.", "Download failed.");
+                const std::string title =
+                    std::string(tr("Mise à jour", "Update")) + " v" + copy.version;
+                upd.downloading.store(true);
+                upd_start(title, downloadingTxt,
+                          [copy, downloadingTxt, cancelledTxt, failTxt](int tid) {
+                    upd_set(downloadingTxt, copy, false, "");
+                    std::string err;
+                    // Progression : atomique locale (UI) + miroir 0..1 pour
+                    // le panneau de taches.
+                    auto prog = [tid, downloadingTxt](long long d, long long t) {
+                        upd.done.store(d);
+                        upd.total.store(t);
+                        if (t > 0)
+                            tl::tasks::update(
+                                tid, downloadingTxt,
+                                static_cast<double>(d) / static_cast<double>(t));
+                    };
+                    if (updates::download_update(copy, prog, &upd.cancel, &err)) {
+                        const std::string msg =
+                            "Mise à jour v" + copy.version +
+                            " téléchargée : installe-la quand tu veux.";
+                        upd_set(msg, copy, true, copy.version);
+                        tl::tasks::update(tid, msg);
+                        apptasks_end(tid);
+                    } else if (upd.cancel.load()) {
+                        (void)tl::tasks::cancel(tid);
+                        upd_set(cancelledTxt, copy, false, "");
+                        apptasks_end(tid);
+                    } else {
+                        upd_set(err, copy, false, "");
+                        apptasks_end(tid, err.empty() ? failTxt : err);
+                    }
+                });
+            }
+        } else {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextWrapped(
+                "%s",
+                tr("Cette release ne contient pas de paquet Windows (.zip).",
+                   "This release has no Windows (.zip) package."));
+            ImGui::PopStyleColor();
+        }
+        if (!info->url.empty()) {
+            if (ImGui::Button(tr("Ouvrir la page de la version"), ImVec2(280, 34)))
+                open_url(info->url);
+        }
+    }
+
+    // Staged pret : installation differee + redemarrage propose.
+    if (!busy && stagedReady) {
+        ImGui::Spacing();
+        const std::string installLbl =
+            tr(std::string("Installer v") + stagedVer + " et redémarrer");
+        if (accent_button(installLbl.c_str(), ImVec2(320, 36))) {
+            std::string err;
+            if (updates::install_staged_and_restart(&err)) {
+                notify_toast(tr("Mise à jour"),
+                             tr("Installation au redémarrage : le launcher "
+                                "va se fermer.",
+                                "Installing on restart: the launcher will now "
+                                "close."));
+                SDL_Event ev{};
+                ev.type = SDL_QUIT;
+                SDL_PushEvent(&ev);
+            } else {
+                notify_toast(tr("Mise à jour"), err);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Supprimer le paquet"), ImVec2(180, 36))) {
+            std::string err;
+            if (updates::clear_staged(&err)) {
+                upd_set(tr("Paquet de mise à jour supprimé."), std::nullopt,
+                        false, "");
+            } else {
+                notify_toast(tr("Mise à jour"), err);
+            }
+        }
+    }
+
+    if (!status.empty()) {
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped("%s", status.c_str());
+        ImGui::PopStyleColor();
+    }
+}
+
 void tab_integrations() {
     auto& s = DataStore::settings;
 
@@ -276,11 +561,31 @@ void tab_integrations() {
         s.discordAppId = trimmed(b.discordId);
         DataStore::save();
     }
+    if (ImGui::Button(tr("Appliquer"), ImVec2(160, 34))) {
+        presence::reload();
+        notify_toast(tr("Discord"),
+                     presence::enabled()
+                         ? tr("Rich Presence activée — ouvre Discord pour voir "
+                              "ton statut.",
+                              "Rich Presence enabled - open Discord to see your "
+                              "status.")
+                         : tr("Rich Presence désactivée.",
+                              "Rich Presence disabled."));
+    }
+    ImGui::SameLine();
+    ImGui::PushStyleColor(ImGuiCol_Text,
+                          presence::connected() ? hex(0x50c878) : kDim);
+    ImGui::TextUnformatted(presence::connected()
+                               ? tr("Connecté à Discord", "Connected to Discord")
+                               : tr("Non connecté", "Not connected"));
+    ImGui::PopStyleColor();
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextWrapped("%s", tr("Le service de présence (PresenceService) n'est pas "
-                                "encore porté : le réglage est conservé.",
-                                "The presence service (PresenceService) is not "
-                                "ported yet: the setting is stored."));
+    ImGui::TextWrapped("%s", tr("Le logo doit être téléversé sur "
+                                "discord.com/developers/applications sous le nom "
+                                "exact « logo » (Rich Presence > Art Assets).",
+                                "The logo must be uploaded to "
+                                "discord.com/developers/applications under the "
+                                "exact name \"logo\" (Rich Presence > Art Assets)."));
     ImGui::PopStyleColor();
 
     section("MISES À JOUR AUTOMATIQUES");
@@ -294,6 +599,10 @@ void tab_integrations() {
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     ImGui::Text("%s%s", tr("Version installée : "), TL_VERSION_STRING);
     ImGui::PopStyleColor();
+
+    // Portage UpdateService/UpdateChecker (sans Velopack) : verification,
+    // telechargement avec progression, installation differee au redemarrage.
+    update_panel();
 
     section("CURSEFORGE");
     ImGui::SetNextItemWidth(420.0f);
@@ -332,6 +641,8 @@ struct MaintState {
     std::thread th;
     bool running = false;
     bool done = false;
+    std::atomic<bool> cancel{false}; // annulation du diagnostic (panneau)
+    int taskId = 0; // entree AppTasks du job en cours (sous m)
     // resultats
     std::vector<health::Check> checks;
     bool haveChecks = false;
@@ -349,18 +660,27 @@ void maint_reap() {
     }
 }
 
-void maint_start(std::function<void()> job) {
+// Idem upd_start : worker + tache AppTasks liee a maint.cancel.
+bool maint_start(const std::string& title, const std::string& status,
+                 const std::function<void(int)>& job) {
     maint_reap();
-    std::lock_guard<std::mutex> lk(maint.m);
-    if (maint.running) return;
-    if (maint.th.joinable()) maint.th.join();
-    maint.running = true;
-    maint.th = std::thread([job = std::move(job)] {
-        job();
+    int tid = 0;
+    {
+        std::lock_guard<std::mutex> lk(maint.m);
+        if (maint.running) return false;
+        if (maint.th.joinable()) maint.th.join();
+        maint.running = true;
+        maint.cancel.store(false);
+        tid = maint.taskId = apptasks_begin(title, status, &maint.cancel);
+    }
+    maint.th = std::thread([job, tid] {
+        job(tid);
         std::lock_guard<std::mutex> lk(maint.m);
         maint.running = false;
         maint.done = true;
+        maint.taskId = 0;
     });
+    return true;
 }
 
 void tab_advanced() {
@@ -378,6 +698,16 @@ void tab_advanced() {
     ImGui::SameLine();
     if (ImGui::Button(tr("Ouvrir launcher.log"), ImVec2(200, 34)))
         open_in_explorer(DataStore::dir() / "launcher.log");
+    ImGui::SameLine();
+    // Le C# ne creait le raccourci qu'une fois, sans moyen de le refaire.
+    if (ImGui::Button(tr("Raccourci sur le bureau"), ImVec2(240, 34))) {
+        const bool done = ensure_desktop_shortcut(/*force=*/true);
+        notify_toast(tr("Raccourci"),
+                     done ? tr("Raccourci créé sur le bureau.",
+                               "Shortcut created on the desktop.")
+                          : tr("Création impossible (voir launcher.log).",
+                               "Could not create it (see launcher.log)."));
+    }
 
     bool busy;
     {
@@ -397,11 +727,24 @@ void tab_advanced() {
             maint.haveChecks = false;
             maint.updateMsg.clear();
         }
-        maint_start([] {
-            auto r = health::run_all();
-            std::lock_guard<std::mutex> lk(maint.m);
-            maint.checks = std::move(r);
-            maint.haveChecks = true;
+        const std::string cancelledTxt =
+            tr("Diagnostic annulé.", "Diagnostic cancelled.");
+        maint_start(tr("Diagnostic du système", "System diagnostic"),
+                    tr("Analyse en cours...", "Analyzing..."),
+                    [cancelledTxt](int tid) {
+            auto r = health::run_all(&maint.cancel); // annulable
+            const bool wasCancelled = maint.cancel.load();
+            if (wasCancelled) (void)tl::tasks::cancel(tid);
+            {
+                std::lock_guard<std::mutex> lk(maint.m);
+                if (wasCancelled) {
+                    maint.updateMsg = cancelledTxt;
+                } else {
+                    maint.checks = std::move(r);
+                    maint.haveChecks = true;
+                }
+            }
+            apptasks_end(tid);
         });
     }
     ImGui::SameLine();
@@ -422,20 +765,45 @@ void tab_advanced() {
             maint.updateMsg.clear();
             maint.updateUrl.clear();
         }
-        maint_start([] {
+        const std::string cancelledTxt =
+            tr("Vérification annulée.", "Check cancelled.");
+        maint_start(tr("Vérification des mises à jour", "Update check"),
+                    tr("Vérification...", "Checking..."),
+                    [cancelledTxt](int tid) {
             std::string err;
             auto info = updates::check(&err);
-            std::lock_guard<std::mutex> lk(maint.m);
+            // Verification non annulable : annulation arrivee entre-temps ->
+            // on ignore le resultat, la tache reste « Annulee ».
+            if (maint.cancel.load()) {
+                (void)tl::tasks::cancel(tid);
+                {
+                    std::lock_guard<std::mutex> lk(maint.m);
+                    maint.updateMsg = cancelledTxt;
+                }
+                apptasks_end(tid);
+                return;
+            }
+            std::string msg, url;
             if (info) {
-                maint.updateMsg = "Nouvelle version disponible : v" + info->version +
-                                  " (tu es en v" + updates::current_version() + ").";
-                maint.updateUrl = info->url;
+                msg = "Nouvelle version disponible : v" + info->version +
+                      " (tu es en v" + updates::current_version() + ").";
+                url = info->url;
             } else if (!err.empty()) {
-                maint.updateMsg = err;
+                msg = err;
             } else {
-                maint.updateMsg =
-                    std::string("Tu es déjà à la dernière version (v") +
-                    updates::current_version() + ").";
+                msg = std::string("Tu es déjà à la dernière version (v") +
+                      updates::current_version() + ").";
+            }
+            {
+                std::lock_guard<std::mutex> lk(maint.m);
+                maint.updateMsg = msg;
+                maint.updateUrl = url;
+            }
+            if (!err.empty() && !info) {
+                apptasks_end(tid, err);
+            } else {
+                tl::tasks::update(tid, msg);
+                apptasks_end(tid);
             }
         });
     }
@@ -486,12 +854,23 @@ void tab_advanced() {
 // Joint le worker de maintenance (shutdown). Le thread est sorti sous verrou
 // puis joint hors verrou : son bloc final reprend `maint.m`.
 void settings_stop() {
+    upd.cancel.store(true);
+    maint.cancel.store(true);
+    upd_reap();
+    {
+        std::lock_guard<std::mutex> lk(upd.m);
+        if (upd.th.joinable() && !upd.busy) upd.th.join();
+    }
     std::thread th;
     {
         std::lock_guard<std::mutex> lk(maint.m);
         th = std::move(maint.th);
     }
     if (th.joinable()) th.join();
+    {
+        std::lock_guard<std::mutex> lk(upd.m);
+        if (upd.th.joinable()) upd.th.join();
+    }
 }
 
 namespace {

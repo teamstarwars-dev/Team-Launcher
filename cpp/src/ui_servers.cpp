@@ -3,6 +3,8 @@
 
 #include "ui_internal.hpp"
 
+#include "server_host.hpp"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
@@ -12,10 +14,9 @@
 namespace tl::ui {
 
 // ---------------------------------------------------------------------------
-// Page Serveurs (fidele ServersPage C#) : 3 onglets — Mes serveurs (cartes
-// herbees, creation), Favoris (ping SLP TCP 1.7), Villes de la team.
-// ServerHost/ServerPanel = module 4 : cartes en etat "Non installé", boutons
-// Gérer/Démarrer/Arrêter desactives (tooltip « portage module 4 »).
+// Page Serveurs (fidele ServersPage C#) : 3 onglets — Hotes Pterodactyl
+// (portage PterodactylApi.cs : cartes, ajout, alimentation, console),
+// Favoris (ping SLP TCP 1.7), Villes de la team.
 // Presse-papiers Win32 (copie IP, Partager/Importer) porté ici (aucun reseau).
 // ---------------------------------------------------------------------------
 
@@ -24,8 +25,6 @@ namespace {
 const ImVec4 kOk = hex(0x9ece6a);      // en ligne / Partager
 const ImVec4 kWarn = hex(0xe0af68);    // Importer
 const ImVec4 kCardHover = hex(0x1e2229);
-
-const char* const kHostedLoaders[] = {"Vanilla", "Fabric", "Forge", "NeoForge"};
 
 // --- presse-papiers (C# Clipboard.GetText/SetText, Win32 CF_TEXT) ---------
 
@@ -68,15 +67,6 @@ bool colored_button(const char* label, const ImVec2& size, const ImVec4& bg) {
     const bool r = ImGui::Button(label, size);
     ImGui::PopStyleColor(4);
     return r;
-}
-
-// Bouton desactive + tooltip (motif module deja employe ailleurs)
-void disabled_btn(const char* label, const ImVec2& size) {
-    ImGui::BeginDisabled();
-    ImGui::Button(label, size);
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", tr("Panneau serveur : portage à venir", "Server panel: port pending"));
 }
 
 // Wrap horizontal de cartes (remplace le WrapPanel C#)
@@ -379,28 +369,132 @@ char s_cityOwner[64] = "";
 char s_cityAddr[128] = "";
 char s_cityDesc[256] = "";
 
-// modale creation serveur herbe
-bool s_nsRequest = false;
-bool s_nsWasOpen = false;
-char s_nsName[64] = "";
-char s_nsVer[64] = "";
-int s_nsLoader = 0;
-int s_nsPort = 25565;
-int s_nsRam = 2;
+// --- hotes Pterodactyl (portage PterodactylApi.cs : Client API) -------------
+// Worker de fond + annulation (motif ping_worker) : les appels HTTP bloquants
+// (etat, alimentation, commande) ne passent jamais par le thread UI.
 
-// modale suppression (par Id)
+struct PteroStatus {
+    bool fetched = false;
+    bool running = false;
+    ptero::PtServerState state{};
+};
+
+struct PteroTask {
+    enum class Kind { Refresh, Power, Command };
+    Kind kind = Kind::Refresh;
+    ptero::Host host;
+    std::string arg; // signal (Power) ou commande console (Command)
+};
+
+struct PteroWork {
+    std::mutex m;
+    std::condition_variable cv;
+    std::deque<PteroTask> tasks;
+    std::map<std::string, PteroStatus> status; // cle panelUrl|serverId
+    std::string toastTitle, toastMsg;
+    bool toastPending = false;
+    bool workPending = false;
+    bool workerStarted = false;
+    std::thread th;
+    std::atomic<bool> cancel{false};
+};
+
+PteroWork pteroWork;
+
+std::string ptero_key(const ptero::Host& h) {
+    return h.panelUrl + "|" + h.serverId;
+}
+
+void ptero_worker() {
+    for (;;) {
+        PteroTask t;
+        {
+            std::unique_lock lk(pteroWork.m);
+            pteroWork.cv.wait(lk, [] {
+                return pteroWork.workPending || pteroWork.cancel.load();
+            });
+            if (pteroWork.cancel.load()) return;
+            if (pteroWork.tasks.empty()) {
+                pteroWork.workPending = false;
+                continue;
+            }
+            t = std::move(pteroWork.tasks.front());
+            pteroWork.tasks.pop_front();
+            pteroWork.workPending = !pteroWork.tasks.empty();
+        }
+        const std::string key = ptero_key(t.host);
+        const std::atomic<bool>* cancel = &pteroWork.cancel;
+        try {
+            if (t.kind == PteroTask::Kind::Refresh) {
+                const ptero::PtServerState st = ptero::server_state(t.host, cancel);
+                std::lock_guard lk(pteroWork.m);
+                if (pteroWork.cancel.load()) return;
+                PteroStatus& s = pteroWork.status[key];
+                s.fetched = true;
+                s.running = st.isRunning;
+                s.state = st;
+            } else if (t.kind == PteroTask::Kind::Power) {
+                ptero::power(t.host, t.arg, cancel);
+                {
+                    std::lock_guard lk(pteroWork.m);
+                    if (pteroWork.cancel.load()) return;
+                    pteroWork.toastTitle = t.host.name;
+                    pteroWork.toastMsg = "Signal envoyé : " + t.arg + ".";
+                    pteroWork.toastPending = true;
+                    pteroWork.tasks.push_front(
+                        PteroTask{PteroTask::Kind::Refresh, t.host, {}});
+                    pteroWork.workPending = true;
+                }
+                pteroWork.cv.notify_one();
+            } else {
+                ptero::send_command(t.host, t.arg, cancel);
+                std::lock_guard lk(pteroWork.m);
+                if (pteroWork.cancel.load()) return;
+                pteroWork.toastTitle = t.host.name;
+                pteroWork.toastMsg = "Commande envoyée.";
+                pteroWork.toastPending = true;
+            }
+        } catch (const std::exception& e) {
+            std::lock_guard lk(pteroWork.m);
+            if (pteroWork.cancel.load()) return;
+            pteroWork.toastTitle = t.host.name;
+            pteroWork.toastMsg = e.what();
+            pteroWork.toastPending = true;
+        }
+    }
+}
+
+void ptero_enqueue(PteroTask t) {
+    std::lock_guard lk(pteroWork.m);
+    if (pteroWork.cancel.load()) return;
+    if (!pteroWork.workerStarted) {
+        pteroWork.workerStarted = true;
+        pteroWork.th = std::thread(ptero_worker);
+    }
+    pteroWork.tasks.push_back(std::move(t));
+    pteroWork.workPending = true;
+    pteroWork.cv.notify_one();
+}
+
+// modale ajout d'hote Pterodactyl (nom/URL/cle/identifiant)
+bool s_phRequest = false;
+bool s_phWasOpen = false;
+char s_phName[64] = "";
+char s_phUrl[256] = "";
+char s_phKey[128] = "";
+char s_phSid[32] = "";
+std::string s_phError;
+
+// modale console (envoi de commande vers un hote)
+bool s_cmdRequest = false;
+bool s_cmdWasOpen = false;
+std::string s_cmdTarget; // cle panelUrl|serverId
+char s_cmdBuf[256] = "";
+
+// modale suppression (par cle panelUrl|serverId)
 bool s_delRequest = false;
 bool s_delWasOpen = false;
 std::string s_delId;
-
-std::string iso_now() {
-    std::time_t t = std::time(nullptr);
-    std::tm tm{};
-    localtime_s(&tm, &t);
-    char b[32];
-    std::strftime(b, sizeof(b), "%Y-%m-%dT%H:%M:%S", &tm);
-    return b;
-}
 
 bool iequals(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) return false;
@@ -411,40 +505,67 @@ bool iequals(const std::string& a, const std::string& b) {
     return true;
 }
 
-// --- Onglet 1 : Mes serveurs ----------------------------------------------
+// --- Onglet 1 : Hotes Pterodactyl ------------------------------------------
 
-void hosted_card(const nlohmann::json& s, int idx) {
-    const float w = 340.0f, h = 140.0f;
+void ptero_card(const ptero::Host& h, int idx) {
+    const float w = 340.0f, hgt = 208.0f;
+    const std::string key = ptero_key(h);
+    PteroStatus st;
+    {
+        std::lock_guard lk(pteroWork.m);
+        auto it = pteroWork.status.find(key);
+        if (it != pteroWork.status.end()) st = it->second;
+    }
     ImGui::PushID(idx);
     ImGui::PushStyleColor(ImGuiCol_ChildBg, kCard);
-    ImGui::BeginChild("##hosted", ImVec2(w, h), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##ptero", ImVec2(w, hgt), ImGuiChildFlags_Borders);
 
-    const std::string name = s.value("Name", "?");
-    // pastille statut (ServerHost absent -> "Non installé", gris)
+    const ImVec4 dot = (st.fetched && st.running) ? kOk : kDim;
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddCircleFilled(
         ImVec2(p.x + 5.0f, p.y + 9.0f), 5.0f,
-        ImGui::ColorConvertFloat4ToU32(kDim));
+        ImGui::ColorConvertFloat4ToU32(dot));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 18.0f);
-    ImGui::TextUnformatted(name.c_str());
+    ImGui::TextUnformatted(h.name.c_str());
 
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     if (fSmall) ImGui::PushFont(fSmall);
-    ImGui::TextUnformatted(tr("Non installé"));
-    ImGui::Text("%s %s  ·  port %d  ·  RAM %d Go",
-                s.value("Loader", "Vanilla").c_str(),
-                s.value("McVersion", "").c_str(), s.value("Port", 25565),
-                s.value("MaxRamGb", 2));
+    ImGui::TextUnformatted(h.panelUrl.c_str());
+    ImGui::Text("%s : %s", tr("Serveur", "Server"), h.serverId.c_str());
+    if (!st.fetched) {
+        ImGui::TextUnformatted(tr("Actualisation...", "Refreshing..."));
+    } else if (st.running) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kOk);
+        ImGui::Text("%s — CPU %d%% · RAM %lld Mo · %d/%d %s",
+                    tr("En ligne", "Online"), st.state.cpuPercent,
+                    st.state.memUsedBytes / 1024 / 1024, st.state.players,
+                    st.state.maxPlayers, tr("joueurs", "players"));
+        ImGui::PopStyleColor();
+    } else {
+        ImGui::TextUnformatted(tr("Arrêté", "Stopped"));
+    }
     if (fSmall) ImGui::PopFont();
     ImGui::PopStyleColor();
 
     ImGui::Spacing();
-    disabled_btn(tr("Gérer"), ImVec2(90, 30));
+    if (st.running) {
+        if (danger_button(tr("Arrêter", "Stop"), ImVec2(100, 30)))
+            ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "stop"});
+    } else {
+        if (accent_button(tr("Démarrer", "Start"), ImVec2(100, 30)))
+            ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "start"});
+    }
     ImGui::SameLine();
-    disabled_btn(tr("Démarrer"), ImVec2(100, 30));
+    if (ImGui::Button(tr("Redémarrer", "Restart"), ImVec2(110, 30)))
+        ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "restart"});
     ImGui::SameLine();
-    if (ImGui::Button(tr("Supprimer"), ImVec2(100, 30))) {
-        s_delId = s.value("Id", "");
+    if (ImGui::Button(tr("Console"), ImVec2(90, 30))) {
+        s_cmdTarget = key;
+        s_cmdBuf[0] = '\0';
+        s_cmdRequest = true;
+    }
+    if (danger_button(tr("Supprimer", "Delete"), ImVec2(100, 30))) {
+        s_delId = key;
         s_delRequest = true;
     }
 
@@ -454,30 +575,64 @@ void hosted_card(const nlohmann::json& s, int idx) {
 }
 
 void tab_hosted() {
-    if (accent_button(tr("Nouveau serveur"), ImVec2(170, 34))) s_nsRequest = true;
+    if (accent_button(tr("Nouvel hôte", "New host"), ImVec2(170, 34)))
+        s_phRequest = true;
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Actualiser", "Refresh"), ImVec2(110, 34))) {
+        for (const auto& h : ptero::load_hosts())
+            ptero_enqueue(PteroTask{PteroTask::Kind::Refresh, h, {}});
+    }
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     if (fSmall) ImGui::PushFont(fSmall);
     ImGui::TextWrapped(
-        "%s", tr("Clique sur un serveur pour ouvrir le panneau de gestion "
-                 "(console, joueurs, map, réglages)."));
+        "%s", tr("Serveurs Pterodactyl pilotés depuis le launcher "
+                 "(démarrage, arrêt, console).",
+                 "Pterodactyl servers driven from the launcher "
+                 "(start, stop, console)."));
     if (fSmall) ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::Spacing();
 
-    auto& arr = DataStore::settings.hostedServers;
-    if (!arr.is_array() || arr.empty()) {
+    // Toasts poses par le worker (motif notify_toast, thread UI uniquement).
+    {
+        std::string title, msg;
+        {
+            std::lock_guard lk(pteroWork.m);
+            if (pteroWork.toastPending) {
+                title = pteroWork.toastTitle;
+                msg = pteroWork.toastMsg;
+                pteroWork.toastPending = false;
+            }
+        }
+        if (!title.empty() || !msg.empty()) notify_toast(title, msg);
+    }
+
+    const std::vector<ptero::Host> hosts = ptero::load_hosts();
+    if (hosts.empty()) {
         placeholder_card(
-            tr("Aucun serveur hébergé.\n"
-               "Clique sur « Nouveau serveur » pour en créer un."));
+            tr("Aucun hôte Pterodactyl.\n"
+               "Clique sur « Nouvel hôte » pour en ajouter un."));
         return;
     }
+    // Premier affichage -> file d'actualisation (placeholder comme queue_pings).
+    for (const auto& h : hosts) {
+        bool missing = false;
+        {
+            std::lock_guard lk(pteroWork.m);
+            const std::string key = ptero_key(h);
+            if (!pteroWork.status.count(key)) {
+                pteroWork.status[key] = PteroStatus{};
+                missing = true;
+            }
+        }
+        if (missing) ptero_enqueue(PteroTask{PteroTask::Kind::Refresh, h, {}});
+    }
     CardFlow flow(8.0f);
-    for (size_t i = 0; i < arr.size(); ++i) {
-        if (!arr[i].is_object()) continue;
-        flow.slot(340.0f, 140.0f);
-        hosted_card(arr[i], static_cast<int>(i));
-        flow.advance(340.0f, 140.0f);
+    for (size_t i = 0; i < hosts.size(); ++i) {
+        flow.slot(340.0f, 208.0f);
+        ptero_card(hosts[i], static_cast<int>(i));
+        flow.advance(340.0f, 208.0f);
     }
     flow.end();
 }
@@ -756,11 +911,16 @@ void server_modals() {
         ImGui::PopStyleColor();
     };
 
-    // Creation : ouverture
-    if (s_nsRequest) {
-        ImGui::OpenPopup("###newhosted");
-        s_nsRequest = false;
-        s_nsWasOpen = false;
+    // Ajout d'hote : ouverture
+    if (s_phRequest) {
+        ImGui::OpenPopup("###newptero");
+        s_phRequest = false;
+        s_phWasOpen = false;
+    }
+    if (s_cmdRequest) {
+        ImGui::OpenPopup("###pterocmd");
+        s_cmdRequest = false;
+        s_cmdWasOpen = false;
     }
     if (s_delRequest) {
         ImGui::OpenPopup("###delsrv");
@@ -768,72 +928,108 @@ void server_modals() {
         s_delWasOpen = false;
     }
 
-    // Creation : formulaire (creation AU moment de la fermeture, si nom non
-    // vide — fidele ShowDialog C# qui lit les champs apres fermeture)
+    // Ajout d'hote : nom/URL/cle/identifiant (validation immediate, erreur
+    // affichee dans la modale qui reste ouverte).
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(420, 430), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(440, 400), ImGuiCond_Appearing);
     bool open = true;
-    const std::string nsTitle = std::string(tr("Nouveau serveur hébergé")) + "###newhosted";
-    if (ImGui::BeginPopupModal(nsTitle.c_str(), &open,
+    const std::string phTitle =
+        std::string(tr("Nouvel hôte Pterodactyl", "New Pterodactyl host")) +
+        "###newptero";
+    if (ImGui::BeginPopupModal(phTitle.c_str(), &open,
                                ImGuiWindowFlags_NoCollapse |
                                    ImGuiWindowFlags_NoResize)) {
-        s_nsWasOpen = true;
+        s_phWasOpen = true;
         label(tr("Nom :"));
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##nsname", "Nom du serveur", s_nsName,
-                                 sizeof(s_nsName));
-        label(tr("Version Minecraft :"));
+        ImGui::InputTextWithHint("##phname", "Mon serveur", s_phName,
+                                 sizeof(s_phName));
+        label(tr("URL du panel :"));
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##nsver", "Version Minecraft (ex: 1.21.1)",
-                                 s_nsVer, sizeof(s_nsVer));
-        label(tr("Chargeur :"));
-        ImGui::SetNextItemWidth(200);
-        ImGui::Combo("##nsloader", &s_nsLoader, kHostedLoaders, 4);
-        label(tr("Port :"));
-        ImGui::SetNextItemWidth(160);
-        ImGui::InputInt("##nsport", &s_nsPort);
-        if (s_nsPort < 1024) s_nsPort = 1024;
-        if (s_nsPort > 65535) s_nsPort = 65535;
-        label(tr("RAM max (Go) :"));
-        ImGui::SetNextItemWidth(160);
-        ImGui::InputInt("##nsram", &s_nsRam);
-        if (s_nsRam < 1) s_nsRam = 1;
-        if (s_nsRam > 16) s_nsRam = 16;
+        ImGui::InputTextWithHint("##phurl", "https://panel.exemple.fr",
+                                 s_phUrl, sizeof(s_phUrl));
+        label(tr("Clé API (Client API) :"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##phkey", "ptlc_...", s_phKey,
+                                 sizeof(s_phKey),
+                                 ImGuiInputTextFlags_Password);
+        label(tr("Identifiant serveur :"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##phsid", "a1b2c3d4", s_phSid,
+                                 sizeof(s_phSid));
+        if (!s_phError.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
+            ImGui::TextWrapped("%s", s_phError.c_str());
+            ImGui::PopStyleColor();
+        }
         ImGui::Spacing();
-        if (accent_button(tr("Créer"), ImVec2(130, 36)))
+        if (accent_button(tr("Ajouter", "Add"), ImVec2(130, 36))) {
+            const ptero::Host h{trimmed(s_phName), trimmed(s_phUrl),
+                                trimmed(s_phKey), trimmed(s_phSid)};
+            try {
+                ptero::add_host(h);
+                // file d'actualisation sur l'hote stocke (URL normalisee)
+                for (const auto& lh : ptero::load_hosts())
+                    if (lh.serverId == h.serverId)
+                        ptero_enqueue(
+                            PteroTask{PteroTask::Kind::Refresh, lh, {}});
+                s_phError.clear();
+                ImGui::CloseCurrentPopup();
+            } catch (const std::exception& e) {
+                s_phError = e.what();
+            }
+        }
+        ImGui::EndPopup();
+    } else if (s_phWasOpen) {
+        s_phWasOpen = false;
+        s_phName[0] = s_phUrl[0] = s_phKey[0] = s_phSid[0] = '\0';
+        s_phError.clear();
+    }
+
+    // Console : envoi de commande vers l'hote cible (modale gardee ouverte
+    // pour enchainer les commandes).
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(440, 210), ImGuiCond_Appearing);
+    bool openCmd = true;
+    std::string cmdName;
+    for (const auto& h : ptero::load_hosts())
+        if (ptero_key(h) == s_cmdTarget) {
+            cmdName = h.name;
+            break;
+        }
+    const std::string cmdTitle =
+        std::string(tr("Console")) + (cmdName.empty() ? "" : " — " + cmdName) +
+        "###pterocmd";
+    if (ImGui::BeginPopupModal(cmdTitle.c_str(), &openCmd,
+                               ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoResize)) {
+        s_cmdWasOpen = true;
+        label(tr("Commande :"));
+        ImGui::SetNextItemWidth(-1);
+        const bool enter = ImGui::InputTextWithHint(
+            "##pterocmdin", "list, say Bonjour...", s_cmdBuf, sizeof(s_cmdBuf),
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        auto doSend = [] {
+            const std::string cmd = trimmed(s_cmdBuf);
+            if (cmd.empty()) return;
+            for (const auto& h : ptero::load_hosts())
+                if (ptero_key(h) == s_cmdTarget) {
+                    ptero_enqueue(PteroTask{PteroTask::Kind::Command, h, cmd});
+                    break;
+                }
+            s_cmdBuf[0] = '\0';
+        };
+        if (enter) doSend();
+        ImGui::Spacing();
+        if (accent_button(tr("Envoyer", "Send"), ImVec2(130, 36))) doSend();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Fermer", "Close"), ImVec2(130, 36)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
-    } else if (s_nsWasOpen) {
-        s_nsWasOpen = false;
-        // Fermeture (Croix ou Créer) : nom vide = annulation silencieuse
-        const std::string name = trimmed(s_nsName);
-        if (!name.empty()) {
-            auto& arr = DataStore::settings.hostedServers;
-            if (!arr.is_array()) arr = nlohmann::json::array();
-            arr.push_back(
-                {{"Id", new_guid()},
-                 {"Name", name},
-                 {"McVersion", trimmed(s_nsVer)},
-                 {"Loader", kHostedLoaders[s_nsLoader]},
-                 {"Port", s_nsPort},
-                 {"Motd", "Serveur hébergé par Team Launcher"},
-                 {"MaxRamGb", s_nsRam},
-                 {"JavaMajor", 8},
-                 {"AutoRestart", true},
-                 {"RestartAt", ""},
-                 {"CreatedAt", iso_now()},
-                 {"PublicAddress", ""},
-                 {"RpProfile", false},
-                 {"WhitelistEnabled", false},
-                 {"Whitelist", nlohmann::json::array()},
-                 {"WelcomeMessage", ""},
-                 {"DiscordWebhookUrl", ""}});
-            DataStore::save();
-        }
-        s_nsName[0] = s_nsVer[0] = '\0';
-        s_nsLoader = 0;
-        s_nsPort = 25565;
-        s_nsRam = 2;
+    } else if (s_cmdWasOpen) {
+        s_cmdWasOpen = false;
+        s_cmdTarget.clear();
+        s_cmdBuf[0] = '\0';
     }
 
     // Suppression
@@ -851,13 +1047,14 @@ void server_modals() {
             ImGui::CloseCurrentPopup();
         ImGui::SameLine();
         if (danger_button(tr("Supprimer"), ImVec2(120, 36))) {
-            auto& arr = DataStore::settings.hostedServers;
-            for (auto it = arr.begin(); it != arr.end(); ++it)
-                if (it->is_object() && it->value("Id", "") == s_delId) {
-                    arr.erase(it);
-                    break;
-                }
-            DataStore::save();
+            const size_t sep = s_delId.find('|');
+            if (sep != std::string::npos)
+                ptero::remove_host(s_delId.substr(0, sep),
+                                   s_delId.substr(sep + 1));
+            {
+                std::lock_guard lk(pteroWork.m);
+                pteroWork.status.erase(s_delId);
+            }
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();
@@ -867,6 +1064,18 @@ void server_modals() {
 }
 
 } // namespace
+
+// Arret du worker Pterodactyl (appele depuis le shutdown ui.cpp, qui ne peut
+// pas voir l'etat interne ci-dessus : declaration avancee a ajouter la-bas).
+void servers_ptero_stop() {
+    {
+        std::lock_guard lk(pteroWork.m);
+        pteroWork.cancel = true;
+        pteroWork.workPending = true;
+    }
+    pteroWork.cv.notify_all();
+    if (pteroWork.th.joinable()) pteroWork.th.join();
+}
 
 void servers_page() {
     // TL_AUTO_TAB (test) : ouvre directement l'onglet 0..2 (une seule fois)

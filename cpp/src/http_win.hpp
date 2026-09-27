@@ -45,4 +45,18 @@ bool get_to_file(const std::string& url, const std::filesystem::path& dest,
                  const std::atomic<bool>* cancel = nullptr,
                  int retries = 3);
 
+// --- Securite S2 ------------------------------------------------------------
+// Allowlist d'hotes : false = requete refusee (S2).
+// Correspondance insensible a la casse, par suffixe avec frontiere de domaine
+// (h == entry, ou h se termine par "." + entry) ; IP = egalite stricte.
+bool host_allowed(const std::string& hostUtf8);
+
+// Ajoute un hote dynamique (hotes de la configuration utilisateur). Accepte un
+// hote nu ou une URL complete (l'hote en est extrait).
+void allow_host(const std::string& hostUtf8);
+
+// Recopie l'URL en masquant les secrets (userinfo, segment webhook, valeurs de
+// query sensibles). Fonctionne aussi sur un chemin + query seul.
+std::string redact_url(const std::string& url);
+
 } // namespace tl::http

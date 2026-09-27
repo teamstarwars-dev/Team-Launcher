@@ -15,7 +15,11 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <vector>
+
 #include "datastore.hpp"
+#include "maintenance.hpp"
+#include "util_image.hpp"
 #include "ui.hpp"
 
 #ifndef TL_VERSION_STRING
@@ -30,6 +34,12 @@ int main(int argc, char** argv) {
         if (std::strcmp(argv[i], "--portable") == 0)
             tl::DataStore::isPortable = true;
     tl::DataStore::load();
+
+    // Mise a jour stagee : application differee (l'exe en cours est
+    // verrouille sous Windows). On signale seulement ici, AVANT l'UI ;
+    // le deploiement passe par updates::install_staged_and_restart().
+    if (auto s = tl::updates::staged())
+        std::fprintf(stderr, "update pending: v%s\n", s->info.version.c_str());
 
     // launcher sans console (stderr reste dispo avec TL_CONSOLE=1)
     if (!std::getenv("TL_CONSOLE"))
@@ -82,6 +92,14 @@ int main(int argc, char** argv) {
 
     bool running = true;
     const bool dbgSh = std::getenv("TL_DEBUG_SHUTDOWN") != nullptr;
+
+    // Capture automatique (validation visuelle des pages) — cf. plus bas.
+    const char* shotPath = std::getenv("TL_SCREENSHOT");
+    bool shotTaken = false;
+    const Uint32 shotStart = SDL_GetTicks();
+    Uint32 shotDelayMs = 6000;
+    if (const char* d = std::getenv("TL_SCREENSHOT_DELAY"))
+        shotDelayMs = static_cast<Uint32>(std::atof(d) * 1000.0);
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -116,6 +134,31 @@ int main(int argc, char** argv) {
         glClearColor(0.055f, 0.055f, 0.075f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+        // TL_SCREENSHOT=<chemin.png> : le launcher se capture lui-meme depuis
+        // son propre framebuffer, puis se ferme normalement (le shutdown reste
+        // donc exerce). Lecture AVANT SwapWindow : apres l'echange, le contenu
+        // du back buffer n'est plus garanti (les modales n'y apparaissaient
+        // jamais). On ne photographie jamais l'ecran : aucune autre fenetre
+        // ne peut se retrouver dans l'image, et rien ne depend du focus.
+        // TL_SCREENSHOT_DELAY=<secondes> (defaut 6) laisse le temps aux
+        // chargements reseau d'aboutir.
+        if (shotPath && !shotTaken &&
+            SDL_GetTicks() >= shotStart + shotDelayMs) {
+            shotTaken = true;
+            int sw = 0, sh = 0;
+            SDL_GL_GetDrawableSize(window, &sw, &sh);
+            std::vector<unsigned char> px(static_cast<size_t>(sw) * sh * 4);
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            // glReadPixels part d'en bas : flipY remet l'image a l'endroit.
+            const bool ok = tl::image::write_png(shotPath, sw, sh, 4, px.data(),
+                                                 /*flipY=*/true);
+            std::fprintf(stderr, "SHOT %s %dx%d -> %s\n", shotPath, sw, sh,
+                         ok ? "OK" : "ECHEC");
+            std::fflush(stderr);
+            running = false;
+        }
         SDL_GL_SwapWindow(window);
     }
 

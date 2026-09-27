@@ -7,6 +7,7 @@
 
 #include "datastore.hpp"
 #include "lang.hpp"
+#include "apptasks.hpp"
 #include "launch_flow.hpp"
 
 #include <imgui.h>
@@ -182,9 +183,15 @@ void home_page();        // ui_home.cpp
 void instances_page();   // ui_instances.cpp
 void open_edit_modal(const std::string& id);
 void instance_modals();
+void open_instance_detail(const std::string& id, int tab = 0);
+void instance_detail_modal(); // ui_instancedetail.cpp
 void play_page();        // ui_play.cpp
 void settings_page();    // ui_settings.cpp
 void settings_stop();    // ui_settings.cpp : joint le worker de maintenance
+void explore_page();     // ui_explore.cpp (page 9)
+bool onboarding_needed();  // ui_onboarding.cpp
+void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
+void explore_stop();     // ui_explore.cpp : joint le worker
 
 // Module 3ter — pages reseau
 struct NewsEntry {
@@ -205,6 +212,7 @@ struct PingResult {
     bool ok = false;
     bool errored = false; // exception (host inconnu, troncature...)
     bool started = false; // deja envoye au worker (sinon "Ping en cours...")
+    bool cancelled = false; // batch annule avant d'atteindre ce serveur
     int online = 0, max = 0;
     std::string version, motd;
 };
@@ -219,6 +227,12 @@ struct ServersState {
     int refreshSeq = 0; // invalidation des resultats obsoletes
     std::thread th;
     std::atomic<bool> cancel{false};
+    // Batch de ping suivi comme tache de fond (registre AppTasks) :
+    // pingCancel est branche par apptasks_begin, les compteurs sont gardes
+    // par m. Les trois suivants ne sont touches que sous verrou.
+    std::atomic<bool> pingCancel{false};
+    int pingTaskId = 0;
+    int pingDone = 0, pingTotal = 0;
     int cityEditIdx = -1; // ville chargee dans le formulaire (Modifier)
 };
 extern ServersState serversState;
@@ -227,6 +241,7 @@ void news_page();      // ui_news.cpp
 void account_page();   // ui_account.cpp
 void bedrock_page();   // ui_bedrock.cpp
 void servers_page();   // ui_servers.cpp
+void servers_ptero_stop(); // ui_servers.cpp : joint le worker hébergé (shutdown)
 void skins_page();     // ui_skins.cpp
 void skins_stop();     // ui_skins.cpp : annule le worker + libere les textures
 void skins_import_path(const char* path); // ui_skins.cpp : glisser-deposer
@@ -234,6 +249,8 @@ void skins_import_path(const char* path); // ui_skins.cpp : glisser-deposer
 // Module 4d — import de modpacks (ui_packs.cpp)
 void import_modpack_pick();                        // ouvre le selecteur de fichier
 void import_modpack_start(const std::string& path); // glisser-deposer
+void share_instance_start(const nlohmann::json& inst); // copie le pack
+void import_shared_from_clipboard();                   // colle un pack
 void packs_frame();                                // bandeau + resultat (1x/frame)
 void packs_stop();                                 // joint le worker (shutdown)
 bool packs_busy();
@@ -241,5 +258,24 @@ bool packs_busy();
 // Module 4 — auth Microsoft (ui_auth.cpp ; la modale est tl::auth::draw_login_modal)
 void auth_sync();                    // applique une connexion reussie (pseudo, toast)
 void open_url(const std::string& url); // ShellExecuteW sur une URL UTF-8
+
+// Module 4 — registre de tâches de fond (ui_apptasks.cpp)
+void apptasks_panel();   // panneau des tâches de fond
+void apptasks_frame();   // panneau si >= 1 tâche (1x/frame)
+const char* apptasks_state_label(tl::tasks::State s);
+
+// Raccordement des pages aux workers (module « rebranchement AppTasks ») :
+//   apptasks_begin(titre, statut, &annulationLocale) cree l'entree dans le
+//     registre ET branche l'atomic que la page sonde deja dans son worker :
+//     le bouton Annuler du panneau declenche aussi l'annulation locale
+//     (relais fait chaque frame par apptasks_frame). nullptr = aucun branchem.
+//   apptasks_end(id, message) clot l'entree : fail(message) si message non
+//     vide, sinon finish(). Appele par le worker lui-meme (et non par la page)
+//     pour que le panneau soit juste meme si l'utilisateur quitte la page.
+// Les deux sont sans effet pour id <= 0. Les chaines sont deposees BRUTES
+// (source) : le panneau traduit a l'affichage.
+int apptasks_begin(const std::string& title, const std::string& status,
+                   std::atomic<bool>* localCancel = nullptr);
+void apptasks_end(int id, const std::string& message = "");
 
 } // namespace tl::ui

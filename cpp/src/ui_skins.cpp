@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <fstream>
+#include <memory>
 #include <regex>
 #include <set>
 #include <unordered_set>
@@ -55,6 +56,10 @@ struct Task {
     std::string name;               // OnlineImport (pseudo affiche)
     std::vector<nlohmann::json> instances; // Apply
     std::string playerName;         // Apply
+    // Annulation propre a la tache : liee a son entree AppTasks (le panneau
+    // n'annule qu'elle, pas tout le worker). Posee par push_task.
+    std::shared_ptr<std::atomic<bool>> cancel;
+    int apptaskId = 0;              // entree AppTasks (0 = aucune)
 };
 struct TaskResult {
     std::string status;
@@ -66,6 +71,7 @@ struct TaskResult {
     int tab = 0;
     bool catalog = false;
     std::vector<OnlineSkin> online;
+    bool failed = false; // echec reel -> « Echouee » dans le panneau
 };
 
 struct SkinsSt {
@@ -104,6 +110,9 @@ struct SkinsSt {
     std::condition_variable cv;
     std::thread th;
     std::atomic<bool> cancel{false};
+    // Drapeau de la tache en vol (sous m) : skins_stop() le leve aussi, sinon
+    // http ne verrait que le drapeau propre a la tache et ignorerait l'arret.
+    std::atomic<bool>* runningCancel = nullptr;
     std::deque<ThumbJob> thumbQ;
     std::deque<Task> taskQ;
     std::deque<ThumbRes> thumbRes;
@@ -270,7 +279,43 @@ bool is_fav(const std::string& name) {
 TaskResult run_task(const Task& t);
 ThumbRes run_thumb(const ThumbJob& j);
 std::vector<OnlineSkin> catalog_fetch(const std::string& query,
-                                      std::string& status);
+                                      std::string& status,
+                                      const std::atomic<bool>* cancel);
+
+// Titre affiche dans le panneau de taches. Compose ici (fil UI) : la page
+// n'affiche pas de titre, le panneau traduit a l'affichage.
+std::string task_title(const Task& t) {
+    switch (t.kind) {
+    case TaskKind::Apply:
+        return tr("Application du skin", "Apply skin");
+    case TaskKind::ImportName:
+        return std::string(tr("Import de skin : ", "Skin import: ")) + t.a;
+    case TaskKind::ImportUrl:
+        return tr("Import de skin (URL)", "Skin import (URL)");
+    case TaskKind::FetchMine:
+        return std::string(tr("Récupération du skin : ", "Skin fetch: ")) + t.a;
+    case TaskKind::OnlineImport:
+        return std::string(tr("Ajout du skin : ", "Add skin: ")) +
+               (t.name.empty() ? t.a : t.name);
+    case TaskKind::Catalog:
+        return tr("Chargement du catalogue", "Loading catalog");
+    }
+    return tr("Tâche skins", "Skins task");
+}
+
+// Rapport de fin vers le panneau. Appele PAR LE WORKER, pendant que `t` est
+// encore vivant (son drapeau reste referencable jusqu'a apptasks_end).
+void end_task_entry(const Task& t, const TaskResult& r) {
+    if (t.apptaskId <= 0) return;
+    // Annulation locale non relayee (arret de la page) -> « Annulee ».
+    if (t.cancel && t.cancel->load()) (void)tl::tasks::cancel(t.apptaskId);
+    if (r.failed) {
+        apptasks_end(t.apptaskId, r.status);
+    } else {
+        tl::tasks::update(t.apptaskId, r.status);
+        apptasks_end(t.apptaskId);
+    }
+}
 
 void ensure_worker() {
     if (S.workerStarted) return;
@@ -290,6 +335,10 @@ void ensure_worker() {
                 if (!S.taskQ.empty()) {
                     task = std::move(S.taskQ.front());
                     S.taskQ.pop_front();
+                    // Publie sous verrou AVANT execution : un arret (qui prend
+                    // egalement ce verrou) ne peut pas manquer le drapeau.
+                    S.runningCancel =
+                        task.cancel ? task.cancel.get() : &S.cancel;
                     haveTask = true;
                 } else if (!S.thumbQ.empty()) {
                     tj = std::move(S.thumbQ.front());
@@ -299,7 +348,11 @@ void ensure_worker() {
             }
             if (haveTask) {
                 TaskResult r = run_task(task);
+                // Fin de tache tant que `task` (et son drapeau) est en vie :
+                // le lien vers le registre est retire ici.
+                end_task_entry(task, r);
                 std::lock_guard<std::mutex> lk(S.m);
+                S.runningCancel = nullptr;
                 S.taskRes.push_back(std::move(r));
             } else if (haveThumb) {
                 ThumbRes r = run_thumb(tj);
@@ -311,6 +364,11 @@ void ensure_worker() {
 }
 
 void push_task(Task t) {
+    // Suivi comme tache de fond : annulation par tache (le panneau n'arrete
+    // pas tout le worker). Le pointeur reste valide : il est porte par le
+    // shared_ptr de la tache, de la file jusqu'a la fin de run_task.
+    t.cancel = std::make_shared<std::atomic<bool>>(false);
+    t.apptaskId = apptasks_begin(task_title(t), "", t.cancel.get());
     {
         std::lock_guard<std::mutex> lk(S.m);
         S.taskQ.push_back(std::move(t));
@@ -373,7 +431,9 @@ ThumbRes run_thumb(const ThumbJob& j) {
 
 TaskResult run_task(const Task& t) {
     TaskResult r;
-    const std::atomic<bool>* cancel = &S.cancel;
+    // Annulation propre a la tache (panneau) ; repli sur l'arret global.
+    const std::atomic<bool>* cancel =
+        t.cancel ? t.cancel.get() : &S.cancel;
     try {
         switch (t.kind) {
         case TaskKind::Apply: {
@@ -413,6 +473,7 @@ TaskResult run_task(const Task& t) {
                 r.tab = 0;
             } else {
                 r.status = "Erreur : telechargement impossible.";
+                r.failed = true;
             }
             break;
         }
@@ -425,6 +486,7 @@ TaskResult run_task(const Task& t) {
                 r.tab = 0;
             } else {
                 r.status = "Erreur : telechargement impossible.";
+                r.failed = true;
             }
             break;
         }
@@ -437,6 +499,7 @@ TaskResult run_task(const Task& t) {
                 r.tab = 1;
             } else {
                 r.status = "Skin introuvable pour ce pseudo.";
+                r.failed = true;
             }
             break;
         }
@@ -449,12 +512,13 @@ TaskResult run_task(const Task& t) {
                 r.tab = 0;
             } else {
                 r.status = "Erreur : telechargement impossible.";
+                r.failed = true;
             }
             break;
         }
         case TaskKind::Catalog: {
             r.catalog = true;
-            r.online = catalog_fetch(t.a, r.status);
+            r.online = catalog_fetch(t.a, r.status, cancel);
             break;
         }
         }
@@ -645,7 +709,11 @@ std::vector<OnlineSkin> fetch_trending(const std::atomic<bool>& cancel,
 
 // Recherche par pseudo (Mojang) ou tendances.
 std::vector<OnlineSkin> catalog_fetch(const std::string& query,
-                                      std::string& status) {
+                                      std::string& status,
+                                      const std::atomic<bool>* cancel) {
+    // Le jeton de la tache prime sur celui de la page : annuler une recherche
+    // ne doit pas arreter les autres travaux du worker.
+    const std::atomic<bool>& stop = cancel ? *cancel : S.cancel;
     std::vector<OnlineSkin> out;
     const std::string q = trim_copy(query);
     if (!q.empty()) {
@@ -655,7 +723,7 @@ std::vector<OnlineSkin> catalog_fetch(const std::string& query,
         }
         const auto resp = http::get_string(
             "https://api.mojang.com/users/profiles/minecraft/" + url_esc(q),
-            &S.cancel);
+            &stop);
         bool found = false;
         if (resp) {
             try {
@@ -671,7 +739,7 @@ std::vector<OnlineSkin> catalog_fetch(const std::string& query,
         status = "1 skin(s) en ligne. Clique pour importer.";
         return out;
     }
-    out = fetch_trending(S.cancel, status);
+    out = fetch_trending(stop, status);
     return out;
 }
 

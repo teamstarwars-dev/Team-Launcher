@@ -6,6 +6,8 @@
 #include "datastore.hpp"
 #include "game_installer.hpp" // runtime_root
 #include "maintenance.hpp"
+#include "presence.hpp"
+#include "shortcut.hpp"
 #include "telemetry.hpp"
 #include "util_zip.hpp"
 
@@ -237,6 +239,124 @@ int main() {
     CHECK(updates::compare_versions("6.0.0-beta", "6.0.0") == 0);
     CHECK(std::string(updates::current_version()).find("6.") == 0);
 
+    // Cas limites de compare_versions
+    CHECK(updates::compare_versions("", "") == 0);
+    CHECK(updates::compare_versions("", "0") == 0);
+    CHECK(updates::compare_versions("v", "6.0.0") < 0);
+    CHECK(updates::compare_versions("06.0.0", "6.0.0") == 0); // zeros initiaux
+    CHECK(updates::compare_versions("6.0.10", "6.0.9") > 0);  // numerique, pas lexical
+    CHECK(updates::compare_versions("10.0", "9.9.9") > 0);
+    CHECK(updates::compare_versions("6.0.0.0.1", "6.0.0") > 0);
+    CHECK(updates::compare_versions("abc", "") == 0); // rien de numerique
+    CHECK(updates::compare_versions("1.2a.3", "1.2.3") == 0);
+    CHECK(updates::compare_versions("6..1", "6.0.1") == 0); // champ vide = 0
+    CHECK(updates::compare_versions(" 6.0.1", "6.0.0") > 0); // espaces ignores
+
+    // =====================================================================
+    // 4bis. Selection d'asset (JSON GitHub factice, hors ligne)
+    // =====================================================================
+    {
+        const nlohmann::json rel = {
+            {"tag_name", "v9.9.9"},
+            {"assets",
+             {{{"name", "team-launcher-linux-x64.tar.gz"},
+               {"browser_download_url", "https://example.invalid/linux"},
+               {"size", 10}},
+              {{"name", "team-launcher-win32.zip"},
+               {"browser_download_url", "https://example.invalid/win32"},
+               {"size", 20}},
+              {{"name", "Team-Launcher-Win-x64.zip"},
+               {"browser_download_url", "https://example.invalid/winx64"},
+               {"size", 30}},
+              {{"name", "setup.exe"},
+               {"browser_download_url", "https://example.invalid/setup"},
+               {"size", 40}}}}};
+        std::string name;
+        long long size = -1;
+        CHECK_EQ(updates::select_asset_url(rel, &name, &size),
+                 std::string("https://example.invalid/winx64"));
+        CHECK_EQ(name, std::string("Team-Launcher-Win-x64.zip"));
+        CHECK_EQ(size, 30LL);
+
+        // Sans zip Windows : chaine vide (l'UI proposera la page web)
+        const nlohmann::json linuxOnly = {
+            {"tag_name", "v9.9.9"},
+            {"assets",
+             {{{"name", "app-linux.tar.gz"},
+               {"browser_download_url", "https://example.invalid/l"},
+               {"size", 5}}}}};
+        CHECK_EQ(updates::select_asset_url(linuxOnly), std::string(""));
+        // Pas de tableau assets / asset sans URL : ignore proprement
+        CHECK_EQ(updates::select_asset_url(nlohmann::json::object()),
+                 std::string(""));
+        const nlohmann::json noUrl = {
+            {"assets", {{{"name", "team-win-x64.zip"}, {"size", 7}}}}};
+        CHECK_EQ(updates::select_asset_url(noUrl), std::string(""));
+        CHECK_EQ(updates::select_asset_url(nlohmann::json::array()),
+                 std::string(""));
+    }
+
+    // =====================================================================
+    // 4ter. parse_release_json (hors ligne)
+    // =====================================================================
+    {
+        // Plus recent que la version compilee : info complete + asset
+        const std::string body =
+            R"({"tag_name":"v9.9.9","body":"notes","html_url":"https://example.invalid/r",)"
+            R"("assets":[{"name":"team-launcher-win-x64.zip",)"
+            R"("browser_download_url":"https://example.invalid/z","size":123}]})";
+        std::string err;
+        auto info = updates::parse_release_json(body, &err);
+        CHECK(info.has_value());
+        CHECK(err.empty());
+        if (info) {
+            CHECK_EQ(info->version, std::string("9.9.9"));
+            CHECK_EQ(info->notes, std::string("notes"));
+            CHECK_EQ(info->assetUrl, std::string("https://example.invalid/z"));
+            CHECK_EQ(info->assetSize, 123LL);
+        }
+        // Pas plus recent : nullopt SANS erreur (deja a jour)
+        err = "sentinelle";
+        CHECK(!updates::parse_release_json(R"({"tag_name":"v0.0.1"})", &err));
+        CHECK_EQ(err, std::string("sentinelle"));
+        // Tag manquant / JSON invalide : nullopt AVEC erreur
+        CHECK(!updates::parse_release_json(R"({"body":"x"})", &err));
+        CHECK(!err.empty());
+        CHECK(!updates::parse_release_json("ceci n'est pas du json", &err));
+        CHECK(!err.empty());
+    }
+
+    // =====================================================================
+    // 4quater. Marqueur staged (hors ligne, dossier de test uniquement)
+    // =====================================================================
+    {
+        CHECK(!updates::has_staged()); // dossier de test frais
+        CHECK(!updates::staged().has_value());
+
+        // Marqueur ecrit a la main + zip factice : staged() le retrouve
+        const fs::path updDir = updates::updates_dir();
+        write_file(updDir / "team-launcher-9.9.9.zip", "faux zip");
+        const nlohmann::json marker = {
+            {"version", "9.9.9"}, {"notes", "n"}, {"url", "u"},
+            {"assetUrl", "a"},    {"assetName", "team-launcher-9.9.9.zip"},
+            {"assetSize", 8LL},   {"file", (updDir / "team-launcher-9.9.9.zip").string()}};
+        write_file(updDir / "pending.json", marker.dump(2));
+        CHECK(updates::has_staged());
+        auto st = updates::staged();
+        CHECK(st.has_value());
+        if (st) {
+            CHECK_EQ(st->info.version, std::string("9.9.9"));
+            CHECK(fs::exists(st->file));
+        }
+        // Zip manquant -> pas de staged (marqueur orphelin ignore)
+        fs::remove(updDir / "team-launcher-9.9.9.zip", ec);
+        CHECK(!updates::has_staged());
+        // clear_staged() nettoie le marqueur orphelin
+        CHECK(updates::clear_staged());
+        CHECK(!fs::exists(updDir / "pending.json"));
+        CHECK(!updates::has_staged());
+    }
+
     // =====================================================================
     // 5. Telemetrie : rien ne part sans webhook
     // =====================================================================
@@ -258,6 +378,82 @@ int main() {
         DataStore::settings.discordTelemetryWebhook = "";
 
         telemetry::stop(); // aucun worker lance : sans effet
+    }
+
+    // =====================================================================
+    // 5bis. Raccourci .lnk (AutoShortcut)
+    // =====================================================================
+    {
+        // On ecrit dans le dossier de test, jamais sur le vrai Bureau.
+        const fs::path lnk = tmp / "raccourci" / "Team Launcher.lnk";
+        const fs::path target = tmp / "faux-launcher.exe";
+        write_file(target, "MZ");
+
+        CHECK(create_shortcut(lnk, target, target.parent_path(), "Test"));
+        CHECK(fs::exists(lnk));
+        CHECK(fs::file_size(lnk, ec) > 0);
+        // Un .lnk commence par l'en-tete ShellLink : 4C 00 00 00 ("L").
+        {
+            const std::string raw = read_file(lnk);
+            CHECK(raw.size() > 4);
+            if (raw.size() > 4) {
+                CHECK_EQ(static_cast<unsigned char>(raw[0]), 0x4Cu);
+                CHECK_EQ(static_cast<unsigned char>(raw[1]), 0x00u);
+            }
+        }
+        // Cible vide : refus propre, aucun fichier cree
+        const fs::path none = tmp / "raccourci" / "vide.lnk";
+        CHECK(!create_shortcut(none, {}, {}, "x"));
+        CHECK(!fs::exists(none));
+
+        // desktop_dir() doit rendre un dossier existant sur une session Windows
+        const fs::path desk = desktop_dir();
+        CHECK(!desk.empty());
+        if (!desk.empty()) CHECK(fs::is_directory(desk, ec));
+
+        // ensure_desktop_shortcut(force=false) ne doit RIEN faire quand le
+        // drapeau est deja pose : c'est ce qui evite de recreer le raccourci
+        // a chaque demarrage si l'utilisateur l'a supprime.
+        DataStore::settings.autoShortcut = true;
+        CHECK(!ensure_desktop_shortcut(/*force=*/false));
+    }
+
+    // =====================================================================
+    // 5ter. Rich Presence Discord : garde-fous (aucune IPC declenchee)
+    // =====================================================================
+    {
+        const bool savedEn = DataStore::settings.discordEnabled;
+        const std::string savedId = DataStore::settings.discordAppId;
+
+        // Desactivee : enabled() faux, init() sans effet, shutdown() sans thread
+        DataStore::settings.discordEnabled = false;
+        DataStore::settings.discordAppId = "123";
+        CHECK(!presence::enabled());
+        presence::init();
+        CHECK(!presence::connected());
+        presence::set_launcher(); // ne doit rien demarrer
+        CHECK(!presence::connected());
+        presence::shutdown();
+
+        // Activee mais sans identifiant : toujours desactivee (regle du C#)
+        DataStore::settings.discordEnabled = true;
+        DataStore::settings.discordAppId = "";
+        CHECK(!presence::enabled());
+        presence::init();
+        CHECK(!presence::connected());
+        presence::shutdown();
+
+        // Les deux renseignes : enabled() vrai (on ne lance pas l'IPC ici)
+        DataStore::settings.discordAppId = "123456789";
+        CHECK(presence::enabled());
+
+        // reload() alors que c'est desactive ne doit laisser aucun thread
+        DataStore::settings.discordEnabled = false;
+        presence::reload();
+        CHECK(!presence::connected());
+
+        DataStore::settings.discordEnabled = savedEn;
+        DataStore::settings.discordAppId = savedId;
     }
 
     // =====================================================================

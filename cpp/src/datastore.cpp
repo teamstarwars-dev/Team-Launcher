@@ -5,6 +5,9 @@
 
 #include "datastore.hpp"
 
+#include "secrets.hpp" // chiffrement DPAPI des champs sensibles de config.json
+#include "obf.hpp"      // webhook Discord obfusque (S3)
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -205,19 +208,27 @@ void DataStore::loadDefaults() {
         if (!d.empty()) break;
     }
 
-    // Fallback dur si le fichier est absent (identique au C#)
+    // Fallback dur si le fichier est absent (identique au C#). Le webhook
+    // Discord n'y figure plus en clair (S3) : il est obfusque dans le binaire
+    // et injecte juste apres, sur TOUS les chemins (cf. ci-dessous).
     if (d.empty()) {
         d["DISCORD_APP_ID"] = "1541468112740941844";
         d["DISCORD_ENABLED"] = "true";
         d["TELEMETRY_ENABLED"] = "true";
-        d["DISCORD_TELEMETRY_WEBHOOK"] =
-            "https://discord.com/api/webhooks/1412511652776083586/"
-            "DnZ5eAZW5KwQCZJ0Cxy9e9m6AyLXWiNC-6JO6fIwS4yIkV-fLqZB6z-3c9x6s4CmhE-_";
         d["UPDATE_URL"] =
             "https://raw.githubusercontent.com/teamstarwars-dev/Team-Luncher-/main/version.json";
         d["LANGUAGE"] = "fr";
         d["FPS_COUNTER_ENABLED"] = "false";
     }
+
+    // Webhook Discord (S3) : retire de default.env (jamais en clair sur
+    // disque) et obfusque ici. Les deux cas sont couverts — fichier absent
+    // (bloc ci-dessus) ou fichier present sans la ligne — pour conserver le
+    // comportement « webhook non vide par defaut » d'applyDefaults().
+    if (d.find("DISCORD_TELEMETRY_WEBHOOK") == d.end())
+        d["DISCORD_TELEMETRY_WEBHOOK"] = TL_OBF(
+            "https://discord.com/api/webhooks/1412511652776083586/"
+            "DnZ5eAZW5KwQCZJ0Cxy9e9m6AyLXWiNC-6JO6fIwS4yIkV-fLqZB6z-3c9x6s4CmhE-_");
 }
 
 void DataStore::applyDefaults(bool applyBooleans) {
@@ -253,13 +264,42 @@ void DataStore::applyDefaults(bool applyBooleans) {
 // JSON (cles PascalCase, compat System.Text.Json de la v5)
 // ---------------------------------------------------------------------------
 
+// Champs sensibles ecrits chiffres ("enc:v1:" + DPAPI) dans config.json.
+// En memoire ils restent en clair (l'UI et les modules les consomment tels quels).
+
+// PteroHosts[] : seule la cle API par hote est un secret (ApiKey, cf. server_host).
+static json encPteroHosts(const json& hosts) {
+    json out = hosts;
+    if (!out.is_array()) return out;
+    for (auto& h : out) {
+        if (!h.is_object()) continue;
+        auto it = h.find("ApiKey");
+        if (it != h.end() && it->is_string())
+            *it = secrets::encrypt_value(it->get<std::string>());
+    }
+    return out;
+}
+
+static void decPteroHosts(json& hosts, bool* plainSecrets) {
+    if (!hosts.is_array()) return;
+    for (auto& h : hosts) {
+        if (!h.is_object()) continue;
+        auto it = h.find("ApiKey");
+        if (it == h.end() || !it->is_string()) continue;
+        std::string v = it->get<std::string>();
+        if (!v.empty() && !secrets::is_encrypted(v) && plainSecrets)
+            *plainSecrets = true; // ancien fichier v5 en clair -> rechiffre au save
+        *it = secrets::decrypt_value(v);
+    }
+}
+
 static json serialize(const AppSettings& s) {
     return json{
         {"PlayerName", s.playerName},
         {"AccountMode", s.accountMode},
         {"JavaPath", s.javaPath},
         {"MaxRamGb", s.maxRamGb},
-        {"AzureClientId", s.azureClientId},
+        {"AzureClientId", secrets::encrypt_value(s.azureClientId)},
         {"InstancesDir", s.instancesDir},
         {"BgColor", s.bgColor},
         {"CardColor", s.cardColor},
@@ -271,27 +311,30 @@ static json serialize(const AppSettings& s) {
         {"UpdateUrl", s.updateUrl},
         {"NewsUrl", s.newsUrl},
         {"Language", s.language},
-        {"CurseForgeApiKey", s.curseForgeApiKey},
+        {"CurseForgeApiKey", secrets::encrypt_value(s.curseForgeApiKey)},
         {"OnboardingDone", s.onboardingDone},
         {"Instances", s.instances},
         {"Servers", s.servers},
         {"FavoriteServers", s.favoriteServers},
         {"Cities", s.cities},
         {"HostedServers", s.hostedServers},
+        {"PteroHosts", encPteroHosts(s.pteroHosts)},
         {"AutoShortcut", s.autoShortcut},
         {"VpsUrl", s.vpsUrl},
-        {"VpsApiKey", s.vpsApiKey},
+        {"VpsApiKey", secrets::encrypt_value(s.vpsApiKey)},
         {"TelemetryEnabled", s.telemetryEnabled},
-        {"DiscordTelemetryWebhook", s.discordTelemetryWebhook},
+        {"DiscordTelemetryWebhook", secrets::encrypt_value(s.discordTelemetryWebhook)},
         {"InstallationId", s.installationId},
         {"AdminTelemetryEnabled", s.adminTelemetryEnabled},
-        {"AdminServerUrl", s.adminServerUrl},
+        {"AdminServerUrl", secrets::encrypt_value(s.adminServerUrl)},
         {"MinimizeOnLaunch", s.minimizeOnLaunch},
     };
 }
 
-// Lance une exception si une cle connue a un type invalide (comme System.Text.Json)
-static void mergeInto(AppSettings& s, const json& j) {
+// Lance une exception si une cle connue a un type invalide (comme System.Text.Json).
+// plainSecrets (optionnel) signale qu'une valeur sensible etait lue en clair :
+// le fichier est alors rechiffre au prochain enregistrement (migration v5 -> v6).
+static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullptr) {
     if (!j.is_object()) throw std::runtime_error("config: objet attendu");
 
     auto getS = [&j](const char* k, std::string& out) {
@@ -299,6 +342,13 @@ static void mergeInto(AppSettings& s, const json& j) {
         if (it == j.end() || it->is_null()) return;
         if (!it->is_string()) throw std::runtime_error("config: string attendue");
         out = it->get<std::string>();
+    };
+    // Lecture d'un champ sensible : detecte l'ancien format clair puis dechiffre.
+    auto getSec = [&, plainSecrets](const char* k, std::string& out) {
+        getS(k, out);
+        if (out.empty()) return;
+        if (!secrets::is_encrypted(out) && plainSecrets) *plainSecrets = true;
+        out = secrets::decrypt_value(out);
     };
     auto getB = [&j](const char* k, bool& out) {
         auto it = j.find(k);
@@ -323,7 +373,7 @@ static void mergeInto(AppSettings& s, const json& j) {
     getS("AccountMode", s.accountMode);
     getS("JavaPath", s.javaPath);
     getI("MaxRamGb", s.maxRamGb);
-    getS("AzureClientId", s.azureClientId);
+    getSec("AzureClientId", s.azureClientId);
     getS("InstancesDir", s.instancesDir);
     getS("BgColor", s.bgColor);
     getS("CardColor", s.cardColor);
@@ -335,7 +385,7 @@ static void mergeInto(AppSettings& s, const json& j) {
     getS("UpdateUrl", s.updateUrl);
     getS("NewsUrl", s.newsUrl);
     getS("Language", s.language);
-    getS("CurseForgeApiKey", s.curseForgeApiKey);
+    getSec("CurseForgeApiKey", s.curseForgeApiKey);
     getB("OnboardingDone", s.onboardingDone);
     getA("Instances", s.instances);
     getA("Servers", s.servers);
@@ -348,14 +398,16 @@ static void mergeInto(AppSettings& s, const json& j) {
     }
     getA("Cities", s.cities);
     getA("HostedServers", s.hostedServers);
+    getA("PteroHosts", s.pteroHosts);
+    decPteroHosts(s.pteroHosts, plainSecrets);
     getB("AutoShortcut", s.autoShortcut);
     getS("VpsUrl", s.vpsUrl);
-    getS("VpsApiKey", s.vpsApiKey);
+    getSec("VpsApiKey", s.vpsApiKey);
     getB("TelemetryEnabled", s.telemetryEnabled);
-    getS("DiscordTelemetryWebhook", s.discordTelemetryWebhook);
+    getSec("DiscordTelemetryWebhook", s.discordTelemetryWebhook);
     getS("InstallationId", s.installationId);
     getB("AdminTelemetryEnabled", s.adminTelemetryEnabled);
-    getS("AdminServerUrl", s.adminServerUrl);
+    getSec("AdminServerUrl", s.adminServerUrl);
     getB("MinimizeOnLaunch", s.minimizeOnLaunch);
 }
 
@@ -376,11 +428,12 @@ void DataStore::load() {
 
     try {
         const bool configExisted = fs::exists(configPath());
+        bool plainSecrets = false; // secrets lus en clair -> a rechiffrer
         if (configExisted) {
             const json parsed = json::parse(readFile(configPath()));
             if (!parsed.is_null()) {
                 AppSettings candidate = settings;
-                mergeInto(candidate, parsed); // peut throw -> settings inchange
+                mergeInto(candidate, parsed, &plainSecrets); // peut throw -> settings inchange
                 settings = std::move(candidate);
                 if (settings.instancesDir.empty() ||
                     settings.instancesDir.find("TeamLauncher") == std::string::npos)
@@ -393,8 +446,11 @@ void DataStore::load() {
                               settings.discordTelemetryWebhook.empty();
         applyDefaults(firstRealConfig);
 
-        if (configExisted && wasEmpty &&
-            (!settings.updateUrl.empty() || !settings.discordTelemetryWebhook.empty()))
+        // Ecrire immediatement si on a injecte des defauts OU migre d'anciens
+        // secrets en clair (fichiers v5) vers le format "enc:v1:".
+        if (configExisted && (plainSecrets ||
+                              (wasEmpty && (!settings.updateUrl.empty() ||
+                                            !settings.discordTelemetryWebhook.empty()))))
             doSave();
     } catch (...) {
         // config corrompue : on garde les valeurs par defaut

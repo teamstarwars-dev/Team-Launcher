@@ -4,9 +4,13 @@
 // portable d'UpdateService.cs / UpdateChecker.cs.
 
 #include <atomic>
+#include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace tl::health {
 
@@ -36,6 +40,23 @@ Result run();
 
 namespace tl::updates {
 
+// DIVERGENCE vs C# (UpdateService.cs) : le C# deleguait telechargement,
+// verification de signature et remplacement atomique a Velopack
+// (ApplyUpdatesAndRestart). Velopack n'etant pas portable tel quel, ce port
+// implemente l'equivalent robuste sans dependance :
+//   1. check() lit l'API GitHub Releases (comme ici avant) ;
+//   2. download_update() stage le zip Windows x64 a cote (dossier updates/)
+//      via tl::http::get_to_file (progression + annulation) ;
+//   3. install_staged_and_restart() genere un script qui, APRES la sortie du
+//      launcher (renommage de l'exe en cours impossible sous Windows),
+//      deploie le zip sur le dossier d'installation puis relance l'exe.
+// Le marqueur updates/pending.json (« mise a jour en attente ») survit a un
+// redemarrage : un staged telecharge reste proposable au prochain demarrage,
+// AVANT l'UI (voir extrait main.cpp fourni en reponse).
+// Verif d'integrite : le C# n'en faisait aucune explicite (signatures
+// Velopack internes). Ici : HTTPS seul (aucun contournement TLS) + controle
+// de la taille recue vs taille annoncee par l'API GitHub quand disponible.
+
 // Version compilee (TL_VERSION_STRING).
 const char* current_version();
 
@@ -43,7 +64,18 @@ struct Info {
     std::string version; // tag sans le « v » initial
     std::string notes;   // corps de la release
     std::string url;     // page de la release
+    std::string assetUrl;  // zip Windows x64 choisi (vide = aucun)
+    std::string assetName; // nom de fichier de l'asset
+    long long assetSize = -1; // taille annoncee (-1 = inconnue)
 };
+
+// Mise a jour telechargee en attente d'installation.
+struct Staged {
+    Info info;
+    std::filesystem::path file; // zip stage
+};
+
+using ProgressFn = std::function<void(long long done, long long total)>;
 
 // Derniere release GitHub. nullopt = deja a jour, ou verification impossible
 // (errOut renseigne dans ce second cas).
@@ -51,5 +83,36 @@ std::optional<Info> check(std::string* errOut = nullptr);
 
 // Compare deux versions « a.b.c[.d] » : <0, 0, >0.
 int compare_versions(const std::string& a, const std::string& b);
+
+// Pur (testable hors ligne) : choisit l'asset zip Windows x64 d'une release
+// GitHub (tableau « assets »). Retourne l'URL (vide = aucun zip Windows) et
+// renseigne nom/taille quand disponibles.
+std::string select_asset_url(const nlohmann::json& release,
+                             std::string* nameOut = nullptr,
+                             long long* sizeOut = nullptr);
+
+// Pur (testable hors ligne) : interprete le corps JSON de /releases/latest.
+// nullopt sans errOut = pas plus recent que current_version().
+std::optional<Info> parse_release_json(const std::string& body,
+                                       std::string* errOut = nullptr);
+
+// Dossier de staging (<donnees>/updates).
+std::filesystem::path updates_dir();
+
+// Marqueur « mise a jour en attente » (nullopt = rien de pret).
+std::optional<Staged> staged();
+bool has_staged();
+bool clear_staged(std::string* errOut = nullptr);
+
+// Telecharge l'asset vers updates/ + ecrit le marqueur. Progression et
+// annulation via tl::http. false = echec ou annulation (errOut renseigne).
+bool download_update(const Info& info, ProgressFn progress,
+                     const std::atomic<bool>* cancel,
+                     std::string* errOut = nullptr);
+
+// Genere updates/apply-update.bat (attente de sortie, deploiement,
+// suppression du marqueur, relance), le lance en detache et rend la main :
+// l'appelant doit quitter proprement juste apres (true = script lance).
+bool install_staged_and_restart(std::string* errOut = nullptr);
 
 } // namespace tl::updates

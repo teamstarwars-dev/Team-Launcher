@@ -12,10 +12,13 @@
 
 #include <atomic>
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "secrets.hpp" // base64 + DPAPI (module partage DataStore / ms_auth)
 
 namespace tl::auth {
 
@@ -92,13 +95,12 @@ void stop();
 // --- Exposes pour les tests (tests/test_ms_auth.cpp) ---
 namespace detail {
 
-// base64 « standard » (identique a Convert.ToBase64String, sans retour ligne).
-std::string b64_encode(const unsigned char* data, std::size_t n);
-std::optional<std::string> b64_decode(const std::string& s);
-
-// DPAPI CurrentUser + base64 (format ProtectedData.Protect du C#).
-std::optional<std::string> dpapi_protect_b64(const std::string& clear);
-std::optional<std::string> dpapi_unprotect_b64(const std::string& b64);
+// base64 + DPAPI vivent dans tl::secrets (module partage avec DataStore) :
+// re-exportes ici pour ne pas casser les appels existants.
+using tl::secrets::b64_encode;
+using tl::secrets::b64_decode;
+using tl::secrets::dpapi_protect_b64;
+using tl::secrets::dpapi_unprotect_b64;
 
 std::string url_encode(const std::string& s);
 using Form = std::vector<std::pair<std::string, std::string>>;
@@ -106,6 +108,20 @@ std::string form_body(const Form& f);
 
 // 32 hexa -> 8-4-4-4-12 (FormatUuid C#) ; retourne l'entree si longueur != 32.
 std::string format_uuid(const std::string& hex);
+
+// Effacement sûr d'un secret en mémoire (SecureZeroMemory, anti-optimiseur).
+using tl::secrets::secure_wipe;
+
+// Ecriture atomique (tmp + rename, cf. C# File.Replace) : pas de fichier
+// tronqué si le process meurt ou si l'antivirus verrouille la destination.
+bool write_atomic(const std::filesystem::path& dst, const std::string& data);
+
+// Pseudo -> nom de fichier sûr ([A-Za-z0-9_-], 64 car. max, "skin" sinon).
+std::string sanitize_file_stem(const std::string& s);
+
+// Garde-fou avant ShellExecute : https + hôte Microsoft/Xbox connu. L'URL de
+// validation vient du JSON serveur : même en TLS, on ne l'ouvre jamais aveugle.
+bool browser_url_allowed(const std::string& url);
 
 // <data>/session-cache.json et <data>/msauth.json
 void save_session_cache(const AuthSession& s);

@@ -15,6 +15,8 @@
 namespace tl::ui {
 
 void open_url(const std::string& url) {
+    // Même garde que open_browser côté flux : l'URL vient du JSON serveur.
+    if (!auth::detail::browser_url_allowed(url)) return;
     const int n = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
     std::wstring w(static_cast<size_t>(n), L'\0');
@@ -50,13 +52,22 @@ void draw_login_modal() {
 
     static bool wasOpen = false;
     static bool copied = false; // « Copier le code » : remis a zero a l'ouverture
+    static bool pendingOpen = false;
     const bool want = get_state() != AuthState::Idle;
-    if (want && !wasOpen) {
+    if (want && !wasOpen) pendingOpen = true;
+    wasOpen = want;
+    if (!want) {
+        pendingOpen = false;
+        return;
+    }
+    if (pendingOpen) {
+        // OpenPopup remplacerait toute popup deja ouverte (elles partagent le
+        // meme niveau 0) : on attend qu'il n'y en ait plus pour ouvrir la notre.
+        if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup)) return;
+        pendingOpen = false;
         ImGui::OpenPopup("###msauth");
         copied = false;
     }
-    wasOpen = want;
-    if (!want) return;
 
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always,

@@ -1,5 +1,9 @@
 #include "datastore.hpp"
 
+#include "secrets.hpp" // marqueur de chiffrement des champs sensibles
+
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -95,6 +99,55 @@ int main() {
     CHECK(DataStore::settings.updateUrl.empty());      // applyDefaults saute (comme le C#)
     CHECK(DataStore::settings.instancesDir == (DataStore::dir() / "instances").string());
     CHECK(fs::exists(tmp / "instances"));              // dirs crees malgre tout
+
+    // --- 6. secrets : chiffres sur disque (enc:v1: + DPAPI), recharges en clair ---
+    {
+        std::ofstream o(cfg, std::ios::binary | std::ios::trunc);
+        o << "{}";
+    }
+    DataStore::settings = tl::AppSettings{};
+    DataStore::load();
+    DataStore::settings.curseForgeApiKey = "$2a$10$secretcurseforgekey";
+    DataStore::settings.vpsApiKey = "vps-secret-123";
+    DataStore::settings.discordTelemetryWebhook =
+        "https://discord.com/api/webhooks/1/SECRET";
+    DataStore::settings.pteroHosts = nlohmann::json::array(
+        {nlohmann::json{{"Name", "h1"}, {"ApiKey", "ptero-secret"}}});
+    DataStore::saveNow();
+    const std::string secText = readText(cfg);
+    CHECK(secText.find("$2a$10$secretcurseforgekey") == std::string::npos); // jamais en clair
+    CHECK(secText.find("vps-secret-123") == std::string::npos);
+    CHECK(secText.find("/webhooks/1/SECRET") == std::string::npos);        // webhook masque
+    CHECK(secText.find("ptero-secret") == std::string::npos);
+    CHECK(secText.find(tl::secrets::kEncPrefix) != std::string::npos);     // marqueur enc:v1:
+    DataStore::settings = tl::AppSettings{};
+    DataStore::load();
+    CHECK(DataStore::settings.curseForgeApiKey == "$2a$10$secretcurseforgekey");
+    CHECK(DataStore::settings.vpsApiKey == "vps-secret-123");
+    CHECK(DataStore::settings.discordTelemetryWebhook ==
+          "https://discord.com/api/webhooks/1/SECRET");
+    CHECK(DataStore::settings.pteroHosts[0]["ApiKey"] == "ptero-secret");
+
+    // --- 7. compat v5 : ancien fichier en clair -> valeur conservee + rechiffre ---
+    {
+        std::ofstream o(cfg, std::ios::binary | std::ios::trunc);
+        o << R"({"PlayerName":"Ancien","CurseForgeApiKey":"clair-v5",)"
+             R"("VpsApiKey":"vps-clair","PteroHosts":[{"Name":"h","ApiKey":"pan-clair"}]})";
+    }
+    DataStore::settings = tl::AppSettings{};
+    DataStore::load();
+    CHECK(DataStore::settings.playerName == "Ancien");
+    CHECK(DataStore::settings.curseForgeApiKey == "clair-v5"); // lecture identique
+    CHECK(DataStore::settings.vpsApiKey == "vps-clair");
+    CHECK(DataStore::settings.pteroHosts[0]["ApiKey"] == "pan-clair");
+    const std::string migrated = readText(cfg);
+    CHECK(migrated.find("clair-v5") == std::string::npos);             // rechiffre au load
+    CHECK(migrated.find("pan-clair") == std::string::npos);
+    CHECK(migrated.find(tl::secrets::kEncPrefix) != std::string::npos);
+    DataStore::settings = tl::AppSettings{};
+    DataStore::load(); // le fichier migre se relit correctement
+    CHECK(DataStore::settings.curseForgeApiKey == "clair-v5");
+    CHECK(DataStore::settings.pteroHosts[0]["ApiKey"] == "pan-clair");
 
     DataStore::shutdown();
     fs::remove_all(tmp, ec);

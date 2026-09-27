@@ -223,10 +223,50 @@ const Entry kTable[] = {
     {"Fichier non supporté", "Unsupported file"},
     {"Import non porté", "Import not ported"},
     {"Modpack CurseForge / Modrinth…", "CurseForge / Modrinth modpack…"},
+    // assistant de premier lancement
+    {"Bienvenue dans ton nouveau launcher !", "Welcome to your new launcher!"},
+    {"Léger, rapide et sans pub : tes instances, tes mods, tes serveurs.\n\n"
+     "En deux minutes :\n"
+     "   1. Connecte ton compte Microsoft (ou joue hors-ligne)\n"
+     "   2. Crée ou importe tes instances Minecraft\n"
+     "   3. Installe des mods depuis Modrinth et CurseForge en un clic\n\n"
+     "Tout est prêt ? C'est parti !",
+     "Light, fast and ad-free: your instances, your mods, your servers.\n\n"
+     "In two minutes:\n"
+     "   1. Connect your Microsoft account (or play offline)\n"
+     "   2. Create or import your Minecraft instances\n"
+     "   3. Install mods from Modrinth and CurseForge in one click\n\n"
+     "All set? Let's go!"},
+    {"Commencer", "Get started"},
+    {"Connecte-toi pour jouer", "Sign in to play"},
+    {"Ton pseudo pour le mode hors-ligne", "Your username for offline mode"},
+    {"Continuer hors-ligne", "Continue offline"},
+    {"Entre un pseudo pour le mode hors-ligne.",
+     "Enter a username for offline mode."},
+
+    // page Exploration
+    {"Exploration", "Browse"},
+    {"Rechercher", "Search"},
+    {"Recherche un mod, un modpack…", "Search for a mod, a modpack…"},
+    {"Modpacks", "Modpacks"},
+    {"Shaders", "Shaders"},
+    {"Installer", "Install"},
+    {"Installé", "Installed"},
+    {"Installation impossible", "Installation failed"},
+    {"Modpack installé", "Modpack installed"},
+    {"Installer dans quelle instance ?", "Install into which instance?"},
+    {"Aucune instance trouvée. Crée-en une d'abord !",
+     "No instance found. Create one first!"},
     {"Lecture de l'archive…", "Reading the archive…"},
     {"Import annulé", "Import cancelled"},
     {"Import en cours", "Import running"},
     {"Modpack importé", "Modpack imported"},
+    {"Pack partagé", "Pack shared"},
+    {"Pack importé", "Pack imported"},
+    {"Partage annulé", "Sharing cancelled"},
+    {"Partage impossible", "Sharing failed"},
+    {"Presse-papiers vide", "Clipboard empty"},
+    {"Pack non reconnu", "Pack not recognised"},
 
     // ---------------- page Actualités ----------------
     {"Dernières actualités", "Latest news"},
@@ -318,6 +358,8 @@ const Entry kTable[] = {
     {"TÉLÉMÉTRIE & LOGS DISTANTS", "TELEMETRY & REMOTE LOGS"},
     {"Maintenance", "Maintenance"},
     {"Diagnostic du système", "System diagnostics"},
+    {"Raccourci sur le bureau", "Desktop shortcut"},
+    {"Raccourci", "Shortcut"},
     {"Libérer de l'espace (cache)", "Free up space (cache)"},
     {"Vérifier les mises à jour", "Check for updates"},
     {"Ouvrir la page de la version", "Open the release page"},

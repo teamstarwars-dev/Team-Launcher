@@ -32,6 +32,21 @@ void instances_page() {
     auto& a = inst_array();
     const bool busy = g.phase == Phase::Preparing || g.phase == Phase::GameRunning;
 
+    // TL_AUTO_DETAIL=<onglet> : ouvre la modale détail de la 1re instance (test).
+    {
+        static bool autoDone = false;
+        if (!autoDone) {
+            autoDone = true;
+            if (const char* t = std::getenv("TL_AUTO_DETAIL"))
+                for (auto& e : a)
+                    if (e.is_object()) {
+                        const std::string aid = e.value("Id", "");
+                        open_instance_detail(aid, std::atoi(t));
+                        break;
+                    }
+        }
+    }
+
     if (g.countsDirty) {
         g.countsDirty = false;
         for (auto& e : a)
@@ -58,11 +73,8 @@ void instances_page() {
         if (ImGui::MenuItem(tr("Importer un dossier"))) import_folder();
         if (ImGui::MenuItem(tr("Modpack CurseForge / Modrinth…")))
             import_modpack_pick();
-        ImGui::BeginDisabled();
-        if (ImGui::MenuItem(tr("Importer partagé (presse-papiers)"))) {}
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", tr("Partage de pack : portage à venir", "Pack sharing: port pending"));
-        ImGui::EndDisabled();
+        if (ImGui::MenuItem(tr("Importer partagé (presse-papiers)")))
+            import_shared_from_clipboard();
         ImGui::EndPopup();
     }
     ImGui::SameLine();
@@ -278,15 +290,23 @@ void instances_page() {
             ImGui::SetNextWindowPos(ImGui::GetMousePos(), ImGuiCond_Appearing);
         }
         if (ImGui::BeginPopup("inst_ctx")) {
-            ImGui::BeginDisabled();
-            if (ImGui::MenuItem(tr("Détails"))) {}
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", tr("Fenêtre Détails : portage en cours"));
-            if (ImGui::MenuItem(tr("Mods"))) {}
-            if (ImGui::MenuItem(tr("Mondes"))) {}
-            if (ImGui::MenuItem(tr("Journaux"))) {}
-            if (ImGui::MenuItem(tr("Screenshots"))) {}
-            ImGui::EndDisabled();
+            // C# AttachContextMenu : Détails / Mods / Mondes / Journaux /
+            // Screenshots ouvrent InstanceDetailWindow (onglet initial).
+            if (ImGui::MenuItem(tr("Détails", "Details")))
+                open_instance_detail(id, 0);
+            if (ImGui::MenuItem(tr("Mods"))) open_instance_detail(id, 1);
+            if (ImGui::MenuItem(tr("Mondes", "Worlds")))
+                open_instance_detail(id, 2);
+            if (ImGui::MenuItem(tr("Journaux", "Logs")))
+                open_instance_detail(id, 3);
+            if (ImGui::MenuItem(tr("Screenshots"))) {
+                // Onglet Screenshots non porté : repli dossier (C# OpenFolder).
+                std::error_code ec;
+                const std::filesystem::path d =
+                    DataStore::instancesRoot() / id / "screenshots";
+                std::filesystem::create_directories(d, ec);
+                open_in_explorer(d);
+            }
             ImGui::Separator();
             if (ImGui::MenuItem(tr("Modifier"))) open_edit_modal(id);
             if (ImGui::MenuItem(tr("Ouvrir"))) {
@@ -296,11 +316,7 @@ void instances_page() {
                 open_in_explorer(d);
             }
             if (ImGui::MenuItem(tr("Exporter .zip"))) export_zip(e);
-            ImGui::BeginDisabled();
-            if (ImGui::MenuItem(tr("Partager (copier le pack)"))) {}
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", tr("Partage de pack : portage à venir", "Pack sharing: port pending"));
-            ImGui::EndDisabled();
+            if (ImGui::MenuItem(tr("Partager (copier le pack)"))) share_instance_start(e);
             ImGui::Separator();
             if (ImGui::MenuItem(tr("Dupliquer"))) duplicate_instance(e);
             if (ImGui::MenuItem(tr("Supprimer"))) {

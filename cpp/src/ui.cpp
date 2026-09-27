@@ -3,6 +3,8 @@
 #include "backup.hpp"
 #include "crash_analyzer.hpp"
 #include "maintenance.hpp"
+#include "presence.hpp"
+#include "shortcut.hpp"
 #include "ms_auth.hpp"
 #include "telemetry.hpp"
 #include "util_zip.hpp"
@@ -477,6 +479,8 @@ void start_worker() {
         g.statActive = true;
         telemetry::report_launch(*inst); // silencieux sans webhook configure
     }
+    // Rich Presence : « Joue à <instance> » + chrono de session.
+    presence::set_game(*inst, req.joinServer);
     g.statStart = std::chrono::steady_clock::now();
 
     LaunchUi ui;
@@ -573,6 +577,7 @@ void poll_state(SDL_Window* window) {
                 g.status = tr("Jeu fermé (code de sortie ", "Game closed (exit code ") + std::to_string(exitCode) + ").";
             }
             log_line("Jeu fermé (code de sortie " + std::to_string(exitCode) + ").");
+            presence::set_launcher(); // retour a la presence « dans le launcher »
 
             // Instance concernee (statInstId reste valable jusqu'au bloc stats).
             const std::string instId =
@@ -734,6 +739,9 @@ void init(SDL_Window*) {
     // Renouvellement silencieux de la session Microsoft (thread de fond) :
     // tant que l'utilisateur revient regulierement, il ne se reconnecte jamais.
     auth::startup_refresh();
+    presence::set_launcher(); // Rich Presence Discord (sans effet si desactivee)
+    // Raccourci bureau a la premiere ouverture (C# MainForm).
+    ensure_desktop_shortcut();
     ImGuiIO& io = ImGui::GetIO();
     ImFontConfig cfg;
     cfg.SizePixels = 16.0f;
@@ -842,6 +850,9 @@ void frame(SDL_Window* window) {
 
     if (nav_button(tr("Accueil"), g.page == 0)) g.page = 0;
     if (nav_button(tr("Instances"), g.page == 1)) g.page = 1;
+    // Exploration porte l'index 9 : les index 0-8 etaient deja documentes
+    // (TL_AUTO_PAGE) et sont laisses stables. L'ordre visuel est independant.
+    if (nav_button(tr("Exploration"), g.page == 9)) g.page = 9;
     if (nav_button(tr("Jouer"), g.page == 2)) g.page = 2;
     if (nav_button(tr("Serveurs"), g.page == 3)) g.page = 3;
     if (nav_button(tr("Skins"), g.page == 4)) g.page = 4;
@@ -867,14 +878,22 @@ void frame(SDL_Window* window) {
     case 5: news_page(); break;
     case 6: bedrock_page(); break;
     case 7: account_page(); break;
+    case 9: explore_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
 
     // ---- Modales instance (contexte racine) ----
     instance_modals();
+    instance_detail_modal();
+
+    // ---- Tâches de fond (panneau si >= 1 tâche) ----
+    apptasks_frame();
 
     ImGui::End();
+
+    // ---- Assistant de premier lancement (avant tout le reste) ----
+    onboarding_frame();
 
     // ---- Auth Microsoft : applique le succes puis dessine la modale ----
     auth_sync();
@@ -934,6 +953,10 @@ void shutdown() {
     serversState.cancel = true;
     serversState.cv.notify_all(); // reveille le worker en attente de ping
     if (serversState.th.joinable()) serversState.th.join();
+    // Serveurs hébergés (Pterodactyl) : joint le worker dédié.
+    if (dbg) std::fprintf(stderr, "SH: servers_ptero_stop\n");
+    servers_ptero_stop();
+    if (dbg) std::fprintf(stderr, "SH: servers_ptero_stop done\n");
     // Page Skins : annuler + joindre le worker, liberer les textures GL
     // (contexte GL encore courant : ImGui/SDL sont detruits apres ici).
     if (dbg) std::fprintf(stderr, "SH: skins_stop\n");
@@ -943,6 +966,14 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: auth_stop\n");
     auth::stop();
     if (dbg) std::fprintf(stderr, "SH: auth_stop done\n");
+    // Rich Presence : efface la presence et joint le thread.
+    if (dbg) std::fprintf(stderr, "SH: presence_stop\n");
+    presence::shutdown();
+    if (dbg) std::fprintf(stderr, "SH: presence_stop done\n");
+    // Page Exploration : annuler la recherche/installation et joindre.
+    if (dbg) std::fprintf(stderr, "SH: explore_stop\n");
+    explore_stop();
+    if (dbg) std::fprintf(stderr, "SH: explore_stop done\n");
     // Import de modpack : annuler et joindre le worker.
     if (dbg) std::fprintf(stderr, "SH: packs_stop\n");
     packs_stop();

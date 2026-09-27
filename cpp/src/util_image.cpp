@@ -13,6 +13,8 @@
 
 #include "util_image.hpp"
 
+#include "miniz.h"
+
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <SDL_opengl.h>
@@ -65,6 +67,28 @@ unsigned from_path(const std::filesystem::path& p, int* w, int* h) {
 
 void free_tex(unsigned tex) {
     if (tex) glDeleteTextures(1, &tex);
+}
+
+bool write_png(const std::filesystem::path& dest, int w, int h, int comp,
+               const void* data, bool flipY) {
+    if (!data || w <= 0 || h <= 0 || (comp != 3 && comp != 4)) return false;
+    std::size_t len = 0;
+    // Encodeur PNG de miniz (deja lie pour les zip) : evite d'embarquer
+    // stb_image_write juste pour les captures.
+    void* png = tdefl_write_image_to_png_file_in_memory_ex(
+        data, w, h, comp, &len, /*level=*/6, flipY ? MZ_TRUE : MZ_FALSE);
+    if (!png) return false;
+
+    std::error_code ec;
+    if (dest.has_parent_path()) std::filesystem::create_directories(dest.parent_path(), ec);
+    std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+    bool ok = false;
+    if (out) {
+        out.write(static_cast<const char*>(png), static_cast<std::streamsize>(len));
+        ok = static_cast<bool>(out);
+    }
+    mz_free(png);
+    return ok;
 }
 
 } // namespace tl::image
