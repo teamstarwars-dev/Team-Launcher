@@ -60,6 +60,10 @@ const Entry kTable[] = {
     {"Loader", "Loader"},
     {"Mods", "Mods"},
     {"Mondes", "Worlds"},
+    {"Synchronisation", "Sync"},
+    {"Analyser", "Scan"},
+    {"Monde importé", "World imported"},
+    {"Import impossible", "Import failed"},
     {"Journaux", "Logs"},
     {"Screenshots", "Screenshots"},
     {"Favoris", "Favorites"},
@@ -243,6 +247,25 @@ const Entry kTable[] = {
     {"Continuer hors-ligne", "Continue offline"},
     {"Entre un pseudo pour le mode hors-ligne.",
      "Enter a username for offline mode."},
+
+    // editeur de cartes
+    {"Ajuster la vue", "Fit view"},
+    {"Édition de carte", "Map editor"},
+    {"Tout désélectionner", "Deselect all"},
+    {"Supprimer la sélection", "Delete selection"},
+    {"Supprimer des chunks", "Delete chunks"},
+    {"Choisir une instance", "Pick an instance"},
+    {"Choisir un monde", "Pick a world"},
+
+    // page Explorateur (fichiers et mondes)
+    {"Explorateur", "Explorer"},
+    {"Fichiers et dossiers de tes instances.",
+     "Files and folders of your instances."},
+    {"Fichiers", "Files"},
+    {"Aucun monde trouvé.", "No world found."},
+    {"Dossier vide.", "Empty folder."},
+    {"Ouvrir dans Windows", "Open in Windows"},
+    {"Toutes les instances", "All instances"},
 
     // page Exploration
     {"Exploration", "Browse"},

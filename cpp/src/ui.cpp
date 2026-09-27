@@ -3,6 +3,7 @@
 #include "backup.hpp"
 #include "crash_analyzer.hpp"
 #include "maintenance.hpp"
+#include "admin.hpp"
 #include "presence.hpp"
 #include "shortcut.hpp"
 #include "ms_auth.hpp"
@@ -740,6 +741,7 @@ void init(SDL_Window*) {
     // tant que l'utilisateur revient regulierement, il ne se reconnecte jamais.
     auth::startup_refresh();
     presence::set_launcher(); // Rich Presence Discord (sans effet si desactivee)
+    admin::start();           // telemetrie d'administration (desactivee par defaut)
     // Raccourci bureau a la premiere ouverture (C# MainForm).
     ensure_desktop_shortcut();
     ImGuiIO& io = ImGui::GetIO();
@@ -853,6 +855,8 @@ void frame(SDL_Window* window) {
     // Exploration porte l'index 9 : les index 0-8 etaient deja documentes
     // (TL_AUTO_PAGE) et sont laisses stables. L'ordre visuel est independant.
     if (nav_button(tr("Exploration"), g.page == 9)) g.page = 9;
+    if (nav_button(tr("Explorateur"), g.page == 10)) g.page = 10;
+    if (nav_button(tr("Édition de carte"), g.page == 11)) g.page = 11;
     if (nav_button(tr("Jouer"), g.page == 2)) g.page = 2;
     if (nav_button(tr("Serveurs"), g.page == 3)) g.page = 3;
     if (nav_button(tr("Skins"), g.page == 4)) g.page = 4;
@@ -879,6 +883,8 @@ void frame(SDL_Window* window) {
     case 6: bedrock_page(); break;
     case 7: account_page(); break;
     case 9: explore_page(); break;
+    case 10: explorer_page(); break;
+    case 11: mapeditor_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
@@ -982,6 +988,10 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: settings_stop\n");
     settings_stop();
     if (dbg) std::fprintf(stderr, "SH: settings_stop done\n");
+    // Telemetrie d'administration : arrete le battement.
+    if (dbg) std::fprintf(stderr, "SH: admin_stop\n");
+    admin::stop();
+    if (dbg) std::fprintf(stderr, "SH: admin_stop done\n");
     // Telemetrie : vide la file d'envoi et joint le worker.
     if (dbg) std::fprintf(stderr, "SH: telemetry_stop\n");
     telemetry::stop();

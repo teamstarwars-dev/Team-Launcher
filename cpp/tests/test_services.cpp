@@ -6,6 +6,7 @@
 #include "datastore.hpp"
 #include "game_installer.hpp" // runtime_root
 #include "maintenance.hpp"
+#include "admin.hpp"
 #include "presence.hpp"
 #include "shortcut.hpp"
 #include "telemetry.hpp"
@@ -454,6 +455,66 @@ int main() {
 
         DataStore::settings.discordEnabled = savedEn;
         DataStore::settings.discordAppId = savedId;
+    }
+
+    // =====================================================================
+    // 5quater. Telemetrie d'administration (AdminService)
+    // =====================================================================
+    {
+        const bool savedEn = DataStore::settings.adminTelemetryEnabled;
+        const std::string savedUrl = DataStore::settings.adminServerUrl;
+        const std::string savedId = DataStore::settings.installationId;
+
+        // L'URL de test pointe vers un hote injoignable : meme si un envoi
+        // partait par erreur, il n'atteindrait aucun vrai serveur.
+        DataStore::settings.adminServerUrl = "http://127.0.0.1:9/";
+
+        // Desactivee : rien ne part, start() ne lance aucun thread.
+        DataStore::settings.adminTelemetryEnabled = false;
+        CHECK(!admin::enabled());
+        admin::start();
+        admin::send_heartbeat();
+        admin::send_event("test");
+        admin::report_error("src", "msg");
+        admin::stop(); // sans thread : sans effet
+
+        // Activee mais sans URL : toujours desactivee
+        DataStore::settings.adminTelemetryEnabled = true;
+        DataStore::settings.adminServerUrl = "";
+        CHECK(!admin::enabled());
+        DataStore::settings.adminServerUrl = "http://127.0.0.1:9/";
+        CHECK(admin::enabled());
+
+        // Identifiant d'installation : genere une fois, puis stable
+        DataStore::settings.installationId.clear();
+        const std::string id1 = admin::installation_id();
+        CHECK_EQ(id1.size(), size_t{32}); // Guid .NET « N »
+        CHECK_EQ(admin::installation_id(), id1); // pas regenere
+        CHECK_EQ(DataStore::settings.installationId, id1); // conserve
+
+        // Informations machine : lues par API native, sans sous-processus.
+        const auto m = admin::machine_info();
+        CHECK(!m.hostname.empty());
+        CHECK(m.ramMb > 0);
+        CHECK(!m.osVersion.empty());
+        std::printf("INFO machine : %s | %s | RAM %lld Mo\n", m.osVersion.c_str(),
+                    m.cpuName.c_str(), m.ramMb);
+        // Le C# renvoyait des champs vides sur Windows 11 24H2 (wmic absent) :
+        // ici CPU et GPU doivent etre reellement remplis.
+        CHECK(!m.cpuName.empty());
+        CHECK(!m.gpuName.empty());
+
+        // Forme du battement : memes cles que le C#, le serveur ne change pas.
+        const auto p = admin::heartbeat_payload();
+        for (const char* k : {"instance_id", "hostname", "os_version",
+                              "launcher_version", "ram_mb", "cpu_name",
+                              "gpu_name", "mc_version", "instance_count"})
+            CHECK(p.contains(k));
+        CHECK_EQ(p.value("instance_id", ""), id1);
+
+        DataStore::settings.adminTelemetryEnabled = savedEn;
+        DataStore::settings.adminServerUrl = savedUrl;
+        DataStore::settings.installationId = savedId;
     }
 
     // =====================================================================

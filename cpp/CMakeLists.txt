@@ -133,6 +133,11 @@ set(TL_CORE_SOURCES
   src/launch_flow.cpp
   src/server_host.cpp
   src/apptasks.cpp
+  src/admin.cpp
+  src/nbt.cpp
+  src/region.cpp
+  src/world.cpp
+  src/worldsync.cpp
   third_party/miniz/miniz.c
   third_party/miniz/miniz_tdef.c
   third_party/miniz/miniz_tinfl.c
@@ -158,7 +163,7 @@ tl_release_flags(tl_core)
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks)
+foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 add_executable(TeamLauncher ${TL_SOURCES})
@@ -221,6 +226,10 @@ if(TL_BUILD_TESTS)
     "tests/test_apptasks.cpp|TLTestApptasks"
     "tests/test_instance_detail.cpp|TLTestInstanceDetail"
     "tests/test_security.cpp|TLTestSecurity"
+    "tests/test_nbt.cpp|TLTestNbt"
+    "tests/test_region.cpp|TLTestRegion"
+    "tests/test_world.cpp|TLTestWorld"
+    "tests/test_worldsync.cpp|TLTestWorldSync"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")
