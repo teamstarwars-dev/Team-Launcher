@@ -66,13 +66,42 @@ Fermer vs réduire, lancement au démarrage du système, jeu affiché au lanceme
 ### Phase 8 — Architecture et performance
 Système de plugins internes, API HTTP locale, préchargement de la JVM pendant la sélection d'instance.
 
-### Chantier séparé — Social (phase 1 texte)
-Amis par pseudo, messages privés texte + images, petits groupes, bloquer/signaler, bouton « appel vocal » désactivé avec mention « à venir ». **Nécessite un serveur backend** (comptes, amis, messages) : hébergement, modération, conservation des données et coûts sont à décider avant la première ligne de code. À planifier à part, comme tu l'as indiqué.
+### Chantier séparé — Social
+
+Périmètre : amis par pseudo, messages privés texte + images, petits groupes de discussion, bloquer/signaler, et **appel vocal**.
+
+**Décision du 29/09/2026 : le vocal s'appuiera sur la technologie de Discord**, pas sur une pile maison.
+
+C'est le bon choix, et de loin. Un vocal correct demande bien plus que « transporter du son » : codec Opus, annulation d'écho, suppression de bruit, contrôle de gain, gigue et perte de paquets, traversée de NAT avec serveurs TURN de repli, et un relais média à héberger. C'est un métier à soi seul, et un poste de coût permanent. Discord a déjà tout cela, et les joueurs y sont.
+
+#### La question à trancher avant d'écrire la première ligne
+
+Si le vocal vient de Discord mais que les amis et les messages viennent d'un backend maison, **il y a deux systèmes d'identité en parallèle**, et ils ne se recouvrent pas :
+
+- Un ami ajouté par pseudo dans le launcher n'est pas forcément joignable sur Discord.
+- Le bouton « appeler » serait donc actif ou grisé selon un lien Discord que l'utilisateur n'a pas fait, sans qu'il comprenne pourquoi.
+- Bloquer quelqu'un côté launcher ne le bloque pas côté vocal.
+
+Trois sorties possibles, à choisir explicitement :
+
+1. **Tout chez Discord.** Le SDK social de Discord couvre aussi les amis, les messages privés et les salons — donc potentiellement l'essentiel du périmètre, sans backend du tout. Une seule identité, aucune donnée personnelle à héberger, aucune modération à assurer nous-mêmes. En contrepartie : dépendance totale à Discord, obligation que l'utilisateur ait un compte, et soumission à leurs conditions et à leurs évolutions d'API. **C'est l'option que je recommande de regarder en premier**, parce qu'elle supprime le chantier backend entier — le plus coûteux et le plus risqué de la liste.
+2. **Texte maison, vocal Discord.** Il faut alors assumer le lien de comptes : chaque utilisateur associe son compte Discord, et le bouton d'appel n'apparaît qu'entre deux comptes liés. Le message doit être explicite, pas un bouton grisé sans explication.
+3. **Lien simple, sans SDK.** Le launcher se contente d'ouvrir un salon vocal Discord existant (`discord://` ou lien d'invitation). Presque rien à développer, mais ce n'est pas un « appel » entre deux personnes : c'est rejoindre un salon commun.
+
+#### Conséquences à vérifier avant de s'engager
+
+- **Conditions d'utilisation de Discord** : ce que leur SDK autorise dans une application tierce, et ce qu'il impose en affichage et en attribution.
+- **Utilisateur sans Discord** : que voit-il ? Le vocal doit se dégrader proprement, pas planter ni afficher un bouton mort.
+- **Linux** : le vocal doit fonctionner sur les deux plateformes, ou l'absence doit être annoncée clairement.
+
+#### Ce qui reste à notre charge dans tous les cas
+
+Si l'option 2 ou 3 est retenue, le backend reste nécessaire pour les comptes, les amis et les messages — avec ce que cela implique : hébergement, **modération**, conservation de données personnelles (messages privés et images), et coûts récurrents. À cadrer avant de commencer.
 
 ---
 
 ## Points à trancher
 
 1. **Stockage du jeton sous Linux** : DPAPI n'a pas d'équivalent. Recommandation : libsecret quand il est disponible, repli sur un fichier en 0600 avec avertissement visible.
-2. **Social** : le backend engage de la modération et de la conservation de données personnelles (messages privés, images). À cadrer avant de commencer.
+2. **Social** : le vocal passera par Discord (décidé le 29/09/2026). Reste à trancher **jusqu'où** : si on prend aussi les amis et les messages chez Discord, le backend maison disparaît entièrement — donc plus de modération ni de données personnelles à héberger. Sinon il faut assumer deux systèmes d'identité et le lien de comptes. Voir la section Social.
 3. **Notifications natives** : sous Windows elles passent par une identité d'application enregistrée (AppUserModelID), ce que l'installeur peut poser ; sous Linux par D-Bus.
