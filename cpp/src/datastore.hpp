@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <string>
@@ -14,6 +16,16 @@ namespace tl {
 struct CaseInsensitiveLess {
     bool operator()(const std::string& a, const std::string& b) const noexcept;
 };
+
+// file_time_type -> secondes Unix. L'epoch de file_time_type n'est PAS Unix
+// (1601 sous MSVC, autre sous libstdc++ — le compte est même négatif) :
+// clock_cast (C++20) fait la conversion correcte sur les deux plateformes.
+// Sans ça, tri/comparaisons par date sont faux sous Linux.
+inline std::int64_t file_time_to_unix(std::filesystem::file_time_type t) {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+               std::chrono::clock_cast<std::chrono::system_clock>(t).time_since_epoch())
+        .count();
+}
 
 struct AppSettings {
     std::string playerName = "Joueur";
@@ -52,9 +64,25 @@ struct AppSettings {
     // dans .rdata (elle est de toute facon chiffree DPAPI dans config.json).
     std::string adminServerUrl = TL_OBF("http://51.255.207.183:3000");
     bool minimizeOnLaunch = true;
+    // ---- Phase A : réglages avancés (extensibles par les phases suivantes) --
+    std::string logLevel = "Info"; // Trace/Debug/Info/Warn/Error/Fatal/Off
+    std::string theme = "classic"; // classic/light
+    bool colorblind = false;       // accents à fort contraste (Okabe-Ito)
+    double fontScale = 1.0;        // 0.8..1.6 via FontGlobalScale
+    std::string contentPath;       // racine contenu (vide = DataStore::dir())
+    int updateFreqHours = 24;      // vérification maj auto (phase G)
+    std::string updateChannel = "stable"; // stable/beta
+    int maxDownloads = 4;          // 1..20 (phase B)
+    int backupSpaceMb = 0;         // quota sauvegardes, 0 = illimité
+    int analyseThreads = 4;        // 1..12 (analyse mods, phase D)
+    std::string closeBehavior = "minimize"; // minimize/quit (phase G)
+    bool launchAtSystemStart = false;       // (phase G)
+    std::string startupGame = "last";       // last/<id> (phase G)
+    std::string lastGameId;
+    std::string dateFormat = "dd/MM/yyyy"; // (phase G)
 };
 
-// Identifiant d'instance : 32 hexa (Guid .NET « N »), BCryptGenRandom.
+// Identifiant d'instance : 32 hexa (Guid .NET « N »), BCryptGenRandom / getrandom().
 std::string new_guid();
 
 // InstanceInfo C# (champs minimaux — les autres prennent les defauts C#).
@@ -66,7 +94,9 @@ class DataStore {
 public:
     static bool isPortable;
 
-    // TL_DATA_DIR (test) > --portable (exe/data) > %LOCALAPPDATA%\TeamLauncher
+    // TL_DATA_DIR (test) > --portable (exe/data) > ContentPath (réglage,
+    // le config migre au prochain enregistrement) > %LOCALAPPDATA%\TeamLauncher
+    // (Windows) ou $XDG_DATA_HOME/TeamLauncher sinon ~/.local/share/TeamLauncher (Linux)
     static std::filesystem::path dir();
     static std::filesystem::path instancesRoot();
     static std::filesystem::path skinsDir();

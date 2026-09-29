@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "util_str.hpp" // strCaseCmp (tri insensible à la casse)
+
 namespace tl::ui {
 
 // ---------------------------------------------------------------------------
@@ -116,8 +118,8 @@ void instances_page() {
                                       const nlohmann::json* y) {
             switch (g.sortIdx) {
             case 1: // OrdinalIgnoreCase (C#)
-                return _stricmp(x->value("Name", "").c_str(),
-                                y->value("Name", "").c_str()) < 0;
+                return tl::strCaseCmp(x->value("Name", "").c_str(),
+                                      y->value("Name", "").c_str()) < 0;
             case 2: return x->value("Launches", 0) > y->value("Launches", 0);
             case 3: {
                 const bool px = inst_played(*x), py = inst_played(*y);

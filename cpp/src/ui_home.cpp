@@ -18,7 +18,11 @@ void home_page() {
     {
         std::time_t t = std::time(nullptr);
         std::tm tmv{};
+#ifdef _WIN32
         localtime_s(&tmv, &t);
+#else
+        localtime_r(&t, &tmv);
+#endif
         std::strftime(clock, sizeof(clock), "%H:%M", &tmv);
         ImGui::BeginGroup();
         const char* greet = tmv.tm_hour < 18 ? tr("Bonjour") : tr("Bonsoir");

@@ -9,7 +9,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #define NOMINMAX
+#ifdef _WIN32
 #include <Windows.h>
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -41,9 +43,12 @@ int main(int argc, char** argv) {
     if (auto s = tl::updates::staged())
         std::fprintf(stderr, "update pending: v%s\n", s->info.version.c_str());
 
-    // launcher sans console (stderr reste dispo avec TL_CONSOLE=1)
+    // launcher sans console (Windows : stderr reste dispo avec TL_CONSOLE=1 ;
+    // Linux : pas de console allouee, rien a masquer).
+#ifdef _WIN32
     if (!std::getenv("TL_CONSOLE"))
         if (HWND cons = GetConsoleWindow()) ShowWindow(cons, SW_HIDE);
+#endif
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) != 0) {
         std::fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());

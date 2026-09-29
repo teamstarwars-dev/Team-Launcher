@@ -10,6 +10,8 @@
 #include "datastore.hpp"
 #include "pack_import.hpp"
 #include "pack_share.hpp"
+
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
 #include "util_hash.hpp"
 #include "util_zip.hpp"
 
@@ -79,9 +81,7 @@ int main() {
     std::error_code ec;
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp);
-#ifdef _WIN32
     _putenv_s("TL_DATA_DIR", tmp.string().c_str());
-#endif
     DataStore::load();
 
     // =====================================================================

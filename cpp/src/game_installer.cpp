@@ -3,13 +3,20 @@
 #include "datastore.hpp"
 #include "game_launcher.hpp"
 #include "http_win.hpp"
+#include "proc.hpp" // posix_spawn (POSIX) ; vide sous Windows
 #include "util_hash.hpp"
 #include "util_parallel.hpp"
 #include "util_zip.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : XDG, strcasecmp/read, localtime_r.
+#include <strings.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -35,8 +42,16 @@ namespace tl {
 fs::path runtime_root() {
     if (const char* td = std::getenv("TL_RUNTIME_DIR"); td && *td)
         return fs::path(td);
+#ifdef _WIN32
     if (const char* la = std::getenv("LOCALAPPDATA"); la && *la)
         return fs::path(la) / "TeamLauncher" / "runtime";
+#else
+    // Même racine XDG que DataStore (sans en dépendre).
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        return fs::path(xdg) / "TeamLauncher" / "runtime";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home) / ".local" / "share" / "TeamLauncher" / "runtime";
+#endif
     return fs::current_path() / "runtime";
 }
 
@@ -90,7 +105,11 @@ bool download_file(const std::string& url, const fs::path& dest,
 std::string now_iso() {
     const auto t = std::time(nullptr);
     std::tm tm{};
+#ifdef _WIN32
     localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tm);
     return buf;
@@ -106,12 +125,20 @@ void ensure_launcher_profiles() {
 }
 
 bool iequals(const std::string& a, const char* b) {
+#ifdef _WIN32
     return _stricmp(a.c_str(), b) == 0;
+#else
+    return ::strcasecmp(a.c_str(), b) == 0;
+#endif
 }
+
+} // namespace
 
 // Lance un installeur .jar (Forge/NeoForge) : java -jar jar --installClient <runtime>.
 // Sortie stdout+stderr concatenee (lecteurs paralleles anti-deadlock).
+// Expose (header) pour les tests ; le reste du namespace reste local.
 std::string run_jar_installer(const std::string& java, const fs::path& installerJar) {
+#ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
     if (!CreatePipe(&outR, &outW, &sa, 0)) return {};
@@ -165,7 +192,34 @@ std::string run_jar_installer(const std::string& java, const fs::path& installer
     CloseHandle(errR);
     CloseHandle(pi.hProcess);
     return outText + errText;
+#else
+    // argv direct (pas de ligne à parser) ; pompes parallèles anti-deadlock
+    // comme côté Windows (un .jar bavard > 64 Kio bloquerait sinon).
+    auto child = proc::spawn(java, {java, "-jar", installerJar.string(),
+                                    "--installClient", runtime_root().string()},
+                             "", false);
+    if (!child) return {};
+    std::string outText, errText;
+    auto pump = [](int fd, std::string* dst) {
+        char buf[4096];
+        for (;;) {
+            const ssize_t n = ::read(fd, buf, sizeof(buf));
+            if (n <= 0) break;
+            dst->append(buf, static_cast<size_t>(n));
+        }
+    };
+    std::thread t1(pump, child->outFd, &outText);
+    std::thread t2(pump, child->errFd, &errText);
+    proc::wait_exit(child->pid, -1);
+    t1.join();
+    t2.join();
+    proc::close_fd(child->outFd);
+    proc::close_fd(child->errFd);
+    return outText + errText;
+#endif
 }
+
+namespace {
 
 void append_install_log(const std::string& header, const std::string& log) {
     const fs::path p = runtime_root() / "forge-install.log";
@@ -182,12 +236,17 @@ void append_install_log(const std::string& header, const std::string& log) {
 
 bool rules_allow(const json& lib) {
     if (!lib.contains("rules")) return true;
+#ifdef _WIN32
+    constexpr const char* kOsName = "windows";
+#else
+    constexpr const char* kOsName = "linux";
+#endif
     bool allowed = false;
     for (const auto& rule : lib.at("rules")) {
         bool applies = true;
         if (rule.contains("os")) {
             const auto& os = rule.at("os");
-            applies = !os.contains("name") || os.at("name").get<std::string>() == "windows";
+            applies = !os.contains("name") || os.at("name").get<std::string>() == kOsName;
         }
         if (applies)
             allowed = rule.at("action").get<std::string>() == "allow";
@@ -203,7 +262,11 @@ std::string maven_name_to_path(const std::string& name) {
     while (std::getline(ss, p, ':')) parts.push_back(p);
     if (parts.size() < 3) return {};
     std::string group = parts[0];
+#ifdef _WIN32
     std::replace(group.begin(), group.end(), '.', '\\');
+#else
+    std::replace(group.begin(), group.end(), '.', '/');
+#endif
     const std::string& artifact = parts[1];
     const std::string& ver = parts[2];
     const std::string classifier = parts.size() > 3 ? "-" + parts[3] : "";
@@ -350,10 +413,17 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
                         }
                         if (ld.contains("classifiers")) {
                             const auto& cls = ld.at("classifiers");
-                            if (cls.contains("natives-windows")) {
-                                const auto& nat = cls.at("natives-windows");
+#ifdef _WIN32
+                            constexpr const char* kNativesKey = "natives-windows";
+#else
+                            constexpr const char* kNativesKey = "natives-linux";
+#endif
+                            if (cls.contains(kNativesKey)) {
+                                const auto& nat = cls.at(kNativesKey);
                                 std::string natRel = nat.at("path").get<std::string>();
+#ifdef _WIN32
                                 std::replace(natRel.begin(), natRel.end(), '/', '\\');
+#endif
                                 const fs::path natDest = libraries_dir() / fs::path(natRel);
                                 const std::string sha = nat.value("sha1", "");
                                 // C# : skip download si fast+present ; on force si absent
@@ -361,7 +431,7 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
                                     download_file(nat.at("url").get<std::string>(), natDest,
                                                   sha.empty() ? nullptr : &sha, &cancel,
                                                   false, fast);
-                                zip_extract_dlls(natDest, natives_dir(versionId));
+                                zip_extract_natives(natDest, natives_dir(versionId));
                             }
                         }
                     }
@@ -703,7 +773,12 @@ std::string ensure_neoforge_installed(const std::string& mcVersion,
 
     if (!fs::exists(jsonPath, ec))
         throw std::runtime_error(
-            "L'installation de NeoForge a échoué (voir runtime\\forge-install.log).");
+            "L'installation de NeoForge a échoué (voir runtime"
+#ifdef _WIN32
+            "\\forge-install.log).");
+#else
+            "/forge-install.log).");
+#endif
     return neoId;
 }
 
@@ -784,7 +859,12 @@ std::string ensure_forge_installed(const std::string& mcVersion,
 
         if (!fs::exists(forgeJsonPath, ec))
             throw std::runtime_error(
-                "L'installation de Forge a échoué (voir runtime\\forge-install.log).");
+                "L'installation de Forge a échoué (voir runtime"
+#ifdef _WIN32
+                "\\forge-install.log).");
+#else
+                "/forge-install.log).");
+#endif
     }
 
     // 3. install_profile.json = liste COMPLETE des bibliotheques (le JSON de

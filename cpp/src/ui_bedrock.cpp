@@ -1,9 +1,13 @@
 #include "ui_internal.hpp"
 
+#include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
+#endif
 
 #include <fstream>
 
@@ -17,16 +21,23 @@ namespace tl::ui {
 
 namespace {
 
+#ifdef _WIN32
 std::filesystem::path local_appdata() {
     wchar_t buf[MAX_PATH] = L"";
     const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
     return n ? std::filesystem::path(buf) : std::filesystem::path();
 }
+#endif
 
-// %LOCALAPPDATA%\Packages\Microsoft.MinecraftUWP_8wekyb3d8bbwe
+// %LOCALAPPDATA%\Packages\Microsoft.MinecraftUWP_8wekyb3d8bbwe (Windows).
+// Sous Linux : chemin vide (bedrock_installed() est toujours faux).
 std::filesystem::path bedrock_root() {
+#ifdef _WIN32
     return local_appdata() / L"Packages" /
            L"Microsoft.MinecraftUWP_8wekyb3d8bbwe";
+#else
+    return {};
+#endif
 }
 
 std::filesystem::path options_path() {
@@ -43,9 +54,13 @@ bool bedrock_installed() {
     return std::filesystem::is_directory(bedrock_root(), ec);
 }
 
+#ifdef _WIN32
 void shell_open(const wchar_t* uri) {
     ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL);
 }
+#else
+void shell_open(const char* uri) { proc::open_detached(uri ? uri : ""); }
+#endif
 
 // Ecrit/remplace les cles key:value (C# optimiser : add si absente, sinon replace)
 void write_option_keys(const std::vector<std::pair<const char*, const char*>>& kvs) {
@@ -133,7 +148,11 @@ void bedrock_page() {
     ImGui::BeginDisabled(!installed);
     if (fullBtn(tr("LANCER MINECRAFT BEDROCK"), true)) {
         if (bedrock_installed())
+#ifdef _WIN32
             shell_open(L"minecraft:");
+#else
+            shell_open("minecraft:");
+#endif
         else
             notify_toast(tr("Bedrock absent"),
                          tr("Minecraft Bedrock n'est pas installé sur ce PC.\n"
@@ -141,6 +160,13 @@ void bedrock_page() {
     }
     ImGui::EndDisabled();
     if (fullBtn(tr("OPTIMISER LES PERFORMANCES"), false)) {
+#ifndef _WIN32
+        // Sans Bedrock UWP, options_path() est vide : ne rien écrire.
+        if (!installed) {
+            notify_toast(tr("Bedrock absent"),
+                         tr("Optimisation indisponible sous Linux."));
+        } else
+#endif
         try {
             std::error_code ec;
             const std::filesystem::path bak = options_backup();
@@ -177,7 +203,11 @@ void bedrock_page() {
         }
     }
     if (fullBtn(tr("INSTALLER DEPUIS LE MICROSOFT STORE"), false)) {
+#ifdef _WIN32
         shell_open(L"ms-windows-store://pdp/?ProductId=9NBLGGH2JHXJ");
+#else
+        shell_open("ms-windows-store://pdp/?ProductId=9NBLGGH2JHXJ");
+#endif
     }
 
     // ---- Carte info ----

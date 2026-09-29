@@ -1,11 +1,14 @@
 #include "ui_internal.hpp"
 
 #include "ms_auth.hpp"
+#include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Modale de connexion Microsoft (portage de MsAuth.ShowCodeDialog, 520x360).
@@ -17,12 +20,16 @@ namespace tl::ui {
 void open_url(const std::string& url) {
     // Même garde que open_browser côté flux : l'URL vient du JSON serveur.
     if (!auth::detail::browser_url_allowed(url)) return;
+#ifdef _WIN32
     const int n = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
     std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, w.data(), n);
     w.resize(static_cast<size_t>(n - 1));
     ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    proc::open_detached(url);
+#endif
 }
 
 // Reaction a une connexion reussie : pseudo + mode compte + toast, une fois.

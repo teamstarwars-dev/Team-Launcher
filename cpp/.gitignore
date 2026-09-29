@@ -3,6 +3,7 @@ build-*/
 *.user
 .vs/
 out/
+teamlauncher_*.deb
 
 # Dependances tierces (~106 Mo, clones amont) : recuperees par fetch-deps.ps1
 # sur des tags epingles. Exception : stb, un seul en-tete, versionne ici.

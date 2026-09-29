@@ -160,7 +160,26 @@ void notify_log(const std::string& msg);
 std::optional<std::string> pick_zip_open();
 std::optional<std::string> pick_model_file();
 std::optional<std::string> pick_zip_save(const std::string& defaultName);
+#ifdef _WIN32
 std::optional<std::string> pick_folder(const wchar_t* title);
+#else
+std::optional<std::string> pick_folder(const char* title);
+#endif
+// Sélecteur générique (dialogs.cpp) : "Nom (*.a *.b)" + "*.a *.b".
+// Utilisé par les pages ; les pickers historiques ci-dessus sont conservés.
+std::optional<std::string> pick_file_open(const std::string& title,
+                                          const std::string& filterName,
+                                          const std::string& filterPat,
+                                          const std::string& startFile = {});
+std::vector<std::string> pick_files_open(const std::string& title,
+                                         const std::string& filterName,
+                                         const std::string& filterPat,
+                                         const std::string& startDir = {});
+std::optional<std::string> pick_file_save(const std::string& title,
+                                          const std::string& filterName,
+                                          const std::string& filterPat,
+                                          const std::string& defaultName,
+                                          const std::string& defExt = {});
 void import_zip();
 void import_folder();
 void export_zip(const nlohmann::json& inst);
@@ -211,6 +230,7 @@ struct NewsState {
     std::vector<NewsEntry> changelog; // fichier local
     std::thread th;
     std::atomic<bool> cancel{false};
+    int taskId = 0; // entree panneau AppTasks (0 = aucune)
 };
 extern NewsState newsState;
 
@@ -222,6 +242,11 @@ struct PingResult {
     int online = 0, max = 0;
     std::string version, motd;
 };
+// Ping SLP direct (ui_servers.cpp, expose pour les tests avec faux serveur).
+PingResult query_slp(const std::string& address,
+                     const std::atomic<bool>* cancel = nullptr);
+// Depose un lot d'adresses a pinger (suivi panneau). Expose pour les tests.
+void queue_pings(const std::vector<std::string>& addrs);
 struct ServersState {
     std::mutex m;
     std::condition_variable cv;

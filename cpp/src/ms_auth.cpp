@@ -1,14 +1,17 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
 #include <wincrypt.h>
+#endif
 
 #include "ms_auth.hpp"
 
 #include "datastore.hpp"
 #include "game_launcher.hpp" // log_line
 #include "http_win.hpp"
+#include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
 #include "obf.hpp" // endpoints et ID client obfusses (S3)
 
 #include <nlohmann/json.hpp>
@@ -609,12 +612,16 @@ void open_browser(const std::string& uri) {
                  truncate(uri, 120) + ").");
         return;
     }
+#ifdef _WIN32
     const int n = MultiByteToWideChar(CP_UTF8, 0, uri.c_str(), -1, nullptr, 0);
     if (n <= 1) return;
     std::wstring w(static_cast<size_t>(n), L'\0');
     MultiByteToWideChar(CP_UTF8, 0, uri.c_str(), -1, w.data(), n);
     w.resize(static_cast<size_t>(n - 1));
     ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    proc::open_detached(uri);
+#endif
 }
 
 // Renouvellement silencieux. Microsoft fait tourner le refresh token a chaque

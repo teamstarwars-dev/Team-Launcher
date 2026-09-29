@@ -1,6 +1,7 @@
 #include "moddev.hpp"
 
 #include "http_win.hpp"
+#include "proc.hpp" // posix_spawn (POSIX) ; vide sous Windows
 
 #include <nlohmann/json.hpp>
 
@@ -12,10 +13,16 @@
 #include <sstream>
 #include <thread>
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+// Etape 5 (Linux) : sh -c + strcasecmp/read.
+#include <strings.h>
+#include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -24,6 +31,7 @@ namespace tl::moddev {
 
 namespace {
 
+#ifdef _WIN32
 std::wstring widen(const std::string& s) {
     if (s.empty()) return {};
     const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(),
@@ -32,6 +40,16 @@ std::wstring widen(const std::string& s) {
     MultiByteToWideChar(CP_UTF8, 0, s.c_str(), static_cast<int>(s.size()),
                         w.data(), n);
     return w;
+}
+#endif
+
+// Comparaison insensible a la casse : _stricmp (Win32) / strcasecmp (POSIX).
+int strCaseCmp(const char* a, const char* b) {
+#ifdef _WIN32
+    return ::_stricmp(a, b);
+#else
+    return ::strcasecmp(a, b);
+#endif
 }
 
 // Retire les diacritiques des lettres latines courantes : un nom de mod
@@ -82,12 +100,30 @@ bool file_exists(const fs::path& p) {
 }
 
 // Cherche un executable dans le PATH.
+#ifdef _WIN32
 fs::path which(const std::wstring& exe) {
     wchar_t buf[MAX_PATH];
     if (SearchPathW(nullptr, exe.c_str(), nullptr, MAX_PATH, buf, nullptr) > 0)
         return fs::path(buf);
     return {};
 }
+#else
+fs::path which(const std::string& exe) {
+    if (const char* p = std::getenv("PATH"); p && *p) {
+        std::istringstream ps(p);
+        std::string d;
+        while (std::getline(ps, d, ':')) {
+            if (d.empty()) continue;
+            const fs::path cand = fs::path(d) / exe;
+            std::error_code ec;
+            if (fs::is_regular_file(cand, ec) &&
+                ::access(cand.string().c_str(), X_OK) == 0)
+                return cand;
+        }
+    }
+    return {};
+}
+#endif
 
 // Versions de repli : ce que le C# codait en dur, mais sous une forme qui
 // existe reellement. Elles vieillissent — d'ou la resolution en ligne.
@@ -107,9 +143,9 @@ const char* loader_name(Loader l) {
 }
 
 Loader loader_from(const std::string& s) {
-    if (_stricmp(s.c_str(), "forge") == 0) return Loader::Forge;
-    if (_stricmp(s.c_str(), "neoforge") == 0) return Loader::NeoForge;
-    if (_stricmp(s.c_str(), "bedrock") == 0) return Loader::Bedrock;
+    if (strCaseCmp(s.c_str(), "forge") == 0) return Loader::Forge;
+    if (strCaseCmp(s.c_str(), "neoforge") == 0) return Loader::NeoForge;
+    if (strCaseCmp(s.c_str(), "bedrock") == 0) return Loader::Bedrock;
     return Loader::Fabric;
 }
 
@@ -440,8 +476,14 @@ std::map<std::string, std::string> project_files(const ProjectSpec& spec,
             "# " + spec.name +
             "\n\nAdd-on Bedrock.\n\n- `BP/` : behavior pack\n- `RP/` : resource "
             "pack\n\nCopie les deux dossiers dans "
+#ifdef _WIN32
             "`%LOCALAPPDATA%\\Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\"
             "LocalState\\games\\com.mojang\\development_*_packs\\`.\n"
+#else
+            // Pas de Bedrock UWP sous Linux : chemin generique, pas invente.
+            "le dossier `development_*_packs` de ton installation Bedrock "
+            "(`games/com.mojang/`).\n"
+#endif
             "Les modeles 3D se font avec Blockbench.\n";
         return out;
     }
@@ -567,6 +609,7 @@ CreateResult create_project(const ProjectSpec& spec, const Deps& deps,
 
 Toolchain detect_toolchain(const fs::path& projectDir) {
     Toolchain t;
+#ifdef _WIN32
     const fs::path wrapper = projectDir / "gradlew.bat";
     t.wrapper = file_exists(wrapper);
 
@@ -582,6 +625,24 @@ Toolchain detect_toolchain(const fs::path& projectDir) {
     }
     if (javaExe.empty()) javaExe = which(L"java.exe");
     t.jdk = !javaExe.empty();
+#else
+    const fs::path wrapper = projectDir / "gradlew";
+    t.wrapper = file_exists(wrapper);
+
+    const fs::path g = which("gradle");
+    t.gradleOnPath = !g.empty();
+
+    // JDK : JAVA_HOME d'abord, puis le PATH.
+    fs::path javaExe;
+    if (const char* jh = std::getenv("JAVA_HOME")) {
+        const fs::path c = fs::path(jh) / "bin" / "java";
+        std::error_code ecj;
+        if (fs::is_regular_file(c, ecj) && ::access(c.string().c_str(), X_OK) == 0)
+            javaExe = c;
+    }
+    if (javaExe.empty()) javaExe = which("java");
+    t.jdk = !javaExe.empty();
+#endif
 
     if (t.wrapper)
         t.command = "\"" + wrapper.string() + "\"";
@@ -596,7 +657,11 @@ Toolchain detect_toolchain(const fs::path& projectDir) {
         // CORRECTIF : le C# disait « cree le projet d'abord », alors que
         // creer le projet ne produisait aucun wrapper.
         t.problem =
+#ifdef _WIN32
             "Ni wrapper Gradle dans le projet (gradlew.bat), ni gradle dans le "
+#else
+            "Ni wrapper Gradle dans le projet (gradlew), ni gradle dans le "
+#endif
             "PATH. Installe Gradle, ou genere le wrapper une fois depuis le "
             "dossier du projet : gradle wrapper --gradle-version 8.12";
     }
@@ -613,6 +678,7 @@ int run(const fs::path& dir, const std::string& commandLine, const Log& log,
         return -1;
     }
 
+#ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE rd = nullptr, wr = nullptr;
     if (!CreatePipe(&rd, &wr, &sa, 0)) {
@@ -675,6 +741,40 @@ int run(const fs::path& dir, const std::string& commandLine, const Log& log,
     CloseHandle(rd);
     CloseHandle(pi.hProcess);
     return static_cast<int>(code);
+#else
+    // sh -c : l'equivalent de la ligne brute CreateProcess (qui parse aussi).
+    // stdout+stderr fusionnes et pompe ligne a ligne, comme cote Windows.
+    int spawnErr = 0;
+    auto child = proc::spawn_shell(commandLine, dir.string(), &spawnErr);
+    if (!child) {
+        say("Lancement impossible (code " + std::to_string(spawnErr) + ") : " +
+            commandLine);
+        return -1;
+    }
+    std::string pending;
+    char raw[4096];
+    for (;;) {
+        const ssize_t n = ::read(child->outFd, raw, sizeof(raw));
+        if (n <= 0) break;
+        pending.append(raw, static_cast<size_t>(n));
+        std::size_t nl;
+        while ((nl = pending.find('\n')) != std::string::npos) {
+            std::string line = pending.substr(0, nl);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            say(line);
+            pending.erase(0, nl + 1);
+        }
+        if (cancel && cancel->load()) {
+            proc::terminate_child(child->pid);
+            say("Interrompu.");
+            break;
+        }
+    }
+    if (!pending.empty()) say(pending);
+    const int code = proc::wait_exit(child->pid, -1);
+    proc::close_fd(child->outFd);
+    return code;
+#endif
 }
 
 } // namespace tl::moddev

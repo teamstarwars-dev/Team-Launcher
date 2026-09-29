@@ -546,12 +546,111 @@ Outils et sources (instantané du 27/09/2026 vers 11:12 ; l'arbre est modifié e
 
 ### Point dur identifié : le stockage du jeton
 
-`secrets.cpp` chiffre le jeton de rafraîchissement Microsoft avec **DPAPI**, qui lie le secret au compte Windows. Il n'y a pas d'équivalent direct sous Linux. Trois options, à trancher :
+`secrets.cpp` chiffre le jeton de rafraîchissement Microsoft avec **DPAPI**, qui lie le secret au compte Windows. Il n'y a pas d'équivalent direct sous Linux. Trois options, **tranché le 28/09/2026** :
 1. **libsecret / Secret Service** (GNOME Keyring, KWallet) — la bonne réponse, mais ajoute une dépendance et échoue sur une session sans trousseau.
 2. **Fichier en 0600** sous `$XDG_DATA_HOME` — simple, mais c'est du stockage en clair protégé par les seules permissions. À ne faire qu'en le **disant explicitement** dans l'interface.
 3. Redemander la connexion à chaque lancement sous Linux — sûr, mais c'est exactement ce que l'utilisateur voulait éviter.
 
 Recommandation : libsecret quand il est disponible, repli sur le fichier 0600 avec avertissement visible.
+
+**Décision 28/09/2026 : on applique la recommandation** — backend `libsecret` prioritaire, repli fichier `0600` sous `$XDG_DATA_HOME` avec avertissement visible dans l'interface (jamais de stockage silencieux en clair). `libsecret-1-dev` installé dans WSL le même jour ; le portage se fait module par module avec compilation et tests réels, `secrets.cpp` viendra avec son backend POSIX. Limite de test connue : pas de trousseau GNOME sous WSL, donc seul le repli 0600 sera exerçable dans WSL.
+
+### Scaffolding CMake (28/09/2026)
+
+- WSL : Ubuntu 26.04.1 LTS (WSL2) + `build-essential cmake ninja-build pkg-config libcurl4-openssl-dev libsecret-1-dev libgl1-mesa-dev` + dev X11 (g++ 15.2, cmake 4.2.3, ninja 1.13.2). Accès root sans mot de passe via `wsl -u root` (le `sudo` interactif de l'utilisateur `team` ne permet pas l'automatisation).
+- `CMakeLists.txt` : liens `tl_core` et `TeamLauncher` conditionnés `if(WIN32)` / POSIX (`CURL::libcurl` + `libsecret-1` via pkg-config, `OpenGL::GL`) ; branche release non-MSVC nettoyée (`-fno-exceptions -fno-rtti` retirés — nlohmann/json et les workers utilisent try/throw, comme le rappelle le commentaire `/EHsc` côté MSVC).
+- **`cmake -S cpp -B cpp/build-linux -G Ninja` configure avec succès sous WSL** : SDL2 vendue se configure (X11 ON, OpenGL ON, audio en repli OSS/dummy — suffisant pour un launcher), CURL 8.18, libsecret 0.21.7, OpenGL trouvés. `cpp/build-linux/` est couvert par `.gitignore` (`build-*/`).
+- La compilation échouera sur les sources Windows-only (attendu) : ordre suggéré des backends POSIX — `util_str`/`datastore` (XDG + `getrandom()`), `shortcut` (`.desktop`, petit), `presence` (socket Unix), `game_launcher`/`moddev` (`posix_spawn`), `ui.cpp` (`xdg-open` + portail XDG), `secrets` (libsecret/0600), `http_win` (libcurl, le plus gros) en dernier.
+
+### Backend 1 fait (28/09/2026) : `datastore` + `util_str`
+
+- `datastore.cpp` : `_stricmp` → `strcasecmp` (via helper `strCaseCmp`), `exeDir()` via `/proc/self/exe`, `dir()` XDG (`$XDG_DATA_HOME` sinon `~/.local/share`, `TL_DATA_DIR` et `--portable` inchangés), `doSave()` via `rename()` atomique, `new_guid()` via `getrandom()` + repli `random_device`. Branche Windows inchangée (build + 17/18 suites OK, voir incident ci-dessous).
+- `util_str.hpp` : même API, implémentation POSIX manuelle UTF-8 ↔ UTF-32 (sans iconv), surrogates/hors-plage ignorés.
+- `tests/test_datastore.cpp` : section 8 `#ifndef _WIN32` (XDG, repli HOME, format GUID, round-trip UTF y compris astral).
+- **Vérifié sous WSL** : `datastore.cpp` + `test_datastore.cpp` compilent (g++ 15.2, `-fsyntax-only`) ; smoke test `/tmp/tl-smoke1` (`SMOKE ALL PASSED`) sur le vrai `datastore.cpp` — XDG, 1000 GUID uniques 32-hexa, round-trip save/load sans `.tmp` résiduel, UTF — avec un stub `secrets` au contrat identique (le vrai backend arrive avec le module `secrets`).
+- **Incident non lié** : `TLTestRegion.exe` échoue sur cette machine (`test_region.cpp:423` — `r.-5.-9.mca` réel à 0 chunk parsable). Dépend des données monde locales, aucun fichier region/nbt modifié ici.
+
+### Backend 2 fait (28/09/2026) : `shortcut` (.desktop)
+
+- `shortcut.cpp` : branche Windows inchangée (COM/IShellLink) ; branche POSIX = fichier `.desktop` freedesktop (`Type/Name/Exec/Path/Comment/Terminal=false/Categories=Game;`, quoting si espaces, bit `+x`, `.lnk` d'entrée reécrit en `.desktop`). `desktop_dir()` via `XDG_DESKTOP_DIR` de `~/.config/user-dirs.dirs` (guillemets + `$HOME`, commentaires) sinon `~/Desktop` ; `exe_path()` via `/proc/self/exe`. Pas de clé `Icon` : le seul asset est un `.ico` Windows, invalide ici. `ensure_desktop_shortcut()` écrit `Team Launcher.desktop`, même sémantique « une fois sauf force » (appelants `ui.cpp`/`ui_settings.cpp` inchangés).
+- **Vérifié sous WSL** : compile (g++ 15.2) ; smoke test `/tmp/tl-smoke2` (`SMOKE2 ALL PASSED`) sur le vrai `shortcut.cpp` + `datastore.cpp` — parsing user-dirs, contenu .desktop, bit +x, remap .lnk, ensure/force/flag.
+- **Windows** : build OK, 17/18 suites (même incident `TLTestRegion` pré-existant, inchangé).
+
+### Backend 3 fait (28/09/2026) : `presence` (socket Unix)
+
+- `presence.cpp` : classe `Pipe` à interface identique des deux côtés (worker/handshake/SET_ACTIVITY inchangés). Branche POSIX = socket Unix `AF_UNIX` sur `$XDG_RUNTIME_DIR/discord-ipc-N` (repli `/tmp`), N 0→9, non-bloquante + `poll()` (mêmes délais que `PeekNamedPipe`), `send(..., MSG_NOSIGNAL)` (pas de SIGPIPE), garde-fou 1 Mio conservé. `GetCurrentProcessId()` → helper `self_pid()` (`getpid()`), `_stricmp` → helper `strCaseCmp()` — ce dernier a cassé le build Windows une fois (`strcasecmp` nu n'existe pas sous Windows), corrigé et rebuildé vert.
+- **Vérifié sous WSL** : compile (g++ 15.2) ; smoke test `/tmp/tl-smoke3` (`SMOKE3 ALL PASSED`) bout-en-bout face à un faux serveur Discord — échec propre sans serveur (`connected()==false`), handshake (`client_id` vérifié), `SET_ACTIVITY` (`details` + `pid` vérifiés), `clear` final (`activity: null`) au `shutdown()`.
+- **Windows** : build OK, 17/18 suites (même incident `TLTestRegion` pré-existant, inchangé).
+
+### Backend 4 fait (28/09/2026) : `game_launcher` + `moddev` (posix_spawn)
+
+- Nouveau `src/proc.hpp` (header-only, vide sous Windows) : `spawn()` (posix_spawnp + pipes `O_CLOEXEC`, stdin `/dev/null`, dossier via `addchdir_np` glibc avec repli `sh -c 'cd "$0" && shift && exec "$@"'`), `spawn_shell()`, `run_capture()` (capture fusionnée + délai, tue + moissonne, jamais de zombie), `wait_exit()`, `terminate_child()` (SIGKILL), `close_fd()`. Pas de `fork()` (dangereux en multithread).
+- `game_launcher.cpp` : `localtime_r`, `sysinfo()` (RAM), `bin/java` + bit `+x` (`javaw.exe` sous Windows), `detect_java_major` via `run_capture` (même regex, 5 s), `find_java` (JAVA_HOME, `/usr/lib/jvm`, `/usr/java`, java du PATH ; pas de balayage `/opt`), URL Adoptium `linux/x64`, séparateurs `/` et `:` dans `build_jvm_args`, `GameProcess` en `void*` inchangé (fds/pid castés, même layout), `start_game`/`wait_game`/`close_game`/`start_game_log_writer` POSIX (`close_game` ne ferme pas les fds des pumps, comme Windows).
+- `moddev.cpp` : `widen()`/`which()`/textes `.bat`→sans extension + `JAVA_HOME/bin/java` + `sh -c` dans `run()` (pompe ligne à ligne et annulation identiques), `strCaseCmp`, README Bedrock au chemin générique (pas de Bedrock UWP sous Linux).
+- **Vérifié sous WSL** : les deux TU compilent (g++ 15.2) ; smoke test `/tmp/tl-smoke4` (`SMOKE4 ALL PASSED`, 14 points) sur le vrai code — spawn/capture/timeout/kill, `detect_java_major` 21/8/0 sur faux JDK, `find_java` via JAVA_HOME, `moddev::run` + `detect_toolchain` factices, `GameProcess` bout-en-bout (`/bin/echo` + log writer), `sysinfo`, séparateurs, `offline_session`.
+- **Windows** : build OK, 17/18 suites (même incident `TLTestRegion` pré-existant, inchangé).
+- Hors périmètre (leurs backends viendront) : `game_installer.cpp` (son propre helper spawn + chemins), `util_zip.cpp` (`_stricmp` l.35), `http_win.cpp` — stubbés dans le smoke.
+
+### Backend 5 fait (28/09/2026) : `ui` (sélecteurs + xdg-open)
+
+- Nouveau `src/dialogs.cpp` (extrait de `ui.cpp`, ajouté à `TL_CORE_SOURCES` + exclusion GLOB) : les 7 fonctions Windows déplacées **verbatim** (comportement inchangé), branches POSIX à côté. `wstr_to_utf8()` devient un wrapper de `tl::wide_to_utf8` (portable, plus d'ifdef). `pick_folder()` : signature `wchar_t*` (Windows) / `char*` (POSIX) dans `ui_internal.hpp` + appelant `ui.cpp` adapté.
+- POSIX : `zenity` puis `kdialog` en sous-processus (`proc::run_capture`, modal comme `GetOpenFileName`), filtres/titres/défauts conservés, `.zip` ajouté comme `lpstrDefExt`, annulation/outil absent → `nullopt`. `open_in_explorer()` = `xdg-open` fire-and-forget (pas d'attente, comme `ShellExecuteW`). Portail D-Bus documenté comme amélioration future (pas de dépendance ajoutée).
+- **Vérifié sous WSL** : compile (g++ 15.2) ; smoke test `/tmp/tl-smoke5` (`SMOKE5 ALL PASSED`) sur le vrai `dialogs.cpp` — faux `zenity` instrumenté (chemins + args `--file-selection`/`*.zip`/`--directory`/titres vérifiés), annulation, `.zip` auto, faux `xdg-open` (chemin avec espace intact), repli nullopt sans outils, `wstr_to_utf8` UTF-32.
+- **Windows** : build OK, 17/18 suites (même incident `TLTestRegion` pré-existant, inchangé). Leçon outillage : `/tmp` ne persiste pas entre deux invocations `wsl` de l'outil → build+run regroupés en un seul script désormais.
+- Reste UI sous Windows (leurs backends viendront avec `ui.cpp` complet) : `ui_settings.cpp`/`ui_skins.cpp`/`ui_packs.cpp` (leurs `wstr_to_utf8` locaux), `ui_moddev.cpp:222` (`pick_folder` wchar).
+
+### Backend 6 fait (29/09/2026) : `secrets` (libsecret + repli 0600)
+
+- Même API (`dpapi_protect_b64`/`unprotect`, `encrypt_value`, `secure_wipe`) : Windows inchangé ; POSIX = base64 manuel + `protect` qui stocke au trousseau (`org.teamlauncher.Secret`, attribut `key`=uuid) et rend base64(`"ks:<uuid>"`), repli fichier `0600` (`secrets.local` XDG, `{"version":1,"secrets":{...}}`) rendant base64(`"local:<uuid>"`) + flag `insecure_fallback_active()` pour l'avertissement UI. Le blob ne contient jamais le secret sous Linux (référence seule). `+ insecure_fallback_active()=false` sous Windows, `tl_schema()` sans warning via `call_once`.
+- **Vérifié sous WSL** (headless → repli local exercé) : smoke `/tmp/tl-smoke6` (`SMOKE6 ALL PASSED`) — vecteurs base64 (+binaire 0-255, rejets), round-trip, préfixe `enc:v1:`, compat clair, fichier en 0600 sans droits groupe/autres, blob illisible conservé, `secure_wipe`.
+
+### Backend 7 fait (29/09/2026) : `http_win` (libcurl)
+
+- Bloc S2 (allowlist/redaction, ~200 lignes) conservé tel quel (portable) ; seul le transport part en `#ifdef` : `dbg()` (erreurs curl), `Easy`/`Slist` RAII, `curl_global_init` once, `do_request` (UA 6.0, `PROTOCOLS_STR`+`REDIR_PROTOCOLS_STR`=http/https, timeouts 15/60 s, `FOLLOWLOCATION` 10, annulation via xfer-callback, corps lu quel que soit le statut comme WinHTTP) et `get_to_file` (200 exigé, progression, retries 500·attempt, pas de partiel). Hôte S2 via `host_from_url()` partagé (pas de parseur ad hoc).
+- **Vérifié sous WSL** : smoke `/tmp/tl-smoke7` (`SMOKE7 ALL PASSED`) — allowlist/refus/schémas hors réseau, annulation pré-armée, GET 200/404 réels, chemin POST (404 JSON, sans rien spammer), téléchargement + progression + pas de partiel.
+
+### Backend 8 fait (29/09/2026) : `game_installer` + `util_zip`
+
+- `runtime_root()` XDG, `localtime_r`, `strcasecmp`, `run_jar_installer` via `proc::spawn` + pompes parallèles (exposé au header pour les tests), `rules_allow` sur `kOsName` (windows/linux), séparateurs maven `/`, clé `natives-linux` (+ slash natifs intacts), messages `forge-install.log` au bon slash. `zip_extract_dlls` → `zip_extract_natives` (`.dll`/`.so`, compare portable) + `<cctype>`. Tests `test_game_port` OS-aware (rules kOs/kOther + cas deny-autre ajouté, `TL_DATA_DIR`/`TL_RUNTIME_DIR` aussi sous Linux, zip `.so`).
+- **Vérifié sous WSL** : smoke `/tmp/tl-smoke8` (`SMOKE8 ALL PASSED`, 10 points) — maven/rules/natives `.so` + zip-slip, `runtime_root`, `run_jar_installer` (faux java, stdout+stderr).
+- **Windows** : inchangé de comportement (branches `#ifdef`), suites au §12.
+
+### Backend 9 fait (29/09/2026) : `maintenance` + `admin`
+
+- `maintenance.cpp` : disque via `statvfs` (détail sans lettre de volume), `wstr_to_utf8_local` → `tl::wide_to_utf8` (partagé, plus d'ifdef), score d'assets inversé (linux+x64 préférés, win/macos/arm pénalisés), message « paquet Linux », `install_staged_and_restart` POSIX = staging (`.tl-update-<pid>`, ménage orphelins) + renames atomiques + `+x` + ménage + relance double-fork/setsid (explication : `rename()` autorisé sur exe mappé, `open(O_TRUNC)` interdit `ETXTBSY` — trouvé au strace après un faux succès à 0 fichier ; le test exige désormais `nWrote > 0`). Header `maintenance.hpp` documenté (bat Windows vs in-process Linux).
+- `admin.cpp` : `machine_info()` POSIX — `gethostname`, `PRETTY_NAME` + noyau (`uname`), `model name` de `/proc/cpuinfo`, GPU = 1er PCI classe `03xx` sous `/sys` (NVIDIA/AMD/Intel + IDs, sans pci.ids).
+- **Vérifié sous WSL** : smoke `/tmp/tl-smoke9` (`SMOKE9 ALL PASSED`) — health disque `3.9 Go libres`, select linux/win-only, `machine_info` (host/OS/CPU/PCI/RAM), **self-update réel** (staging + rename par-dessus l'exe en cours + relance + flag). `strace` installé dans WSL au passage.
+- Tests `test_services.cpp` OS-aware (asset linux ajouté au mix, `parse_release_json` par OS, section raccourci `.desktop`/contenu/`HOME` isolé).
+
+### Backend 10 fait (29/09/2026) : `open_url` groupé
+
+- `proc::open_detached()` (xdg-open fire-and-forget) dans `proc.hpp`, réutilisé par `dialogs.cpp`. `ms_auth::open_browser` + `ui_auth::open_url` (garde allowlist conservée) + `ui_news` (sans garde, comme avant) → `open_detached`. `main.cpp` : console-hide en `#ifdef`. `telemetry.cpp` : `OSVERSIONINFOEXW` en `#ifdef`, label OS = `PRETTY_NAME` sinon `Linux`, `localtime_r`/`gmtime_r` (+ 2 autres `localtime_s` oubliés trouvés par le compilateur : `ms_auth` non gardé idem).
+- **Vérifié sous WSL** : les 5 TU compilent ; smoke `/tmp/tl-smoke10` (`SMOKE10 ALL PASSED`) — `open_browser` autorisé/refusé (faux xdg-open), payload telemetry POSTé sur webhook local avec `OS : Ubuntu`. Smoke5 re-joué vert (non-régression `open_detached`).
+
+### Backend 11 fait (29/09/2026) : `ui_servers` (BSD sockets)
+
+- Alias `Socket`/`kBadSocket`/`close_sock`, presse-papiers via ImGui (SDL, portable) au lieu de `CF_TEXT`, `WSAStartup` en `#ifdef`, `ioctlsocket`→`fcntl`, `WSAEWOULDBLOCK`→`EINPROGRESS`, `select(s+1)` (ignoré sous Windows, requis POSIX), `socklen_t`, timeouts `timeval`. `query_slp` exposé dans `ui_internal.hpp` (sorti du namespace anonyme, comme `run_jar_installer`) pour les tests.
+- **Vérifié sous WSL** : compile ; smoke `/tmp/tl-smoke11` (`SMOKE11 ALL PASSED`) sur le **vrai** `query_slp` (link ui_servers+imgui+lang+server_host, 2 stubs UI) face à un faux serveur SLP python — handshake/statut complets (joueurs/version/motd), port fermé, adresse vide, annulation.
+
+### Backend 12 fait (29/09/2026) : reste UI + broutilles + build Linux complet
+
+- API générique `pick_file_open`/`pick_files_open`/`pick_file_save` dans `dialogs.cpp` (Windows : commdlg dynamique équivalent ; POSIX : filtres zenity/kdialog + `--multiple`/`--separate-output` + `ensure_ext`) ; `ui_packs`/`ui_settings`/`ui_skins` branchés dessus (branches Windows verbatim conservées). `ui_moddev` littéral `pick_folder` ifdef. `tl::strCaseCmp` centralisé dans `util_str.hpp` (`pack_share` ×2, `worldsync` ×4, `ui.cpp`, `ui_explorer`). `localtime_r` : `backup`, `worldsync`, `ui_skins`, `ui.cpp`, `ui_explorer`, `ui_home`, `ui_instances`(tri `strCaseCmp`), `ui_bedrock` dégradé (pas d'UWP : page « non installé », OPTIMISER neutre, `shell_open` narrow). `poll_game_exit()` (waitpid WNOHANG, sémantique Windows préservée à l'identique). Includes Win32 gardés dans les 5 pages restantes. `test_env.hpp` (shim `_putenv_s` portable) : gardes `#ifdef` retirées dans 6 fichiers de test, `<cmath>` pour `test_worldedit`.
+- **Build Linux COMPLET réussi** (`cpp/build-linux`) : `TeamLauncher` 2,5 Mo + 19 suites. Correctifs révélés par le build : flags SDL `/clang:` gardés Clang-only, `SecretSchema` via `call_once` (warnings), 3 `localtime_s` oubliés, `test_env.hpp`, `worldsync` §12b, tests OS-aware (game_port/moddev/services).
+- **Bugs prod réels trouvés grâce au portage** (affectaient aussi Windows en latence) :
+  1. `worldsync::list_worlds_in` : `is_regular_file(manquant, ec)` pose `ENOENT` sous libstdc++ → `if (ec) break` avortait le scan (ordre ext4 vs alphabétique Windows masquait) — `ec` local désormais. Audit des 22 boucles sœurs : seul ce site avait le piège (les autres testent des entrées existantes).
+  2. `install_staged_and_restart` : extraction à 0 fichier traitée comme succès (strace : `ETXTBSY` sur l'exe en cours) — staging + rename + exigence `nWrote > 0`.
+  3. `file_time_to_unix()` (datastore.hpp, `clock_cast`) : l'epoch `file_time_type` n'est pas Unix (négatif sous libstdc++, 1601 sous MSVC) — `mtime_of` (backup/worldsync) corrigé des deux côtés.
+- **Linux : 19/19 suites vertes.** Corrigés pour ça : `rules`/séparateur/`_putenv_s`/commandes moddev (127 vs -1 documenté)/assets/services-raccourci + `TL_DATA_DIR` isolé partout (les premiers runs avaient écrit dans le HOME WSL `team` — jamais le config Windows réel — session-cache/secrets.local : à nettoyer).
+- **Windows : build OK, 17/18** (même incident `TLTestRegion` sur données locales ; `TLTestGamePort.exe` supprimé puis verrouillé par **Bitdefender** — le nom reste inutilisable dans `cpp/build` malgré le déblocage annoncé : quarantaine non relâchée. **Validé quand même** en linkant le même `.obj` vers Temp : `ALL TESTS PASSED` (Java 8 détecté). À régler : restaurer/exclure le nom d'origine dans Bitdefender).
+
+### Rebranchement AppTasks fait (29/09/2026) : launch, news, ptero, ping
+
+Contrat existant (`apptasks_begin` + relais `apptasks_frame` + `apptasks_end` par le worker) étendu aux 4 derniers workers utilisateurs. Télémétrie et daemons (ping_worker de fond, heartbeat admin) exclus volontairement : pas d'action utilisateur, pas d'annulation sensée.
+- **Lancement** (`ui.cpp`) : entrée `Lancement de <nom>` + `&g.cancel` branché, miroir progression/statut (`tasks::update`, fraction clampée), clôture dans le worker (Done/Annulée/erreur). `#include "apptasks.hpp"` ajouté.
+- **News** (`ui_news`) : champ `taskId` dans `NewsState`, `news_worker(tid)`, fin Done/Annulée (cache offline = succès).
+- **Ptero Power/Command** (`ui_servers`) : `PteroTask` += `taskId` + `shared_ptr<atomic>` (contrat de durée de vie), helper `ptero_enqueue_user`, worker avec pré-check d'annulation, fin systématique y compris shutdown (anti use-after-free du relais), Refresh silencieuses inchangées, toasts conservés (sauf annulation).
+- **Ping batch** (`ui_servers`) : champs `pingCancel/pingTaskId/pingDone/pingTotal` (déjà prévus) branchés — entrée par lot, progression, marquage `cancelled` du reliquat, fin au drain. `query_slp` + `queue_pings` sortis du namespace anonyme (exposés, sans collision vérifiée).
+- **Vérifié** : build Windows OK (17/18 + GamePort bloqué AV, inchangé), Linux 19/19, smoke `/tmp/tl-smoke12` (`SMOKE12 ALL PASSED`) — vrai lot ping → Done 1.0 + résultats (faux serveurs SLP). Leçon : un worker infini doit être arrêté avant la fin du main sous peine de `terminate` (abort vu puis corrigé dans le smoke).
 
 ## Installeur Windows (27/09/2026)
 
@@ -588,4 +687,13 @@ Décision de l'utilisateur du 27/09/2026 : pas de certificat de signature de cod
 ### Reste à faire
 
 - **Logo** : l'icône actuelle vient du projet C# et n'est plus la bonne. Le nouveau logo doit remplacer `cpp/assets/TeamLauncher.ico` et servir aussi d'illustration Discord Rich Presence.
-- **Installeur Linux** : à faire une fois la cible Linux compilée (`.desktop` + AppImage, ou `.deb`).
+- ~~**Installeur Linux**~~ : **fait le 29/09/2026** (voir section suivante).
+
+## Installeur Linux (29/09/2026)
+
+`cpp/installer/linux/` : `teamlauncher.desktop.in` (validé `desktop-file-validate` RC=0), `make-deb.sh`, `install.sh` (+ logo `cpp/assets/teamlauncher.png`, frame 256 px extraite du `.ico` en stdlib python — le rendu est bon).
+- Layout unifié : `<root>/teamlauncher/{TeamLauncher,assets/,lib/libSDL2*}`, lien `<prefix>/bin/teamlauncher` (symlink : `/proc/self/exe` résout le réel, `exeDir/assets` reste correct). SDL embarquée via `rpath $ORIGIN/lib` (CMake, cible Linux uniquement) : pas de `LD_LIBRARY_PATH` (qui fuiterait vers le jeu lancé), pas de dépendance libsdl2 système (ABI figée). `Depends: libcurl4, libsecret-1-0, libglib2.0-0, libgl1` (dérivés du `readelf NEEDED`).
+- `make-deb.sh` (sans root) : `teamlauncher_6.0.0_amd64.deb`, **1,8 Mo** (binaire 2,5 Mo + SDL 2,6 Mo + assets). Testé : `dpkg -i` OK, `ldd` résout tout (SDL via rpath), `.desktop` valide, symlink OK. AppImage écarté (FUSE + outil externe, besoin couvert par .deb + install.sh).
+- `install.sh` : mode utilisateur (`~/.local`, testé : layout + .desktop + icône + rpath OK) et `--system` (`/opt`, root).
+- **Jalon : premier run graphique Linux** (WSLg) : la fenêtre s'ouvre et tourne (le « hang » headless était la boucle principale en attente d'input !), capture `TL_SCREENSHOT` OK — onboarding + page Instances + chemin XDG corrects.
+- Reste : signature éventuelle du .deb (non signé, comme Windows — décision à prendre), dépôt APT (hors sujet pour l'instant).

@@ -3,7 +3,8 @@
 // Portage de PresenceService.cs — Rich Presence Discord.
 //
 // Le C# utilisait la bibliotheque DiscordRPC .NET. Ici on parle directement le
-// protocole IPC de Discord : tube nomme \\.\pipe\discord-ipc-N (N de 0 a 9),
+// protocole IPC de Discord : tube nomme \\.\pipe\discord-ipc-N (Windows) ou
+// socket Unix $XDG_RUNTIME_DIR/discord-ipc-N (Linux), N de 0 a 9 ;
 // trames « [opcode int32 LE][longueur int32 LE][charge utile JSON] ».
 //   opcode 0 = HANDSHAKE, 1 = FRAME, 2 = CLOSE, 3 = PING, 4 = PONG
 //

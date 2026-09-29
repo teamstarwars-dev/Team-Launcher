@@ -4,6 +4,8 @@
 
 #include "world.hpp"
 
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
+
 #include "datastore.hpp"
 #include "miniz.h"
 
@@ -102,9 +104,7 @@ int main() {
     std::error_code ec;
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp);
-#ifdef _WIN32
     _putenv_s("TL_DATA_DIR", tmp.string().c_str());
-#endif
     DataStore::load();
 
     const fs::path inst = DataStore::instancesRoot() / "inst1";

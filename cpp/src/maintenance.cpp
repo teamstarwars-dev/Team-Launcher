@@ -1,6 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#ifdef _WIN32
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : statvfs (disque), readlink/fork/exec (maj), getpid.
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/statvfs.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include "maintenance.hpp"
 
@@ -8,6 +17,8 @@
 #include "game_installer.hpp"
 #include "game_launcher.hpp"
 #include "http_win.hpp"
+#include "util_str.hpp" // wide_to_utf8 (wstr_to_utf8_local)
+#include "util_zip.hpp" // zip_extract_all (maj Linux en process)
 
 #include <nlohmann/json.hpp>
 
@@ -42,6 +53,7 @@ std::vector<Check> run_all(const std::atomic<bool>* cancel) {
 
     // Espace disque du volume des instances (C# : volume systeme)
     {
+#ifdef _WIN32
         ULARGE_INTEGER freeBytes{};
         const std::wstring root = DataStore::instancesRoot().root_path().wstring();
         if (GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr)) {
@@ -54,6 +66,18 @@ std::vector<Check> run_all(const std::atomic<bool>* cancel) {
         } else {
             r.push_back({"Espace disque", true, "Non vérifiable"});
         }
+#else
+        struct statvfs sv{};
+        if (::statvfs(DataStore::instancesRoot().string().c_str(), &sv) == 0) {
+            const double freeGb = static_cast<double>(sv.f_bavail) * sv.f_frsize /
+                                  1024.0 / 1024.0 / 1024.0;
+            char detail[96];
+            std::snprintf(detail, sizeof(detail), "%.1f Go libres", freeGb);
+            r.push_back({"Espace disque", freeGb > 2.0, detail});
+        } else {
+            r.push_back({"Espace disque", true, "Non vérifiable"});
+        }
+#endif
     }
 
     // Serveurs Mojang
@@ -164,7 +188,9 @@ namespace {
 constexpr const char* kLatestApi =
     "https://api.github.com/repos/teamstarwars-dev/Team-Luncher-/releases/latest";
 constexpr const char* kMarkerName = "pending.json";
+#ifdef _WIN32
 constexpr const char* kScriptName = "apply-update.bat";
+#endif
 
 std::vector<int> split_version(const std::string& v) {
     std::vector<int> out;
@@ -242,6 +268,7 @@ bool write_text_atomic(const fs::path& dest, const std::string& content,
 }
 
 // ' -> '' pour les litteraux PowerShell entre quotes simples.
+#ifdef _WIN32
 std::string ps_quote(const std::string& s) {
     std::string r;
     for (char c : s) {
@@ -260,15 +287,11 @@ std::string bat_quote(const std::string& s) {
     }
     return "\"" + r + "\"";
 }
+#endif // _WIN32 (ps_quote/bat_quote : script .bat uniquement)
 
-std::string wstr_to_utf8_local(const wchar_t* w) {
-    if (!w || !*w) return {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 1) return {};
-    std::string r(static_cast<size_t>(n - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, r.data(), n, nullptr, nullptr);
-    return r;
-}
+#ifdef _WIN32
+std::string wstr_to_utf8_local(const wchar_t* w) { return tl::wide_to_utf8(w); }
+#endif // (install_staged POSIX travaille direct en UTF-8)
 
 } // namespace
 
@@ -291,8 +314,8 @@ std::string select_asset_url(const json& release, std::string* nameOut,
     if (!release.is_object()) return {};
     const auto it = release.find("assets");
     if (it == release.end() || !it->is_array()) return {};
-    // Seuls les .zip sont exploitables (deploiement par Expand-Archive dans
-    // le script). Parmi eux : « win » + « x64 » d'abord.
+    // Seuls les .zip sont exploitables. Preference OS courant + x64.
+    // (Deploiement : Expand-Archive sous Windows, extraction interne sous Linux.)
     std::string best, bestName;
     long long bestSize = -1;
     int bestScore = -1;
@@ -304,12 +327,21 @@ std::string select_asset_url(const json& release, std::string* nameOut,
         const std::string n = to_lower(name);
         if (!ends_with(n, ".zip")) continue;
         int score = 0;
+#ifdef _WIN32
         if (contains(n, "win") || contains(n, "windows")) score += 4;
         if (contains(n, "x64") || contains(n, "x86_64") || contains(n, "win64"))
             score += 4;
         if (contains(n, "linux") || contains(n, "macos") || contains(n, "osx") ||
             contains(n, "arm64") || contains(n, "aarch64"))
             score -= 8;
+#else
+        if (contains(n, "linux")) score += 4;
+        if (contains(n, "x64") || contains(n, "x86_64")) score += 4;
+        if (contains(n, "win") || contains(n, "windows") || contains(n, "win64") ||
+            contains(n, "macos") || contains(n, "osx") || contains(n, "arm64") ||
+            contains(n, "aarch64"))
+            score -= 8;
+#endif
         if (score > bestScore) {
             bestScore = score;
             best = url;
@@ -413,8 +445,13 @@ bool download_update(const Info& info, ProgressFn progress,
                      const std::atomic<bool>* cancel, std::string* errOut) {
     if (info.assetUrl.empty()) {
         if (errOut)
+#ifdef _WIN32
             *errOut = "Aucun paquet Windows (.zip) dans cette release : "
                       "passe par la page de la version.";
+#else
+            *errOut = "Aucun paquet Linux (.zip) dans cette release : "
+                      "passe par la page de la version.";
+#endif
         return false;
     }
     if (info.version.empty()) {
@@ -474,6 +511,7 @@ bool install_staged_and_restart(std::string* errOut) {
         if (errOut) *errOut = "Aucune mise à jour en attente.";
         return false;
     }
+#ifdef _WIN32
     wchar_t exeW[32768];
     const DWORD n = GetModuleFileNameW(nullptr, exeW, 32767);
     if (n == 0 || n >= 32767) {
@@ -524,6 +562,108 @@ bool install_staged_and_restart(std::string* errOut) {
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     return true;
+#else
+    // Sous Linux l'exécutable en cours accepte rename() mais pas
+    // open(O_TRUNC) (ETXTBSY — idem pour les .so mappés) : on déploie via un
+    // dossier de staging + renames atomiques, puis relance détachée.
+    // L'appelant quitte ensuite comme côté Windows.
+    char exeBuf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", exeBuf, sizeof(exeBuf) - 1);
+    if (n <= 0) {
+        if (errOut) *errOut = "Chemin de l'exécutable introuvable.";
+        return false;
+    }
+    exeBuf[n] = '\0';
+    const fs::path exe(exeBuf);
+    const fs::path exeDir = exe.parent_path();
+    std::error_code ec2;
+    // Ménage d'un staging orphelin (crash pendant une maj précédente).
+    for (fs::directory_iterator it(exeDir, ec2), end; it != end;
+         it.increment(ec2)) {
+        if (ec2) break;
+        const std::string nm = it->path().filename().string();
+        if (it->is_directory(ec2) && nm.rfind(".tl-update-", 0) == 0)
+            fs::remove_all(it->path(), ec2);
+    }
+    ec2.clear();
+    // 1. extraction vers staging (fichiers neufs : jamais d'ETXTBSY).
+    const fs::path stage = exeDir / (".tl-update-" + std::to_string(::getpid()));
+    fs::remove_all(stage, ec2);
+    ec2.clear();
+    const int nWrote = zip_extract_all(st->file, stage);
+    if (nWrote <= 0) {
+        fs::remove_all(stage, ec2);
+        if (errOut) *errOut = "Extraction du paquet impossible.";
+        return false;
+    }
+    // 2. bascule par rename (atomique par fichier, marche sur l'exe et les
+    // .so mappés — seul open(O_TRUNC) est interdit dessus, pas rename).
+    bool moved = true;
+    for (fs::recursive_directory_iterator it(stage, ec2), end;
+         it != end && moved; it.increment(ec2)) {
+        if (ec2) {
+            moved = false;
+            break;
+        }
+        if (!it->is_regular_file(ec2)) continue;
+        std::error_code ec3;
+        const fs::path rel = fs::relative(it->path(), stage, ec3);
+        if (ec3) {
+            moved = false;
+            break;
+        }
+        const fs::path dst = exeDir / rel;
+        fs::create_directories(dst.parent_path(), ec3);
+        if (ec3) {
+            moved = false;
+            break;
+        }
+        fs::rename(it->path(), dst, ec3);
+        if (ec3) moved = false;
+    }
+    fs::remove_all(stage, ec2);
+    if (!moved) {
+        if (errOut) *errOut = "Déploiement du paquet impossible.";
+        return false;
+    }
+    // 3. le zip ne garde pas les bits +x : restaure l'exécutable.
+    fs::permissions(exe,
+                    fs::perms::owner_exec | fs::perms::group_exec |
+                        fs::perms::others_exec,
+                    fs::perm_options::add, ec2);
+    // 4. ménage : zip + marqueur.
+    fs::remove(st->file, ec2);
+    fs::remove(updates_dir() / kMarkerName, ec2);
+    // 5. relance détachée (double fork : pas de zombie, survit à notre
+    // sortie). Entre fork et exec : que des appels async-signal-safe.
+    const pid_t f1 = ::fork();
+    if (f1 < 0) {
+        if (errOut) *errOut = "Relance impossible.";
+        return false;
+    }
+    if (f1 == 0) {
+        const pid_t f2 = ::fork();
+        if (f2 != 0) _exit(f2 < 0 ? 1 : 0);
+        ::setsid();
+        const int devnull = ::open("/dev/null", O_RDWR);
+        if (devnull >= 0) {
+            ::dup2(devnull, STDIN_FILENO);
+            ::dup2(devnull, STDOUT_FILENO);
+            ::dup2(devnull, STDERR_FILENO);
+            if (devnull > STDERR_FILENO) ::close(devnull);
+        }
+        ::execl(exe.c_str(), exe.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    int st1 = 0;
+    while (::waitpid(f1, &st1, 0) < 0 && errno == EINTR) {
+    }
+    if (!WIFEXITED(st1) || WEXITSTATUS(st1) != 0) {
+        if (errOut) *errOut = "Relance impossible.";
+        return false;
+    }
+    return true;
+#endif
 }
 
 } // namespace tl::updates

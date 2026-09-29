@@ -10,6 +10,7 @@
 #include "region.hpp"
 
 #include <cstdio>
+#include <cmath> // std::floor (MSVC l'obtient par transitivité, pas GCC)
 #include <filesystem>
 #include <string>
 

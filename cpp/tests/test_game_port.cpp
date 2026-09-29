@@ -5,6 +5,8 @@
 #include "util_parallel.hpp"
 #include "util_zip.hpp"
 
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
+
 #include "miniz.h"
 
 #include <algorithm>
@@ -45,6 +47,9 @@ int main() {
 #ifdef _WIN32
     _putenv_s("TL_DATA_DIR", tmp.string().c_str());
     _putenv_s("TL_RUNTIME_DIR", (tmp / "runtime").string().c_str());
+#else
+    setenv("TL_DATA_DIR", tmp.string().c_str(), 1);
+    setenv("TL_RUNTIME_DIR", (tmp / "runtime").string().c_str(), 1);
 #endif
 
     using namespace tl;
@@ -59,19 +64,30 @@ int main() {
     CHECK(maven_name_to_path("net.minecraftforge:mcp_config:1.16.5@zip").empty());
     CHECK(maven_name_to_path("trop-court").empty());
 
-    // --- 2. RulesAllow ---
+    // --- 2. RulesAllow (OS courant : "windows" sous Windows, "linux" sinon) ---
     CHECK(rules_allow(nlohmann::json::object())); // pas de rules -> true
+#ifdef _WIN32
+    constexpr const char* kOs = "windows";
+    constexpr const char* kOther = "linux";
+#else
+    constexpr const char* kOs = "linux";
+    constexpr const char* kOther = "windows";
+#endif
     {
-        const nlohmann::json winAllow = {{"rules", nlohmann::json::array({
-            {{"action", "allow"}, {"os", {{"name", "windows"}}}}})}};
-        CHECK(rules_allow(winAllow));
-        const nlohmann::json linuxOnly = {{"rules", nlohmann::json::array({
-            {{"action", "allow"}, {"os", {{"name", "linux"}}}}})}};
-        CHECK(!rules_allow(linuxOnly));
-        const nlohmann::json allowThenDenyWindows = {{"rules", nlohmann::json::array({
+        const nlohmann::json osAllow = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}, {"os", {{"name", kOs}}}}})}};
+        CHECK(rules_allow(osAllow));
+        const nlohmann::json otherOnly = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}, {"os", {{"name", kOther}}}}})}};
+        CHECK(!rules_allow(otherOnly));
+        const nlohmann::json allowThenDenyOs = {{"rules", nlohmann::json::array({
             {{"action", "allow"}},
-            {{"action", "disallow"}, {"os", {{"name", "windows"}}}}})}};
-        CHECK(!rules_allow(allowThenDenyWindows));
+            {{"action", "disallow"}, {"os", {{"name", kOs}}}}})}};
+        CHECK(!rules_allow(allowThenDenyOs));
+        const nlohmann::json allowThenDenyOther = {{"rules", nlohmann::json::array({
+            {{"action", "allow"}},
+            {{"action", "disallow"}, {"os", {{"name", kOther}}}}})}};
+        CHECK(rules_allow(allowThenDenyOther));
         const nlohmann::json noOs = {{"rules", nlohmann::json::array({
             {{"action", "allow"}}})}};
         CHECK(rules_allow(noOs));
@@ -83,7 +99,7 @@ int main() {
             {"arguments", {{"jvm", nlohmann::json::array({
                 "-cp", "${classpath}",
                 nlohmann::json{{"rules", nlohmann::json::array(
-                    {{{"action", "allow"}, {"os", {{"name", "windows"}}}}})},
+                    {{{"action", "allow"}, {"os", {{"name", kOs}}}}})},
                     {"value", "-Djava.library.path=${natives_directory}"}},
                 nlohmann::json{{"rules", nlohmann::json::array(
                     {{{"action", "allow"}, {"os", {{"name", "osx"}}}}})},
@@ -188,7 +204,11 @@ int main() {
             const auto off = build_jvm_args("CP", "NAT", false, &official, 4, "");
             CHECK_EQ(off[1], std::string("-Djava.library.path=NAT"));
             CHECK_EQ(off[3], std::string("CP"));
-            CHECK_EQ(off[4], std::string("-Dfoo=;"));
+#ifdef _WIN32
+            CHECK_EQ(off[4], std::string("-Dfoo=;")); // classpath_separator Windows
+#else
+            CHECK_EQ(off[4], std::string("-Dfoo=:")); // classpath_separator POSIX
+#endif
             CHECK_EQ(off.size(), size_t{5}); // "" ignore
 
             const auto forge = build_jvm_args("CP", "NAT", true, nullptr, 4, "");
@@ -258,14 +278,23 @@ int main() {
             CHECK(threw);
         }
 
-        // --- 10. zip : extraction + garde-fou zip-slip ---
+        // --- 10. zip : extraction natives + garde-fou zip-slip ---
         {
             const fs::path z = tmp / "t.zip";
+#ifdef _WIN32
+            constexpr const char* kNat = "sub/a.dll";
+            constexpr const char* kEvil = "../evil.dll";
+            constexpr const char* kEvilBase = "evil.dll";
+#else
+            constexpr const char* kNat = "sub/a.so";
+            constexpr const char* kEvil = "../evil.so";
+            constexpr const char* kEvilBase = "evil.so";
+#endif
             mz_zip_archive arch{};
             CHECK(mz_zip_writer_init_file(&arch, z.string().c_str(), 0));
-            CHECK(mz_zip_writer_add_mem(&arch, "sub/a.dll", "AAA", 3,
+            CHECK(mz_zip_writer_add_mem(&arch, kNat, "AAA", 3,
                                         MZ_DEFAULT_COMPRESSION));
-            CHECK(mz_zip_writer_add_mem(&arch, "../evil.dll", "BBB", 3,
+            CHECK(mz_zip_writer_add_mem(&arch, kEvil, "BBB", 3,
                                         MZ_DEFAULT_COMPRESSION));
             CHECK(mz_zip_writer_add_mem(&arch, "install_profile.json", "{}", 2,
                                         MZ_DEFAULT_COMPRESSION));
@@ -273,11 +302,11 @@ int main() {
             mz_zip_writer_end(&arch);
 
             const fs::path outDir = tmp / "zipout";
-            const int n = zip_extract_dlls(z, outDir);
+            const int n = zip_extract_natives(z, outDir);
             CHECK_EQ(n, 1);
-            CHECK(fs::exists(outDir / "sub" / "a.dll"));
-            CHECK(!fs::exists(tmp / "evil.dll")); // traversal rejete
-            CHECK(!fs::exists(outDir / ".." / "evil.dll"));
+            CHECK(fs::exists(outDir / kNat));
+            CHECK(!fs::exists(tmp / kEvilBase)); // traversal rejete
+            CHECK(!fs::exists(outDir / ".." / kEvilBase));
 
             const fs::path prof = tmp / "extracted-profile.json";
             CHECK(zip_extract_entry(z, "install_profile.json", prof));

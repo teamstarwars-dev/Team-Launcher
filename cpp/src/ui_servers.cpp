@@ -1,15 +1,32 @@
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#else
+// Etape 5 (Linux) : sockets BSD (même API que Winsock pour ce qui est
+// utilisé ici : getaddrinfo/socket/connect/select/send/recv).
+#include <arpa/inet.h>
+#include <cerrno>
+#include <fcntl.h>
+#include <netdb.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #include "ui_internal.hpp"
 
+#include "apptasks.hpp" // tl::tasks::update/cancel (lots ping + ptero)
 #include "server_host.hpp"
 
+#include <memory> // shared_ptr (drapeau d'annulation par tache ptero)
+
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 
 #pragma comment(lib, "ws2_32.lib")
+#endif
 
 namespace tl::ui {
 
@@ -26,8 +43,9 @@ const ImVec4 kOk = hex(0x9ece6a);      // en ligne / Partager
 const ImVec4 kWarn = hex(0xe0af68);    // Importer
 const ImVec4 kCardHover = hex(0x1e2229);
 
-// --- presse-papiers (C# Clipboard.GetText/SetText, Win32 CF_TEXT) ---------
-
+// --- presse-papiers (C# Clipboard.GetText/SetText) : Win32 CF_TEXT sous
+// Windows, presse-papiers SDL via ImGui sous Linux (même contenu texte).
+#ifdef _WIN32
 std::string clip_get() {
     std::string out;
     if (!OpenClipboard(nullptr)) return out;
@@ -54,6 +72,14 @@ void clip_set(const std::string& s) {
     }
     CloseClipboard();
 }
+#else
+std::string clip_get() {
+    if (const char* p = ImGui::GetClipboardText()) return p;
+    return {};
+}
+
+void clip_set(const std::string& s) { ImGui::SetClipboardText(s.c_str()); }
+#endif
 
 // --- helpers boutons colores (Partager vert, Importer orange) -------------
 
@@ -106,9 +132,25 @@ void placeholder_card(const char* msg) {
     ImGui::PopStyleColor();
 }
 
+} // namespace
+
 // --- Ping SLP (ServerPing.QueryAsync, TCP etat status protocole 1.7) ------
 // Retour : ok = reponse valide ; errored = exception C# ("Impossible de
 // joindre") ; sinon timeout 3,5 s = null C# ("Hors ligne").
+// Expose (ui_internal.hpp) pour les tests avec faux serveur SLP.
+
+#ifdef _WIN32
+using Socket = SOCKET;
+constexpr Socket kBadSocket = INVALID_SOCKET;
+inline void close_sock(Socket s) { ::closesocket(s); }
+#else
+// Sockets BSD : mêmes appels que Winsock pour ce qui est utilisé ici.
+using Socket = int;
+constexpr Socket kBadSocket = -1;
+inline void close_sock(Socket s) {
+    if (s >= 0) ::close(s);
+}
+#endif
 
 void put_varint(std::string& out, int v) {
     for (;;) {
@@ -120,7 +162,7 @@ void put_varint(std::string& out, int v) {
     }
 }
 
-bool read_varint_sock(SOCKET s, const std::atomic<bool>* cancel, int& out) {
+bool read_varint_sock(Socket s, const std::atomic<bool>* cancel, int& out) {
     out = 0;
     for (int shift = 0; shift < 35; shift += 7) {
         if (cancel && cancel->load()) return false;
@@ -133,7 +175,7 @@ bool read_varint_sock(SOCKET s, const std::atomic<bool>* cancel, int& out) {
     return false; // "Varint trop long."
 }
 
-bool read_exact(SOCKET s, char* buf, int n) {
+bool read_exact(Socket s, char* buf, int n) {
     while (n > 0) {
         const int r = recv(s, buf, n, 0);
         if (r <= 0) return false;
@@ -168,11 +210,13 @@ PingResult query_slp(const std::string& address,
                      const std::atomic<bool>* cancel) {
     PingResult r;
     r.started = true; // resultat final (timeout ou reponse), pas un placeholder
+#ifdef _WIN32
     static std::once_flag wsaOnce;
     std::call_once(wsaOnce, [] {
         WSADATA d;
         WSAStartup(MAKEWORD(2, 2), &d);
     });
+#endif
 
     std::string host;
     int port = 25565;
@@ -193,25 +237,34 @@ PingResult query_slp(const std::string& address,
         return r;
     }
 
-    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (s == INVALID_SOCKET) {
+    Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == kBadSocket) {
         freeaddrinfo(res);
         r.errored = true;
         return r;
     }
 
     // Connect non bloquant, arbitre a 3,5 s par tranches de 200 ms
+#ifdef _WIN32
     u_long nb = 1;
     ioctlsocket(s, FIONBIO, &nb);
+#else
+    const int fl = ::fcntl(s, F_GETFL, 0);
+    ::fcntl(s, F_SETFL, fl | O_NONBLOCK);
+#endif
     const int cr =
         connect(s, res->ai_addr, static_cast<int>(res->ai_addrlen));
     freeaddrinfo(res);
     bool connected = cr == 0;
+#ifdef _WIN32
     if (!connected && WSAGetLastError() == WSAEWOULDBLOCK) {
+#else
+    if (!connected && errno == EINPROGRESS) {
+#endif
         for (int waited = 0; waited < 3500 && !connected;
              waited += 200) {
             if (cancel && cancel->load()) {
-                closesocket(s);
+                close_sock(s);
                 return r; // abandon (shutdown) — resultat ignore
             }
             fd_set wf;
@@ -220,10 +273,15 @@ PingResult query_slp(const std::string& address,
             timeval tv{};
             tv.tv_sec = 0;
             tv.tv_usec = 200 * 1000;
-            const int sel = select(0, nullptr, &wf, nullptr, &tv);
+            // nfds ignore sous Windows, requis sous POSIX.
+            const int sel = select(s + 1, nullptr, &wf, nullptr, &tv);
             if (sel > 0) {
                 int err = 0;
+#ifdef _WIN32
                 int len = sizeof(err);
+#else
+                socklen_t len = sizeof(err);
+#endif
                 getsockopt(s, SOL_SOCKET, SO_ERROR,
                            reinterpret_cast<char*>(&err), &len);
                 connected = err == 0;
@@ -232,17 +290,18 @@ PingResult query_slp(const std::string& address,
             if (sel < 0) break;
         }
         if (!connected) {
-            closesocket(s);
+            close_sock(s);
             return r; // timeout -> null C# -> "Hors ligne"
         }
     } else if (!connected) {
-        closesocket(s);
+        close_sock(s);
         r.errored = true;
         return r;
     }
 
     // Bloquant + timeout recv 3,5 s (C# : ReadTimeout inappliqué aux async,
     // on applique ici — plus sûr, divergence sans effet UI visible)
+#ifdef _WIN32
     nb = 0;
     ioctlsocket(s, FIONBIO, &nb);
     DWORD to = 3500;
@@ -250,6 +309,15 @@ PingResult query_slp(const std::string& address,
                sizeof(to));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<char*>(&to),
                sizeof(to));
+#else
+    const int fl2 = ::fcntl(s, F_GETFL, 0);
+    ::fcntl(s, F_SETFL, fl2 & ~O_NONBLOCK);
+    timeval tv{};
+    tv.tv_sec = 3;
+    tv.tv_usec = 500 * 1000;
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
 
     // Handshake (VarInt 0x00, proto 47, host, port BE, next state 1)
     std::string hs;
@@ -267,7 +335,7 @@ PingResult query_slp(const std::string& address,
     if (send(s, frame.data(), static_cast<int>(frame.size()), 0) !=
             static_cast<int>(frame.size()) ||
         send(s, req, 2, 0) != 2) {
-        closesocket(s);
+        close_sock(s);
         r.errored = true;
         return r;
     }
@@ -277,13 +345,13 @@ PingResult query_slp(const std::string& address,
     if (!read_varint_sock(s, cancel, plen) || !read_varint_sock(s, cancel, pid) ||
         pid != 0 || !read_varint_sock(s, cancel, jlen) || jlen <= 0 ||
         jlen > 4 * 1024 * 1024) {
-        closesocket(s);
+        close_sock(s);
         r.errored = true;
         return r;
     }
     std::string js(static_cast<size_t>(jlen), '\0');
     const bool got = read_exact(s, js.data(), jlen);
-    closesocket(s);
+    close_sock(s);
     if (!got) {
         r.errored = true;
         return r;
@@ -315,6 +383,24 @@ PingResult query_slp(const std::string& address,
     return r;
 }
 
+namespace {
+
+// Cloture l'entree du lot en cours (Done sauf Annulee). Appelé par le worker.
+void end_ping_batch() {
+    int tid = 0;
+    {
+        std::lock_guard lk(serversState.m);
+        tid = serversState.pingTaskId;
+        serversState.pingTaskId = 0;
+        serversState.pingCancel.store(false);
+        serversState.pingDone = 0;
+        serversState.pingTotal = 0;
+    }
+    // Deja annulee par le panneau : finish() est sans effet, elle reste
+    // « Annulee », comme voulu (contrat apptasks_end).
+    if (tid > 0) apptasks_end(tid);
+}
+
 void ping_worker() {
     for (;;) {
         std::string addr;
@@ -327,6 +413,26 @@ void ping_worker() {
             if (serversState.targets.empty()) {
                 serversState.workPending = false;
                 serversState.pinging = false;
+                const int tid = serversState.pingTaskId;
+                lk.unlock();
+                if (tid > 0) end_ping_batch();
+                continue;
+            }
+            // Annulation panneau : le reste du lot est marque annule.
+            if (serversState.pingCancel.load()) {
+                for (const auto& a : serversState.targets) {
+                    auto it = serversState.pings.find(a);
+                    if (it != serversState.pings.end()) it->second.cancelled = true;
+                }
+                serversState.targets.clear();
+                serversState.workPending = false;
+                serversState.pinging = false;
+                const int tid = serversState.pingTaskId;
+                lk.unlock();
+                if (tid > 0) {
+                    (void)tl::tasks::cancel(tid);
+                    end_ping_batch();
+                }
                 continue;
             }
             addr = serversState.targets.front();
@@ -334,26 +440,61 @@ void ping_worker() {
         }
         PingResult r = query_slp(addr, &serversState.cancel);
         {
-            std::lock_guard lk(serversState.m);
+            std::unique_lock lk(serversState.m);
             if (!serversState.cancel) serversState.pings[addr] = r;
+            if (serversState.pingTaskId > 0) {
+                ++serversState.pingDone;
+                const int done = serversState.pingDone;
+                const int total = serversState.pingTotal;
+                const int tid = serversState.pingTaskId;
+                lk.unlock();
+                tl::tasks::update(tid, "",
+                                  total > 0 ? std::clamp(static_cast<double>(done) /
+                                                             total,
+                                                         0.0, 1.0)
+                                            : -1.0);
+                lk.lock();
+                if (serversState.targets.empty()) {
+                    lk.unlock();
+                    end_ping_batch();
+                    continue;
+                }
+            }
         }
     }
 }
 
+} // namespace
+
 // Depose les adresses a pinger (re-jeu comme RenderFavoriteCards C#).
 // Un placeholder (started=false) pose dans pings pour eviter le re-jeu
 // en boucle pendant que le worker est en train de pinger l'adresse.
+// Le lot est suivi comme tache de fond (panneau + Annuler).
+// Expose (ui_internal.hpp) pour les tests avec faux serveurs.
 void queue_pings(const std::vector<std::string>& addrs) {
     std::lock_guard lk(serversState.m);
     if (!serversState.workerStarted) {
         serversState.workerStarted = true;
         serversState.th = std::thread(ping_worker);
     }
+    int fresh = 0;
     for (const auto& a : addrs) {
         if (serversState.pings.count(a)) continue; // placeholder ou resultat
         serversState.pings[a] = PingResult{};
         serversState.targets.push_back(a);
         serversState.pinging = true;
+        ++fresh;
+    }
+    if (fresh > 0) {
+        // Nouveau lot (ou lot elargi) : (re)branche le suivi panneau.
+        if (serversState.pingTaskId <= 0) {
+            serversState.pingCancel.store(false);
+            serversState.pingDone = 0;
+            serversState.pingTotal = 0;
+            serversState.pingTaskId = apptasks_begin(
+                "Ping des serveurs", "", &serversState.pingCancel);
+        }
+        serversState.pingTotal += fresh;
     }
     if (!serversState.targets.empty()) {
         serversState.workPending = true;
@@ -384,6 +525,11 @@ struct PteroTask {
     Kind kind = Kind::Refresh;
     ptero::Host host;
     std::string arg; // signal (Power) ou commande console (Command)
+    // Suivi panneau (Power/Command uniquement, créés par ptero_enqueue_user) :
+    // taskId 0 = silencieux (Refresh automatiques). Le shared_ptr garde le
+    // drapeau vivant tant que la tâche est en file (contrat apptasks_begin).
+    int taskId = 0;
+    std::shared_ptr<std::atomic<bool>> cancel = nullptr;
 };
 
 struct PteroWork {
@@ -422,8 +568,27 @@ void ptero_worker() {
             pteroWork.tasks.pop_front();
             pteroWork.workPending = !pteroWork.tasks.empty();
         }
+        // Annulée avant exécution (panneau) : on ne lance même pas l'appel.
+        if (t.cancel && t.cancel->load()) {
+            if (t.taskId > 0) {
+                (void)tl::tasks::cancel(t.taskId);
+                apptasks_end(t.taskId);
+            }
+            continue;
+        }
         const std::string key = ptero_key(t.host);
-        const std::atomic<bool>* cancel = &pteroWork.cancel;
+        // Annulation de la tâche si présente, sinon arrêt global.
+        const std::atomic<bool>* cancel =
+            t.cancel ? t.cancel.get() : &pteroWork.cancel;
+        const auto task_cancelled = [&] {
+            return t.cancel && t.cancel->load();
+        };
+        // Clôture l'entrée (sans effet si 0). A appeler sur tous les chemins
+        // avec tâche en main (dont shutdown) : sinon le relais d'annulation
+        // écrirait dans un drapeau détruit.
+        const auto end_task = [&](const std::string& message = "") {
+            if (t.taskId > 0) apptasks_end(t.taskId, message);
+        };
         try {
             if (t.kind == PteroTask::Kind::Refresh) {
                 const ptero::PtServerState st = ptero::server_state(t.host, cancel);
@@ -437,7 +602,15 @@ void ptero_worker() {
                 ptero::power(t.host, t.arg, cancel);
                 {
                     std::lock_guard lk(pteroWork.m);
-                    if (pteroWork.cancel.load()) return;
+                    if (pteroWork.cancel.load()) {
+                        end_task();
+                        return;
+                    }
+                    if (task_cancelled()) {
+                        (void)tl::tasks::cancel(t.taskId);
+                        end_task();
+                        continue;
+                    }
                     pteroWork.toastTitle = t.host.name;
                     pteroWork.toastMsg = "Signal envoyé : " + t.arg + ".";
                     pteroWork.toastPending = true;
@@ -445,21 +618,41 @@ void ptero_worker() {
                         PteroTask{PteroTask::Kind::Refresh, t.host, {}});
                     pteroWork.workPending = true;
                 }
+                end_task();
                 pteroWork.cv.notify_one();
             } else {
                 ptero::send_command(t.host, t.arg, cancel);
                 std::lock_guard lk(pteroWork.m);
-                if (pteroWork.cancel.load()) return;
+                if (pteroWork.cancel.load()) {
+                    end_task();
+                    return;
+                }
+                if (task_cancelled()) {
+                    (void)tl::tasks::cancel(t.taskId);
+                    end_task();
+                    continue;
+                }
                 pteroWork.toastTitle = t.host.name;
                 pteroWork.toastMsg = "Commande envoyée.";
                 pteroWork.toastPending = true;
+                end_task();
             }
         } catch (const std::exception& e) {
+            if (task_cancelled()) {
+                // Annulation utilisateur : le panneau l'affiche, pas de toast.
+                (void)tl::tasks::cancel(t.taskId);
+                end_task();
+                continue;
+            }
             std::lock_guard lk(pteroWork.m);
-            if (pteroWork.cancel.load()) return;
+            if (pteroWork.cancel.load()) {
+                end_task();
+                return;
+            }
             pteroWork.toastTitle = t.host.name;
             pteroWork.toastMsg = e.what();
             pteroWork.toastPending = true;
+            end_task(e.what());
         }
     }
 }
@@ -474,6 +667,21 @@ void ptero_enqueue(PteroTask t) {
     pteroWork.tasks.push_back(std::move(t));
     pteroWork.workPending = true;
     pteroWork.cv.notify_one();
+}
+
+// File une op Power/Command initiée par l'utilisateur avec son entrée
+// panneau (annulable) : le drapeau survit dans la tâche en file (contrat
+// apptasks_begin). Refresh reste silencieuse (sondes automatiques).
+void ptero_enqueue_user(PteroTask::Kind kind, const ptero::Host& host,
+                        const std::string& arg, const std::string& title) {
+    auto flag = std::make_shared<std::atomic<bool>>(false);
+    PteroTask t;
+    t.kind = kind;
+    t.host = host;
+    t.arg = arg;
+    t.taskId = apptasks_begin(title, "", flag.get());
+    t.cancel = std::move(flag);
+    ptero_enqueue(std::move(t));
 }
 
 // modale ajout d'hote Pterodactyl (nom/URL/cle/identifiant)
@@ -550,14 +758,17 @@ void ptero_card(const ptero::Host& h, int idx) {
     ImGui::Spacing();
     if (st.running) {
         if (danger_button(tr("Arrêter", "Stop"), ImVec2(100, 30)))
-            ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "stop"});
+            ptero_enqueue_user(PteroTask::Kind::Power, h, "stop",
+                               "Pterodactyl : stop (" + h.name + ")");
     } else {
         if (accent_button(tr("Démarrer", "Start"), ImVec2(100, 30)))
-            ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "start"});
+            ptero_enqueue_user(PteroTask::Kind::Power, h, "start",
+                               "Pterodactyl : start (" + h.name + ")");
     }
     ImGui::SameLine();
     if (ImGui::Button(tr("Redémarrer", "Restart"), ImVec2(110, 30)))
-        ptero_enqueue(PteroTask{PteroTask::Kind::Power, h, "restart"});
+        ptero_enqueue_user(PteroTask::Kind::Power, h, "restart",
+                           "Pterodactyl : restart (" + h.name + ")");
     ImGui::SameLine();
     if (ImGui::Button(tr("Console"), ImVec2(90, 30))) {
         s_cmdTarget = key;
@@ -1014,7 +1225,8 @@ void server_modals() {
             if (cmd.empty()) return;
             for (const auto& h : ptero::load_hosts())
                 if (ptero_key(h) == s_cmdTarget) {
-                    ptero_enqueue(PteroTask{PteroTask::Kind::Command, h, cmd});
+                    ptero_enqueue_user(PteroTask::Kind::Command, h, cmd,
+                                       "Pterodactyl : commande (" + h.name + ")");
                     break;
                 }
             s_cmdBuf[0] = '\0';
@@ -1062,8 +1274,6 @@ void server_modals() {
         s_delWasOpen = false;
     }
 }
-
-} // namespace
 
 // Arret du worker Pterodactyl (appele depuis le shutdown ui.cpp, qui ne peut
 // pas voir l'etat interne ci-dessus : declaration avancee a ajouter la-bas).

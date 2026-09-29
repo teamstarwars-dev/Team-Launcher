@@ -1,11 +1,14 @@
 #include "ui_internal.hpp"
 
 #include "http_win.hpp"
+#include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shellapi.h>
+#endif
 
 #include <fstream>
 
@@ -113,8 +116,8 @@ std::string trimmed_copy(const std::string& s) {
     return s.substr(a, b - a);
 }
 
-// Thread de chargement (NewsService.GetAsync)
-void news_worker() {
+// Thread de chargement (NewsService.GetAsync), suivi dans le panneau AppTasks.
+void news_worker(int tid) {
     std::vector<NewsEntry> changelog = load_changelog();
     std::vector<NewsEntry> remote;
     const std::string url = trimmed_copy(DataStore::settings.newsUrl);
@@ -141,11 +144,16 @@ void news_worker() {
     }
     std::vector<NewsEntry> items = changelog;
     items.insert(items.end(), remote.begin(), remote.end());
-    std::lock_guard<std::mutex> lk(newsState.m);
-    newsState.changelog = std::move(changelog);
-    newsState.news = std::move(items);
-    newsState.loading = false;
-    newsState.loaded = true;
+    {
+        std::lock_guard<std::mutex> lk(newsState.m);
+        newsState.changelog = std::move(changelog);
+        newsState.news = std::move(items);
+        newsState.loading = false;
+        newsState.loaded = true;
+    }
+    // Annulation panneau : l'entree reste « Annulee », sinon Done.
+    if (newsState.cancel.load()) (void)tl::tasks::cancel(tid);
+    apptasks_end(tid);
 }
 
 // Carte (actu ou changelog) : meme carte C#, hauteur calculee (wrap 700)
@@ -229,12 +237,16 @@ void news_card(const NewsEntry& e, bool asChangelog, int idx) {
 } // namespace
 
 void news_page() {
-    // Declenchement (C# : page instanciee au demarrage -> ici 1re visite)
+    // Declenchement (C# : page instanciee au demarrage -> ici 1re visite),
+    // suivi comme tache de fond annulable.
     {
         std::lock_guard<std::mutex> lk(newsState.m);
         if (!newsState.loading && !newsState.loaded) {
             newsState.loading = true;
-            newsState.th = std::thread(news_worker);
+            newsState.cancel.store(false);
+            const int tid = newsState.taskId =
+                apptasks_begin("Actualités", "", &newsState.cancel);
+            newsState.th = std::thread(news_worker, tid);
         }
     }
 
@@ -249,9 +261,13 @@ void news_page() {
         std::string url = trimmed_copy(DataStore::settings.newsUrl);
         if (url.rfind("http", 0) != 0)
             url = "https://teamstarwars-dev.github.io/Team-Luncher-/";
+#ifdef _WIN32
         const std::wstring w(url.begin(), url.end());
         ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr,
                       SW_SHOWNORMAL);
+#else
+        proc::open_detached(url);
+#endif
     }
     ImGui::Spacing();
 

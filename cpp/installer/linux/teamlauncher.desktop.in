@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Team Launcher
+GenericName=Minecraft Launcher
+Comment=Lanceur Minecraft léger
+Exec=@PREFIX@/bin/teamlauncher
+Icon=teamlauncher
+Terminal=false
+Categories=Game;
+Keywords=Minecraft;launcher;game;
+StartupWMClass=TeamLauncher

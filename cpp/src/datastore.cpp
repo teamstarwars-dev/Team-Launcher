@@ -1,7 +1,15 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <bcrypt.h>
+#else
+// Etape 5 (Linux) : XDG pour les chemins, getrandom() pour l'aleatoire,
+// rename() pour l'ecriture atomique. Plus de dependance Win32 ici.
+#include <strings.h>    // strcasecmp
+#include <sys/random.h> // getrandom
+#include <unistd.h>     // readlink (/proc/self/exe)
+#endif
 
 #include "datastore.hpp"
 
@@ -13,6 +21,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <mutex>
 #include <random>
@@ -24,12 +33,21 @@ using nlohmann::json;
 
 namespace tl {
 
+// Comparaison insensible a la casse : _stricmp (Win32) / strcasecmp (POSIX).
+static int strCaseCmp(const char* a, const char* b) {
+#ifdef _WIN32
+    return _stricmp(a, b);
+#else
+    return ::strcasecmp(a, b);
+#endif
+}
+
 // ---------------------------------------------------------------------------
 // Utilitaires
 // ---------------------------------------------------------------------------
 
 bool CaseInsensitiveLess::operator()(const std::string& a, const std::string& b) const noexcept {
-    return _stricmp(a.c_str(), b.c_str()) < 0;
+    return strCaseCmp(a.c_str(), b.c_str()) < 0;
 }
 
 static std::string trim(const std::string& s) {
@@ -40,14 +58,22 @@ static std::string trim(const std::string& s) {
 }
 
 static bool equalsIgnoreCase(const std::string& a, const char* b) {
-    return _stricmp(a.c_str(), b) == 0;
+    return strCaseCmp(a.c_str(), b) == 0;
 }
 
 static fs::path exeDir() {
+#ifdef _WIN32
     wchar_t buf[4096];
     DWORD n = GetModuleFileNameW(nullptr, buf, 4096);
     if (n == 0 || n >= 4096) return fs::current_path();
     return fs::path(buf).parent_path();
+#else
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return fs::current_path();
+    buf[n] = '\0';
+    return fs::path(buf).parent_path();
+#endif
 }
 
 static std::string readFile(const fs::path& p) {
@@ -165,8 +191,18 @@ fs::path DataStore::dir() {
         return fs::path(td);
     if (isPortable)
         return exeDir() / "data";
+    // Phase A : racine de contenu configurable (persistante, comme TL_DATA_DIR).
+    if (!settings.contentPath.empty()) return fs::path(settings.contentPath);
+#ifdef _WIN32
     if (const char* la = std::getenv("LOCALAPPDATA"); la && *la)
         return fs::path(la) / "TeamLauncher";
+#else
+    // XDG Base Directory : $XDG_DATA_HOME sinon ~/.local/share.
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg)
+        return fs::path(xdg) / "TeamLauncher";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home) / ".local" / "share" / "TeamLauncher";
+#endif
     return exeDir() / "data";
 }
 
@@ -328,6 +364,21 @@ static json serialize(const AppSettings& s) {
         {"AdminTelemetryEnabled", s.adminTelemetryEnabled},
         {"AdminServerUrl", secrets::encrypt_value(s.adminServerUrl)},
         {"MinimizeOnLaunch", s.minimizeOnLaunch},
+        {"LogLevel", s.logLevel},
+        {"Theme", s.theme},
+        {"ColorblindMode", s.colorblind},
+        {"FontScale", s.fontScale},
+        {"ContentPath", s.contentPath},
+        {"UpdateCheckHours", s.updateFreqHours},
+        {"UpdateChannel", s.updateChannel},
+        {"MaxDownloads", s.maxDownloads},
+        {"BackupSpaceMb", s.backupSpaceMb},
+        {"AnalyseThreads", s.analyseThreads},
+        {"CloseBehavior", s.closeBehavior},
+        {"LaunchAtSystemStart", s.launchAtSystemStart},
+        {"StartupGame", s.startupGame},
+        {"LastGameId", s.lastGameId},
+        {"DateFormat", s.dateFormat},
     };
 }
 
@@ -361,6 +412,12 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
         if (it == j.end() || it->is_null()) return;
         if (!it->is_number()) throw std::runtime_error("config: nombre attendu");
         out = it->get<int>();
+    };
+    auto getD = [&j](const char* k, double& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_number()) throw std::runtime_error("config: nombre attendu");
+        out = it->get<double>();
     };
     auto getA = [&j](const char* k, json& out) {
         auto it = j.find(k);
@@ -409,6 +466,21 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("AdminTelemetryEnabled", s.adminTelemetryEnabled);
     getSec("AdminServerUrl", s.adminServerUrl);
     getB("MinimizeOnLaunch", s.minimizeOnLaunch);
+    getS("LogLevel", s.logLevel);
+    getS("Theme", s.theme);
+    getB("ColorblindMode", s.colorblind);
+    getD("FontScale", s.fontScale);
+    getS("ContentPath", s.contentPath);
+    getI("UpdateCheckHours", s.updateFreqHours);
+    getS("UpdateChannel", s.updateChannel);
+    getI("MaxDownloads", s.maxDownloads);
+    getI("BackupSpaceMb", s.backupSpaceMb);
+    getI("AnalyseThreads", s.analyseThreads);
+    getS("CloseBehavior", s.closeBehavior);
+    getB("LaunchAtSystemStart", s.launchAtSystemStart);
+    getS("StartupGame", s.startupGame);
+    getS("LastGameId", s.lastGameId);
+    getS("DateFormat", s.dateFormat);
 }
 
 // ---------------------------------------------------------------------------
@@ -491,9 +563,16 @@ void DataStore::doSave() {
                 out.flush();
                 written = !out.fail();
             }
-        } // le flux DOIT etre ferme avant MoveFileExW (sinon err 32 sharing violation)
+        } // le flux DOIT etre ferme avant le remplacement (sinon err 32 sharing violation sous Windows)
+#ifdef _WIN32
         if (written && MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING))
             return;
+#else
+        // rename() POSIX : remplacement atomique sur le meme fs (tmp est
+        // frere de target, donc meme fs sauf montage exotique).
+        if (written && std::rename(tmp.string().c_str(), target.string().c_str()) == 0)
+            return;
+#endif
         fs::remove(tmp, ec);
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
@@ -515,7 +594,21 @@ AppSettings DataStore::settings{};
 
 std::string new_guid() {
     unsigned char b[16];
+#ifdef _WIN32
     BCryptGenRandom(nullptr, b, sizeof(b), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+#else
+    // getrandom() : pas de fd a gerer, jamais bloquant passe l'init.
+    size_t done = 0;
+    while (done < sizeof(b)) {
+        const ssize_t n = ::getrandom(b + done, sizeof(b) - done, 0);
+        if (n <= 0) break;
+        done += static_cast<size_t>(n);
+    }
+    if (done < sizeof(b)) { // repli : ne jamais renvoyer un GUID partiellement nul
+        std::random_device rd;
+        for (; done < sizeof(b); ++done) b[done] = static_cast<unsigned char>(rd());
+    }
+#endif
     char out[33];
     for (int i = 0; i < 16; ++i) std::snprintf(out + i * 2, 3, "%02x", b[i]);
     out[32] = '\0';

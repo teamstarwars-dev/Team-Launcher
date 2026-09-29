@@ -1,7 +1,14 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <winhttp.h>
+#else
+// Etape 5 (Linux) : transport libcurl (même API, mêmes délais, mêmes logs).
+#include <curl/curl.h>
+
+#include <cstring> // strcmp
+#endif
 
 #include "http_win.hpp"
 
@@ -24,12 +31,21 @@ namespace tl::http {
 
 namespace {
 
+#ifdef _WIN32
 void dbg(const char* step, DWORD err = ::GetLastError()) {
     if (std::getenv("TL_HTTP_DEBUG"))
         std::fprintf(stderr, "[http] ECHEC %s (GetLastError=%lu)\n", step,
                      static_cast<unsigned long>(err));
 }
+#else
+void dbg(const char* step, CURLcode code = CURLE_OK) {
+    if (std::getenv("TL_HTTP_DEBUG"))
+        std::fprintf(stderr, "[http] ECHEC %s (%s)\n", step,
+                     curl_easy_strerror(code));
+}
+#endif
 
+#ifdef _WIN32
 // Wide -> UTF-8 ( WideCharToMultiByte CP_UTF8 ). Chaine vide si conversion
 // impossible (l'appelant journalise alors une chaine vide, jamais un crash).
 std::string wstr_to_utf8(const std::wstring& w) {
@@ -45,6 +61,7 @@ std::string wstr_to_utf8(const std::wstring& w) {
     if (written <= 0) return {};
     return out;
 }
+#endif // _WIN32 (cote POSIX : curl travaille direct en UTF-8, pas de wide)
 
 // ---------------------------------------------------------------------------
 // S2 — allowlist d'hotes
@@ -263,6 +280,11 @@ std::string redact_query(const std::string& q) {
     }
     return out;
 }
+
+// ---------------------------------------------------------------------------
+// Transport WinHTTP (Windows). Version POSIX (libcurl) plus bas.
+// ---------------------------------------------------------------------------
+#ifdef _WIN32
 
 struct Handle {
     HINTERNET h = nullptr;
@@ -483,6 +505,177 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
     return out;
 }
 
+#else // POSIX : transport libcurl (même API, mêmes délais 15/60 s, même UA)
+
+// curl_global_init une fois (call_once thread-safe ; requis avant tout easy).
+void ensure_curl_init() {
+    static std::once_flag f;
+    std::call_once(f, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+}
+
+struct Easy {
+    CURL* h = nullptr;
+    Easy() : h(curl_easy_init()) {}
+    ~Easy() {
+        if (h) curl_easy_cleanup(h);
+    }
+    Easy(const Easy&) = delete;
+    Easy& operator=(const Easy&) = delete;
+};
+
+struct Slist {
+    curl_slist* l = nullptr;
+    ~Slist() {
+        if (l) curl_slist_free_all(l);
+    }
+    void append(const std::string& s) { l = curl_slist_append(l, s.c_str()); }
+};
+
+size_t write_mem(char* ptr, size_t size, size_t nmemb, void* ud) {
+    auto* s = static_cast<std::string*>(ud);
+    s->append(ptr, size * nmemb);
+    return size * nmemb;
+}
+
+// Fichier : 0 signale l'échec à curl (CURLE_WRITE_ERROR).
+size_t write_file(char* ptr, size_t size, size_t nmemb, void* ud) {
+    auto* out = static_cast<std::ofstream*>(ud);
+    const size_t n = size * nmemb;
+    out->write(ptr, static_cast<std::streamsize>(n));
+    return out->fail() ? 0 : n;
+}
+
+// Annulation + progression. Retour != 0 : curl avorte (CURLE_ABORTED_BY_CALLBACK).
+struct XferCtx {
+    const std::atomic<bool>* cancel = nullptr;
+    ProgressFn* progress = nullptr; // get_to_file uniquement
+};
+
+int xfer_cb(void* ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t, curl_off_t) {
+    const auto* ctx = static_cast<const XferCtx*>(ud);
+    if (ctx->cancel && ctx->cancel->load(std::memory_order_relaxed)) return 1;
+    if (ctx->progress && *ctx->progress)
+        (*ctx->progress)(static_cast<long long>(dlnow),
+                         dltotal >= 0 ? static_cast<long long>(dltotal) : -1);
+    return 0;
+}
+
+// « Name: value\r\n... » + Content-Type optionnel -> slist curl.
+Slist build_headers(const std::string& extraHeaders, const std::string& contentType) {
+    Slist sl;
+    std::string headers = extraHeaders;
+    if (!contentType.empty()) {
+        if (!headers.empty()) headers += "\r\n";
+        headers += "Content-Type: " + contentType;
+    }
+    size_t i = 0;
+    while (i < headers.size()) {
+        size_t e = headers.find("\r\n", i);
+        if (e == std::string::npos) e = headers.size();
+        std::string line = headers.substr(i, e - i);
+        const size_t b = line.find_first_not_of(" \t");
+        const size_t t = line.find_last_not_of(" \t");
+        if (b != std::string::npos && line.find(':', b) != std::string::npos)
+            sl.append(line.substr(b, t - b + 1));
+        i = e + 2;
+    }
+    return sl;
+}
+
+// http(s):// uniquement, insensible à la casse (comme le parseur WinHTTP qui
+// rejette les autres schémas).
+bool http_scheme(const std::string& url, bool& secure) {
+    std::string head = url.substr(0, 8);
+    for (char& c : head)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (head.rfind("https://", 0) == 0) {
+        secure = true;
+        return true;
+    }
+    if (head.rfind("http://", 0) == 0) {
+        secure = false;
+        return true;
+    }
+    return false;
+}
+
+// Requete generique (GET/POST) : lit le corps quoi que soit le status HTTP
+// (OAuth repond 400 avec du JSON utile). nullopt = echec reseau uniquement.
+std::optional<Response> do_request(const char* verb, const std::string& url,
+                                   const std::string& body,
+                                   const std::string& contentType,
+                                   const std::string& extraHeaders,
+                                   const std::atomic<bool>* cancel) {
+    ensure_curl_init();
+    bool secure = false;
+    if (!http_scheme(url, secure)) {
+        dbg("scheme");
+        return std::nullopt;
+    }
+    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
+    // host_from_url() est partage (section S2) : pas de parseur ad hoc.
+    if (!host_allowed(host_from_url(url))) {
+        if (std::getenv("TL_HTTP_DEBUG"))
+            std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
+        return std::nullopt;
+    }
+    Easy easy;
+    if (!easy.h) {
+        dbg("curl_easy_init");
+        return std::nullopt;
+    }
+    CURL* h = easy.h;
+    std::string responseBody;
+    Slist headers = build_headers(extraHeaders, contentType);
+    XferCtx xfer{cancel, nullptr};
+    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(h, CURLOPT_USERAGENT, "TeamLauncher/6.0");
+    curl_easy_setopt(h, CURLOPT_HTTPHEADER, headers.l);
+    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_mem);
+    curl_easy_setopt(h, CURLOPT_WRITEDATA, &responseBody);
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(h, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(h, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(h, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
+    curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, 60000L);
+    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, xfer_cb);
+    curl_easy_setopt(h, CURLOPT_XFERINFODATA, &xfer);
+    const bool isPost = std::strcmp(verb, "POST") == 0;
+    if (isPost) {
+        curl_easy_setopt(h, CURLOPT_POST, 1L);
+        curl_easy_setopt(h, CURLOPT_POSTFIELDS, body.empty() ? "" : body.data());
+        curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE_LARGE,
+                         static_cast<curl_off_t>(body.size()));
+    } else if (std::strcmp(verb, "GET") != 0) {
+        curl_easy_setopt(h, CURLOPT_CUSTOMREQUEST, verb);
+    }
+    const CURLcode rc = curl_easy_perform(h);
+    if (rc != CURLE_OK) {
+        // Annulation : silencieux (comme le return nullopt sur cancel Windows).
+        if (rc == CURLE_ABORTED_BY_CALLBACK && cancel &&
+            cancel->load(std::memory_order_relaxed))
+            return std::nullopt;
+        dbg("curl_easy_perform", rc);
+        if (std::getenv("TL_HTTP_DEBUG"))
+            std::fprintf(stderr, "[http] status 0 pour %s\n", redact_url(url).c_str());
+        return std::nullopt;
+    }
+    long status = 0;
+    curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
+    if (std::getenv("TL_HTTP_DEBUG") && status != 200)
+        std::fprintf(stderr, "[http] status HTTP %ld pour %s\n", status,
+                      redact_url(url).c_str());
+
+    Response out;
+    out.status = static_cast<int>(status);
+    out.body = std::move(responseBody);
+    return out;
+}
+
+#endif // _WIN32 (WinHTTP) / POSIX (libcurl)
+
 } // namespace
 
 // --- S2 : API publique d'allowlist / de redaction ---------------------------
@@ -578,6 +771,7 @@ std::optional<Response> post_string(const std::string& url,
 
 bool get_to_file(const std::string& url, const fs::path& dest,
                  ProgressFn progress, const std::atomic<bool>* cancel, int retries) {
+#ifdef _WIN32
     auto c = crack(url);
     if (!c) return false;
     // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
@@ -644,6 +838,67 @@ bool get_to_file(const std::string& url, const fs::path& dest,
         std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
     }
     return false;
+#else
+    ensure_curl_init();
+    bool secure = false;
+    if (!http_scheme(url, secure)) {
+        dbg("scheme");
+        return false;
+    }
+    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
+    if (!host_allowed(host_from_url(url))) {
+        if (std::getenv("TL_HTTP_DEBUG"))
+            std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
+        return false;
+    }
+
+    std::error_code ec;
+    if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
+
+    for (int attempt = 1; attempt <= retries; ++attempt) {
+        if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+        bool ok = false;
+        {
+            Easy easy;
+            if (easy.h) {
+                CURL* h = easy.h;
+                fs::remove(dest, ec); // re-essai : tronque proprement
+                std::ofstream out(dest, std::ios::binary | std::ios::trunc);
+                if (out) {
+                    XferCtx xfer{cancel, &progress};
+                    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+                    curl_easy_setopt(h, CURLOPT_USERAGENT, "TeamLauncher/6.0");
+                    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_file);
+                    curl_easy_setopt(h, CURLOPT_WRITEDATA, &out);
+                    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
+                    curl_easy_setopt(h, CURLOPT_MAXREDIRS, 10L);
+                    curl_easy_setopt(h, CURLOPT_PROTOCOLS_STR, "http,https");
+                    curl_easy_setopt(h, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+                    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
+                    curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, 60000L);
+                    curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
+                    curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, xfer_cb);
+                    curl_easy_setopt(h, CURLOPT_XFERINFODATA, &xfer);
+                    const CURLcode rc = curl_easy_perform(h);
+                    out.close();
+                    if (rc == CURLE_OK) {
+                        long status = 0;
+                        curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
+                        // 200 exigé comme côté WinHTTP (wait_response == 200).
+                        ok = (status == 200) && !out.fail();
+                    } else if (rc != CURLE_ABORTED_BY_CALLBACK) {
+                        dbg("curl_easy_perform", rc);
+                    }
+                }
+            }
+        }
+        if (ok) return true;
+        fs::remove(dest, ec); // pas de fichier partiel (plus sur que le C#)
+        if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+    }
+    return false;
+#endif
 }
 
 } // namespace tl::http

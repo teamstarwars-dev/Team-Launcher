@@ -1,6 +1,7 @@
 #pragma once
 
-// Wrappers miniz : extraction natives (.dll) + entree unique (install_profile.json)
+// Wrappers miniz : extraction natives (.dll Windows / .so Linux) + entree
+// unique (install_profile.json)
 
 #include <filesystem>
 #include <optional>
@@ -8,10 +9,11 @@
 
 namespace tl {
 
-// Extrait tous les .dll d'un jar vers destDir (chemins d'entrees, garde-fou "..").
+// Extrait toutes les natives d'un jar vers destDir (.dll sous Windows,
+// .so sous Linux ; chemins d'entrees, garde-fou "..").
 // Retourne le nombre d'entrees extraites (-1 = archive illisible).
-int zip_extract_dlls(const std::filesystem::path& jar,
-                     const std::filesystem::path& destDir);
+int zip_extract_natives(const std::filesystem::path& jar,
+                        const std::filesystem::path& destDir);
 
 // Extrait une entree nommee vers destPath. false = absente/echec.
 bool zip_extract_entry(const std::filesystem::path& zip,

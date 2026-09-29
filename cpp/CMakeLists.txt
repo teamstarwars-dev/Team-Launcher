@@ -37,7 +37,9 @@ set(SDL_SSE3 OFF CACHE BOOL "" FORCE)
 set(SDL_SSEMATH OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
 # clang x64 définit __MMX__ par défaut → blocs MMX SDL incompatibles clang-cl/MSVC headers
-if(TARGET SDL2)
+# (Windows uniquement : sous GCC ces options n'ont aucun sens, voire cassent
+# la compilation — "/clang:-msse3" n'est pas une option GCC).
+if(TARGET SDL2 AND CMAKE_C_COMPILER_ID MATCHES "Clang")
   target_compile_options(SDL2 PRIVATE -U__MMX__ -U__3dNOW__)
   # SDL_cpuinfo.h force __SSE3__ côté MSVC → code SSE3 présent mais cible sans sse3
   target_compile_options(SDL2 PRIVATE /clang:-msse3)
@@ -95,7 +97,7 @@ function(tl_release_flags tgt)
     endif()
   else()
     target_compile_options(${tgt} PRIVATE
-      $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections -fno-exceptions -fno-rtti -Wall -Wextra>
+      $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections -Wall -Wextra>
       $<$<AND:$<CONFIG:Release>,$<BOOL:${TL_FORTIFY}>>:-D_FORTIFY_SOURCE=2>
     )
     target_link_options(${tgt} PRIVATE
@@ -112,6 +114,7 @@ endfunction()
 set(TL_CORE_SOURCES
   src/datastore.cpp
   src/secrets.cpp
+  src/dialogs.cpp
   src/http_win.cpp
   src/util_hash.cpp
   src/util_zip.cpp
@@ -156,7 +159,18 @@ target_include_directories(tl_core PUBLIC
 # bcrypt : plus utilise pour SHA-1/MD5 (portables depuis l etape 5), mais
 # encore requis par datastore.cpp (BCryptGenRandom). A remplacer par
 # getrandom() cote POSIX quand la couche plateforme arrivera.
-target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid)
+if(WIN32)
+  target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid)
+else()
+  # POSIX (etape 5) : WinHTTP -> libcurl, DPAPI -> libsecret. Les sources
+  # Windows-only (http_win.cpp, secrets.cpp...) ne compilent pas encore sous
+  # Linux : seuls les liens sont prets, les backends arrivent module par module.
+  find_package(CURL REQUIRED)
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(SECRET REQUIRED libsecret-1)
+  target_link_libraries(tl_core PUBLIC tl_headers CURL::libcurl ${SECRET_LIBRARIES})
+  target_include_directories(tl_core PUBLIC ${SECRET_INCLUDE_DIRS})
+endif()
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher
 target_compile_definitions(tl_core PUBLIC TL_VERSION_STRING="${PROJECT_VERSION}")
 if(MSVC)
@@ -170,7 +184,7 @@ tl_release_flags(tl_core)
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 # Ressources Win32 (icone + bloc de version). Le .rc n'existe que sous
@@ -182,15 +196,33 @@ endif()
 add_executable(TeamLauncher ${TL_SOURCES})
 
 target_include_directories(TeamLauncher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(TeamLauncher PRIVATE
-  imgui
-  SDL2::SDL2
-  tl_headers
-  tl_core
-  opengl32
-  comdlg32
-  shell32
-)
+if(WIN32)
+  target_link_libraries(TeamLauncher PRIVATE
+    imgui
+    SDL2::SDL2
+    tl_headers
+    tl_core
+    opengl32
+    comdlg32
+    shell32
+  )
+else()
+  # POSIX (etape 5) : OpenGL systeme au lieu d'opengl32, pas de comdlg32/shell32.
+  find_package(OpenGL REQUIRED)
+  target_link_libraries(TeamLauncher PRIVATE
+    imgui
+    SDL2::SDL2
+    tl_headers
+    tl_core
+    OpenGL::GL
+  )
+  # rpath $ORIGIN/lib : la SDL embarquee voyage à côté du binaire
+  # (layout /opt/teamlauncher ou ~/.local/share/teamlauncher) sans
+  # LD_LIBRARY_PATH — qui fuiterait sinon vers le jeu lance.
+  set_target_properties(TeamLauncher PROPERTIES
+    BUILD_WITH_INSTALL_RPATH TRUE
+    INSTALL_RPATH "$ORIGIN/lib")
+endif()
 target_compile_definitions(TeamLauncher PRIVATE
   TL_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
   TL_VERSION_MINOR=${PROJECT_VERSION_MINOR}

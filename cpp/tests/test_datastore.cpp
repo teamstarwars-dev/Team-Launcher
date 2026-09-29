@@ -1,9 +1,13 @@
 #include "datastore.hpp"
 
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
+
 #include "secrets.hpp" // marqueur de chiffrement des champs sensibles
+#include "util_str.hpp" // conversions UTF (section POSIX)
 
 #include <nlohmann/json.hpp>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -148,6 +152,38 @@ int main() {
     DataStore::load(); // le fichier migre se relit correctement
     CHECK(DataStore::settings.curseForgeApiKey == "clair-v5");
     CHECK(DataStore::settings.pteroHosts[0]["ApiKey"] == "pan-clair");
+
+#ifndef _WIN32
+    // --- 8. POSIX : XDG, getrandom, conversions UTF (Linux uniquement) ---
+    {
+        unsetenv("TL_DATA_DIR");
+        const fs::path xdg = tmp / "xdg-home";
+        fs::create_directories(xdg);
+        setenv("XDG_DATA_HOME", xdg.string().c_str(), 1);
+        CHECK(DataStore::dir() == xdg / "TeamLauncher");
+        unsetenv("XDG_DATA_HOME");
+        if (const char* home = std::getenv("HOME"); home && *home)
+            CHECK(DataStore::dir() == fs::path(home) / ".local" / "share" / "TeamLauncher");
+        // GUID : 32 hexa (getrandom, jamais partiellement nul)
+        const std::string g = tl::new_guid();
+        CHECK(g.size() == 32);
+        bool hex = true;
+        for (char c : g)
+            hex = hex && (std::isxdigit(static_cast<unsigned char>(c)) != 0);
+        CHECK(hex);
+        CHECK(g != std::string(32, '0'));
+        // UTF-8 <-> UTF-32 : round-trip, y compris hors BMP
+        const std::string u8 = "h\xC3\xA9llo \xF0\x9F\x8C\x8D"; // héllo + globe
+        const std::wstring w = tl::utf8_to_wide(u8);
+        CHECK(w.size() == 7); // 5 lettres + e-accent + 1 scalaire astral
+        CHECK(tl::wide_to_utf8(w.c_str()) == u8);
+        CHECK(tl::utf8_to_wide({}).empty());
+        CHECK(tl::wide_to_utf8(nullptr).empty());
+        CHECK(tl::wide_to_utf8(L"").empty());
+        // restaure l'env des sections suivantes / du shutdown
+        setenv("TL_DATA_DIR", tmp.string().c_str(), 1);
+    }
+#endif
 
     DataStore::shutdown();
     fs::remove_all(tmp, ec);

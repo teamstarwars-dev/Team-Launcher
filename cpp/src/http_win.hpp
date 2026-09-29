@@ -1,6 +1,7 @@
 #pragma once
 
-// WinHTTP — HTTPS + redirects natifs (schannel), zero disque add. requis.
+// WinHTTP (Windows, schannel) / libcurl (Linux, OpenSSL systeme) — HTTPS +
+// redirects natifs, zero disque add. requis.
 // Remplace Http.Shared (cpp-httplib sans OpenSSL) pour les appels sortants.
 
 #include <atomic>

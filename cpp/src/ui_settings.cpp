@@ -7,10 +7,12 @@
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <commdlg.h>
+#endif
 
 #include <functional>
 #include <utility>
@@ -85,6 +87,7 @@ void field_label(const char* label) {
 }
 
 std::optional<std::string> pick_image() {
+#ifdef _WIN32
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -94,6 +97,10 @@ std::optional<std::string> pick_image() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) return std::nullopt;
     return wstr_to_utf8(file);
+#else
+    return pick_file_open("", "Images (*.png *.jpg *.jpeg *.bmp)",
+                          "*.png *.jpg *.jpeg *.bmp");
+#endif
 }
 
 // Champ couleur : saisie hexa + pastille d'apercu cliquable.

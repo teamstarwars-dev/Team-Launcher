@@ -1,5 +1,6 @@
 #include "ui_internal.hpp"
 
+#include "apptasks.hpp" // tl::tasks::update/cancel (miroir lancement)
 #include "backup.hpp"
 #include "crash_analyzer.hpp"
 #include "maintenance.hpp"
@@ -8,19 +9,29 @@
 #include "shortcut.hpp"
 #include "ms_auth.hpp"
 #include "telemetry.hpp"
+#include "util_str.hpp"
 #include "util_zip.hpp"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+#ifdef _WIN32
 #include <Windows.h>
 #include <commdlg.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#else
+// Etape 5 (Linux) : waitpid (poll jeu), le reste est parti dans dialogs.cpp.
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
 
-#include <bcrypt.h>
+#ifdef _WIN32
+#include <bcrypt.h> // (inutilisé aujourd'hui : new_guid vit dans datastore.cpp)
+#endif
 
 #ifndef TL_VERSION_STRING
 #define TL_VERSION_STRING "6.0.0"
@@ -65,7 +76,7 @@ ImVec4 darken(const ImVec4& c, float f) {
 bool legacy_color(const std::string& v) {
     static const char* const kLegacy[] = {"#141519", "#23262c", "#6fbf3f"};
     for (const char* l : kLegacy)
-        if (_stricmp(v.c_str(), l) == 0) return true;
+        if (strCaseCmp(v.c_str(), l) == 0) return true;
     return false;
 }
 
@@ -277,108 +288,13 @@ void refresh_counts(const std::string& id) {
 }
 
 // ---------------------------------------------------------------------------
-// Boites de dialogue Win32 (parcourir Java) + ouverture dossiers
+// Boites de dialogue (Win32 + xdg) : voir dialogs.cpp.
 // ---------------------------------------------------------------------------
-
-std::optional<std::string> pick_javaw() {
-    wchar_t file[MAX_PATH] = L"javaw.exe";
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = L"javaw.exe\0javaw.exe\0Tous les fichiers\0*.*\0";
-    ofn.lpstrTitle = L"Choisir javaw.exe";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) return std::nullopt;
-    const int n = WideCharToMultiByte(CP_UTF8, 0, file, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 1) return std::nullopt;
-    std::string out(static_cast<size_t>(n - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, file, -1, out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-void open_in_explorer(const std::filesystem::path& p) {
-    const std::wstring w = L"\"" + p.wstring() + L"\"";
-    ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
-// ---------------------------------------------------------------------------
-// Import / export / duplication d'instances (C# OnImportZip / OnImportFolder /
-// OnExportZip / OnDuplicateInstance)
-// ---------------------------------------------------------------------------
-
-std::string wstr_to_utf8(const wchar_t* w) {
-    const int n =
-        WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
-    if (n <= 1) return {};
-    std::string out(static_cast<size_t>(n - 1), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), n, nullptr, nullptr);
-    return out;
-}
 
 void notify_log(const std::string& msg) {
     push_log(msg);
     std::lock_guard<std::mutex> lk(g.m);
     g.status = msg;
-}
-
-std::optional<std::string> pick_zip_open() {
-    wchar_t file[MAX_PATH] = L"";
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = L"Archive ZIP (*.zip)\0*.zip\0Tous les fichiers\0*.*\0";
-    ofn.lpstrTitle = L"Importer une instance ZIP";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) return std::nullopt;
-    return wstr_to_utf8(file);
-}
-
-// Modeles 3D : .bbmodel, modele Java .json, geometrie Bedrock .geo.json.
-// Le C# proposait aussi « *.obj », format qu aucun code ne lisait.
-std::optional<std::string> pick_model_file() {
-    wchar_t file[MAX_PATH] = L"";
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter =
-        L"Modeles 3D (*.bbmodel;*.json)\0*.bbmodel;*.json\0Tous les fichiers\0*.*\0";
-    ofn.lpstrTitle = L"Ouvrir un modele 3D";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) return std::nullopt;
-    return wstr_to_utf8(file);
-}
-
-std::optional<std::string> pick_zip_save(const std::string& defaultName) {
-    wchar_t file[MAX_PATH] = L"";
-    MultiByteToWideChar(CP_UTF8, 0, defaultName.c_str(), -1, file, MAX_PATH);
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = L"Archive ZIP (*.zip)\0*.zip\0";
-    ofn.lpstrTitle = L"Exporter l'instance";
-    ofn.lpstrDefExt = L"zip";
-    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    if (!GetSaveFileNameW(&ofn)) return std::nullopt;
-    return wstr_to_utf8(file);
-}
-
-std::optional<std::string> pick_folder(const wchar_t* title) {
-    BROWSEINFOW bi{};
-    wchar_t disp[MAX_PATH] = L"";
-    bi.pszDisplayName = disp;
-    bi.lpszTitle = title;
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NONEWFOLDERBUTTON;
-    const PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&bi);
-    if (!pidl) return std::nullopt;
-    wchar_t path[MAX_PATH] = L"";
-    const BOOL ok = SHGetPathFromIDListW(pidl, path);
-    ILFree(pidl);
-    if (!ok) return std::nullopt;
-    return wstr_to_utf8(path);
 }
 
 void import_zip() {
@@ -402,7 +318,11 @@ void import_zip() {
 }
 
 void import_folder() {
+#ifdef _WIN32
     const auto src = pick_folder(L"Importer un dossier comme instance");
+#else
+    const auto src = pick_folder("Importer un dossier comme instance");
+#endif
     if (!src) return;
     nlohmann::json inst = make_instance(
         std::filesystem::path(*src).filename().string(), "vanilla", "latest");
@@ -500,21 +420,6 @@ void start_worker() {
     presence::set_game(*inst, req.joinServer);
     g.statStart = std::chrono::steady_clock::now();
 
-    LaunchUi ui;
-    ui.progress = [](const char* stage, int done, int total) {
-        std::lock_guard<std::mutex> lk(g.m);
-        if (stage) g.stage = stage;
-        g.done = done;
-        g.total = total;
-    };
-    ui.status = [](const char* s) {
-        std::lock_guard<std::mutex> lk(g.m);
-        if (s) g.status = s;
-    };
-    ui.log = [](const char* line) {
-        if (line) push_log(line);
-    };
-
     g.phase = Phase::Preparing;
     g.error.clear();
     g.cancel = false;
@@ -528,8 +433,39 @@ void start_worker() {
         g.result = LaunchResult{};
     }
 
-    g.worker = std::thread([req, ui] {
+    // Tache de fond (panneau + Annuler) : le relais panneau -> g.cancel est
+    // fait chaque frame par apptasks_frame ; le worker cloture lui-meme.
+    // tid est créé AVANT les lambdas ui qui le capturent.
+    const std::string instName = inst->value("Name", "Minecraft");
+    const int tid = apptasks_begin("Lancement de " + instName, "Préparation...",
+                                   &g.cancel);
+
+    LaunchUi ui;
+    // Miroir vers le panneau AppTasks (progression 0..1, -1 si inconnue).
+    ui.progress = [tid](const char* stage, int done, int total) {
+        std::lock_guard<std::mutex> lk(g.m);
+        if (stage) g.stage = stage;
+        g.done = done;
+        g.total = total;
+        tl::tasks::update(tid, stage ? stage : "",
+                          (done >= 0 && total > 0)
+                              ? std::clamp(static_cast<double>(done) / total, 0.0, 1.0)
+                              : -1.0);
+    };
+    ui.status = [tid](const char* s) {
+        std::lock_guard<std::mutex> lk(g.m);
+        if (s) g.status = s;
+        if (s) tl::tasks::update(tid, s);
+    };
+    ui.log = [](const char* line) {
+        if (line) push_log(line);
+    };
+
+    g.worker = std::thread([req, ui, tid] {
         LaunchResult res = launch_flow(req, ui, g.cancel);
+        // Annulation (bouton Jouer ou panneau) : l'entree reste « Annulee ».
+        if (res.cancelled || g.cancel.load()) (void)tl::tasks::cancel(tid);
+        apptasks_end(tid, res.started ? std::string{} : res.error);
         std::lock_guard<std::mutex> lk(g.m);
         g.result = std::move(res);
         g.resultReady = true;
@@ -537,6 +473,28 @@ void start_worker() {
 }
 
 // Consomme le resultat du worker / detecte la fin du jeu. Main thread.
+namespace {
+// Sonde non bloquante « jeu encore actif ? » : nullopt = oui (ou sonde
+// impossible — sous Windows l'erreur gardait aussi le jeu « actif »).
+std::optional<int> poll_game_exit(void* hProcess) {
+    if (!hProcess) return std::nullopt;
+#ifdef _WIN32
+    DWORD code = 0;
+    if (!GetExitCodeProcess(static_cast<HANDLE>(hProcess), &code)) return std::nullopt;
+    if (code == STILL_ACTIVE) return std::nullopt;
+    return static_cast<int>(code); // signe, comme C# ExitCode
+#else
+    int st = 0;
+    const pid_t r = ::waitpid(static_cast<pid_t>(reinterpret_cast<intptr_t>(hProcess)),
+                              &st, WNOHANG);
+    if (r == 0) return std::nullopt; // actif
+    if (r < 0) return -1;            // déjà moissonné : fini, code inconnu
+    if (WIFEXITED(st)) return WEXITSTATUS(st);
+    return -1; // signalé : fini, code inconnu
+#endif
+}
+} // namespace
+
 void poll_state(SDL_Window* window) {
     bool needJoin = false;
     bool startGame = false;
@@ -578,10 +536,8 @@ void poll_state(SDL_Window* window) {
     }
 
     if (g.gameActive) {
-        DWORD code = 0;
-        if (GetExitCodeProcess(static_cast<HANDLE>(g.game.hProcess), &code) &&
-            code != STILL_ACTIVE) {
-            const int exitCode = static_cast<int>(code); // signe, comme C# ExitCode
+        if (const auto code = poll_game_exit(g.game.hProcess)) {
+            const int exitCode = *code;
             close_game(g.game);
             g.gameActive = false;
             g.phase = Phase::Idle;
@@ -655,7 +611,11 @@ void poll_state(SDL_Window* window) {
                     (*e)["PlaySeconds"] = e->value("PlaySeconds", 0LL) + secs;
                     std::time_t t = std::time(nullptr);
                     std::tm tmv{};
+#ifdef _WIN32
                     localtime_s(&tmv, &t);
+#else
+                    localtime_r(&t, &tmv);
+#endif
                     char iso[32];
                     std::strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S", &tmv);
                     (*e)["LastPlayed"] = iso;

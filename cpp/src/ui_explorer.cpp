@@ -1,12 +1,15 @@
 #include "ui_internal.hpp"
 
 #include "region.hpp"
+#include "util_str.hpp" // strCaseCmp
 #include "world.hpp"
 #include "worldsync.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#endif
 
 #include <algorithm>
 
@@ -61,7 +64,11 @@ std::string fmt_ms(std::int64_t ms) {
     if (ms <= 0) return tr("jamais", "never");
     const std::time_t t = static_cast<std::time_t>(ms / 1000);
     std::tm tmv{};
+#ifdef _WIN32
     localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M", &tmv);
     return buf;
@@ -101,7 +108,7 @@ void refresh_entries() {
     // Dossiers d'abord, puis par nom (insensible a la casse).
     std::sort(E.entries.begin(), E.entries.end(), [](const Entry& a, const Entry& b) {
         if (a.dir != b.dir) return a.dir;
-        return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+        return tl::strCaseCmp(a.name.c_str(), b.name.c_str()) < 0;
     });
 }
 

@@ -23,10 +23,8 @@ long long mtime_of(const fs::path& p) {
     std::error_code ec;
     const auto t = fs::last_write_time(p, ec);
     if (ec) return 0;
-    // file_time_type -> epoch s. (suffisant pour trier/afficher)
-    return std::chrono::duration_cast<std::chrono::seconds>(
-               t.time_since_epoch())
-        .count();
+    // file_time_type -> epoch s. Unix (tri/rotation).
+    return file_time_to_unix(t);
 }
 
 bool dir_has_entries(const fs::path& p) {
@@ -52,7 +50,11 @@ std::string create(const std::string& instanceId) {
 
     const std::time_t t = std::time(nullptr);
     std::tm tmv{};
+#ifdef _WIN32
     localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "mondes-%Y-%m-%d_%H-%M.zip", &tmv);
 

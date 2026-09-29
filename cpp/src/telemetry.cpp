@@ -1,6 +1,11 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : nom d'OS depuis /etc/os-release (repli "Linux").
+#include <fstream>
+#endif
 
 #include "telemetry.hpp"
 
@@ -12,6 +17,7 @@
 #include <condition_variable>
 #include <ctime>
 #include <deque>
+#include <fstream>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -65,7 +71,11 @@ void enqueue(const std::string& url, const std::string& payload) {
 std::string now_fr() {
     const std::time_t t = std::time(nullptr);
     std::tm tmv{};
+#ifdef _WIN32
     localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%d/%m/%Y %H:%M:%S", &tmv);
     return buf;
@@ -74,7 +84,11 @@ std::string now_fr() {
 std::string now_iso8601_utc() {
     const std::time_t t = std::time(nullptr);
     std::tm tmv{};
+#ifdef _WIN32
     gmtime_s(&tmv, &t);
+#else
+    gmtime_r(&t, &tmv);
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tmv);
     return buf;
@@ -166,14 +180,34 @@ void report_startup() {
     const bool j17 = find_java(17).has_value();
     const bool j21 = find_java(21).has_value();
 
+#ifdef _WIN32
     OSVERSIONINFOEXW osv{};
     osv.dwOSVersionInfoSize = sizeof(osv);
+#else
+    const std::string osLabel = [] {
+        std::ifstream os("/etc/os-release");
+        std::string line;
+        const std::string key = "PRETTY_NAME=";
+        while (std::getline(os, line)) {
+            if (line.rfind(key, 0) != 0) continue;
+            std::string v = line.substr(key.size());
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                v = v.substr(1, v.size() - 2);
+            if (!v.empty()) return v;
+        }
+        return std::string("Linux");
+    }();
+#endif
 
     const auto& st = DataStore::settings;
     std::ostringstream s;
     s << "**Démarrage du Launcher**\n```\n"
       << "Version     : " << updates::current_version() << "\n"
+#ifdef _WIN32
       << "OS          : Windows\n"
+#else
+      << "OS          : " << osLabel << "\n"
+#endif
       << "64-bit      : " << (sizeof(void*) == 8 ? "True" : "False") << "\n"
       << "Instances   : "
       << (st.instances.is_array() ? st.instances.size() : size_t{0}) << "\n"

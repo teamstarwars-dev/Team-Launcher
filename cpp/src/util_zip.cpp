@@ -2,6 +2,7 @@
 
 #include "miniz.h"
 
+#include <cctype>
 #include <fstream>
 #include <string>
 
@@ -16,23 +17,33 @@ bool has_traversal(const std::string& name) {
 }
 } // namespace
 
-int zip_extract_dlls(const fs::path& jar, const fs::path& destDir) {
+int zip_extract_natives(const fs::path& jar, const fs::path& destDir) {
     mz_zip_archive zip{};
     if (!mz_zip_reader_init_file(&zip, jar.string().c_str(), 0))
         return -1;
     std::error_code ec;
     fs::create_directories(destDir, ec);
 
+#ifdef _WIN32
+    constexpr const char* kNativeExt = ".dll";
+#else
+    constexpr const char* kNativeExt = ".so";
+#endif
+    const size_t extLen = std::char_traits<char>::length(kNativeExt);
     int extracted = 0;
     const int count = static_cast<int>(mz_zip_reader_get_num_files(&zip));
     for (int i = 0; i < count; ++i) {
         mz_zip_archive_file_stat st{};
         if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
         const std::string name = st.m_filename;
-        if (name.size() < 4) continue;
-        // finit par ".dll" (insensible a la casse), sans traversal
-        const std::string tail = name.substr(name.size() - 4);
-        if (_stricmp(tail.c_str(), ".dll") != 0) continue;
+        if (name.size() < extLen) continue;
+        // finit par l'extension native (insensible a la casse), sans traversal
+        const std::string tail = name.substr(name.size() - extLen);
+        bool match = tail.size() == extLen;
+        for (size_t k = 0; match && k < extLen; ++k)
+            match = std::tolower(static_cast<unsigned char>(tail[k])) ==
+                    static_cast<unsigned char>(kNativeExt[k]);
+        if (!match) continue;
         if (has_traversal(name)) continue;
 
         fs::path dest = destDir / fs::path(name);

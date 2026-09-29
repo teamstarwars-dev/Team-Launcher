@@ -282,8 +282,14 @@ int main() {
         // =================================================================
         {
             std::vector<std::string> out;
+#ifdef _WIN32
             const int code = run(dir, "cmd.exe /c echo ligne1&echo ligne2",
                                  [&](const std::string& l) { out.push_back(l); });
+#else
+            // sh -c comme run() POSIX (pas de cmd.exe sous Linux).
+            const int code = run(dir, "echo ligne1; echo ligne2",
+                                 [&](const std::string& l) { out.push_back(l); });
+#endif
             CHECK_EQ(code, 0);
             CHECK_EQ(out.size(), std::size_t{2});
             if (out.size() == 2) {
@@ -292,9 +298,16 @@ int main() {
             }
 
             // Code de sortie non nul remonte tel quel
+#ifdef _WIN32
             CHECK_EQ(run(dir, "cmd.exe /c exit 3", nullptr), 3);
             // Executable introuvable : -1, jamais un plantage
             CHECK_EQ(run(dir, "tl-inexistant-xyz.exe", nullptr), -1);
+#else
+            CHECK_EQ(run(dir, "exit 3", nullptr), 3);
+            // Commande introuvable : 127 du shell (CreateProcess rend -1
+            // sous Windows) — jamais un plantage dans les deux cas.
+            CHECK_EQ(run(dir, "tl-inexistant-xyz.exe", nullptr), 127);
+#endif
             CHECK_EQ(run(dir, "", nullptr), -1);
         }
 

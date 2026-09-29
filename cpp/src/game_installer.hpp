@@ -13,7 +13,8 @@
 
 namespace tl {
 
-// TL_RUNTIME_DIR (test) > %LOCALAPPDATA%\TeamLauncher\runtime (comme le C#)
+// TL_RUNTIME_DIR (test) > %LOCALAPPDATA%\TeamLauncher\runtime (Windows)
+// ou $XDG_DATA_HOME/TeamLauncher/runtime (Linux), comme le C#
 std::filesystem::path runtime_root();
 
 struct CancelledError : std::runtime_error {
@@ -34,6 +35,11 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
 std::string maven_name_to_path(const std::string& name); // "" si rejetee
 bool rules_allow(const nlohmann::json& lib);
 std::vector<std::string> extract_jvm_args(const nlohmann::json& root);
+
+// Lance un installeur .jar Forge/NeoForge (java -jar ... --installClient) :
+// sortie stdout+stderr concatenee, "" si lancement impossible.
+std::string run_jar_installer(const std::string& java,
+                              const std::filesystem::path& installerJar);
 
 // Installeurs de loaders (retournent l'id de version cree).
 std::string ensure_fabric_installed(const std::string& mcVersion,

@@ -6,6 +6,7 @@
 #include "http_win.hpp"
 #include "modrinth.hpp"
 #include "util_hash.hpp"
+#include "util_str.hpp" // strCaseCmp
 
 #include <algorithm>
 #include <filesystem>
@@ -24,7 +25,8 @@ void report(const Progress& p, const std::string& s) {
 
 bool iends_with(const std::string& s, const char* suffix) {
     const size_t n = std::char_traits<char>::length(suffix);
-    return s.size() >= n && _stricmp(s.c_str() + (s.size() - n), suffix) == 0;
+    if (s.size() < n) return false;
+    return tl::strCaseCmp(s.c_str() + (s.size() - n), suffix) == 0;
 }
 
 // Liste les fichiers d'un sous-dossier d'instance (non recursif, comme le C#
@@ -246,7 +248,7 @@ ImportResult import_pack(const std::string& text, const Progress& progress,
     // PropertyNameCaseInsensitive).
     auto field = [&pack](const char* name) -> const json* {
         for (auto it = pack.begin(); it != pack.end(); ++it)
-            if (_stricmp(it.key().c_str(), name) == 0) return &it.value();
+            if (tl::strCaseCmp(it.key().c_str(), name) == 0) return &it.value();
         return nullptr;
     };
     auto arr = [&](const char* name) -> json {

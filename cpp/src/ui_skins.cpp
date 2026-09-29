@@ -4,10 +4,12 @@
 #include "skin_service.hpp"
 #include "util_image.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <commdlg.h>
+#endif
 
 #include <cmath>
 #include <fstream>
@@ -860,9 +862,10 @@ void start_catalog(const std::string& query) {
     push_task(std::move(t));
 }
 
-// --- boites de dialogue Win32 ---------------------------------------------
+// --- boites de dialogue (Win32 natif ; générique zenity/kdialog sous Linux) ---
 
 std::vector<std::string> pick_png_open_multi() {
+#ifdef _WIN32
     std::vector<wchar_t> buf(32768, L'\0');
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -888,9 +891,13 @@ std::vector<std::string> pick_png_open_multi() {
         out.push_back(wstr_to_utf8((first + L"\\" + f).c_str()));
     }
     return out;
+#else
+    return pick_files_open("Importer un skin", "Images PNG (*.png)", "*.png");
+#endif
 }
 
 std::optional<std::string> pick_png_save(const std::string& defaultName) {
+#ifdef _WIN32
     wchar_t file[MAX_PATH] = L"";
     MultiByteToWideChar(CP_UTF8, 0, defaultName.c_str(), -1, file, MAX_PATH);
     OPENFILENAMEW ofn{};
@@ -903,6 +910,10 @@ std::optional<std::string> pick_png_save(const std::string& defaultName) {
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetSaveFileNameW(&ofn)) return std::nullopt;
     return wstr_to_utf8(file);
+#else
+    return pick_file_save("Exporter le skin", "Image PNG (*.png)", "*.png",
+                          defaultName, "png");
+#endif
 }
 
 // --- actions ---------------------------------------------------------------
@@ -960,7 +971,11 @@ void do_import_url(const std::string& raw) {
         char b[32];
         std::time_t now = std::time(nullptr);
         std::tm tmv{};
+#ifdef _WIN32
         localtime_s(&tmv, &now);
+#else
+        localtime_r(&now, &tmv);
+#endif
         std::snprintf(b, sizeof(b), "skin_%02d%02d%02d.png", tmv.tm_hour,
                       tmv.tm_min, tmv.tm_sec);
         fileName = b;

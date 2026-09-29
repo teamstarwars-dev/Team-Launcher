@@ -1,13 +1,19 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <shlobj.h>
+#else
+// Etape 5 (Linux) : HOME, strcasecmp, localtime_r.
+#include <cstdlib>
+#endif
 
 #include "worldsync.hpp"
 
 #include "datastore.hpp"
 #include "game_launcher.hpp" // log_line
 #include "nbt.hpp"
+#include "util_str.hpp" // strCaseCmp
 #include "util_zip.hpp"
 #include "world.hpp"
 
@@ -27,7 +33,7 @@ bool excluded_name(const std::string& n) {
     static const char* const kEx[] = {"logs",    "crash-reports", "screenshots",
                                       "backups", ".mixin.out",    "cache"};
     for (const char* e : kEx)
-        if (_stricmp(n.c_str(), e) == 0) return true;
+        if (tl::strCaseCmp(n.c_str(), e) == 0) return true;
     return false;
 }
 
@@ -35,8 +41,7 @@ std::int64_t mtime_of(const fs::path& p) {
     std::error_code ec;
     const auto t = fs::last_write_time(p, ec);
     if (ec) return 0;
-    return std::chrono::duration_cast<std::chrono::seconds>(t.time_since_epoch())
-        .count();
+    return tl::file_time_to_unix(t);
 }
 
 // Date du dossier de monde : le C# lisait LastWriteTime du dossier lui-meme,
@@ -57,17 +62,29 @@ std::int64_t newest_mtime(const fs::path& dir) {
 }
 
 fs::path user_profile() {
+#ifdef _WIN32
     PWSTR p = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &p))) return {};
     fs::path out(p);
     CoTaskMemFree(p);
     return out;
+#else
+    // Équivalent de FOLDERID_Profile : $HOME (l'appelant ajoute
+    // curseforge/minecraft/Instances).
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home);
+    return {};
+#endif
 }
 
 std::string iso_stamp() {
     const std::time_t t = std::time(nullptr);
     std::tm tmv{};
+#ifdef _WIN32
     localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
     char buf[32];
     std::strftime(buf, sizeof(buf), "%Y%m%d_%H%M%S", &tmv);
     return buf;
@@ -116,7 +133,7 @@ std::vector<std::pair<fs::path, std::string>> detect_curseforge_instances() {
         out.emplace_back(e.path(), n);
     }
     std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) {
-        return _stricmp(a.second.c_str(), b.second.c_str()) < 0;
+        return tl::strCaseCmp(a.second.c_str(), b.second.c_str()) < 0;
     });
     return out;
 }
@@ -133,9 +150,13 @@ std::vector<Snapshot> list_worlds_in(const fs::path& instanceRoot, Origin origin
         if (!fs::is_directory(saves, ec)) continue;
         for (const auto& e : fs::directory_iterator(saves, ec)) {
             if (ec) break;
-            if (!e.is_directory(ec)) continue;
-            // Un monde a forcement un level.dat.
-            if (!fs::is_regular_file(e.path() / "level.dat", ec)) continue;
+            // ec local : un level.dat absent positionne ENOENT sous libstdc++
+            // (pas sous MSVC) et l'ordre d'énumération ext4 n'est pas
+            // alphabétique — sans ça, un dossier sans level.dat avorte tout
+            // le scan au lieu d'être simplement ignoré.
+            std::error_code ok;
+            if (!e.is_directory(ok)) continue;
+            if (!fs::is_regular_file(e.path() / "level.dat", ok)) continue;
 
             Snapshot s;
             s.instanceName = instanceRoot.filename().string();
@@ -171,7 +192,7 @@ std::vector<Compare> compare_all() {
         if (arr.is_array())
             for (const auto& e : arr) {
                 if (!e.is_object()) continue;
-                if (_stricmp(e.value("Name", "").c_str(), cfName.c_str()) == 0) {
+                if (tl::strCaseCmp(e.value("Name", "").c_str(), cfName.c_str()) == 0) {
                     match = &e;
                     break;
                 }
@@ -187,7 +208,7 @@ std::vector<Compare> compare_all() {
         auto find_by_folder = [](const std::vector<Snapshot>& v,
                                  const std::string& folder) -> const Snapshot* {
             for (const auto& s : v)
-                if (_stricmp(s.worldFolder.c_str(), folder.c_str()) == 0) return &s;
+                if (tl::strCaseCmp(s.worldFolder.c_str(), folder.c_str()) == 0) return &s;
             return nullptr;
         };
 

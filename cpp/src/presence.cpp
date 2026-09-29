@@ -1,6 +1,19 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : IPC Discord sur socket Unix $XDG_RUNTIME_DIR/discord-ipc-N
+// (meme format de trame que le tube nomme Windows).
+#include <cerrno>
+#include <cstdlib>
+#include <fcntl.h>
+#include <poll.h>
+#include <strings.h> // strcasecmp
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h> // close, getpid, readlink
+#endif
 
 #include "presence.hpp"
 
@@ -59,8 +72,10 @@ long long now_unix() {
         .count();
 }
 
-// --- Tube nomme ------------------------------------------------------------
+// --- Tube nomme (Windows) / socket Unix (POSIX) -------------------------------
+// Meme interface des deux cotes : le worker ne voit pas la difference.
 
+#ifdef _WIN32
 class Pipe {
 public:
     ~Pipe() { close(); }
@@ -146,9 +161,151 @@ private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
 };
 
+#else // POSIX : socket Unix, non-bloquante + poll() ( memes delais que Windows)
+
+class Pipe {
+public:
+    ~Pipe() { close(); }
+
+    bool open() {
+        close();
+        // $XDG_RUNTIME_DIR, repli /tmp (jamais le HOME : perms et menage).
+        std::string base;
+        if (const char* r = std::getenv("XDG_RUNTIME_DIR"); r && *r) base = r;
+        else base = "/tmp";
+        for (int i = 0; i < 10; ++i) {
+            const std::string path = base + "/discord-ipc-" + std::to_string(i);
+            const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+            if (fd < 0) return false;
+            sockaddr_un addr{};
+            addr.sun_family = AF_UNIX;
+            if (path.size() >= sizeof(addr.sun_path)) {
+                ::close(fd);
+                continue;
+            }
+            std::memcpy(addr.sun_path, path.c_str(), path.size() + 1);
+            if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+                // Non-bloquant : toutes les attentes passent par poll().
+                const int fl = ::fcntl(fd, F_GETFL, 0);
+                if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+                fd_ = fd;
+                return true;
+            }
+            ::close(fd);
+        }
+        return false;
+    }
+
+    void close() {
+        if (fd_ >= 0) {
+            ::close(fd_);
+            fd_ = -1;
+        }
+    }
+
+    bool valid() const { return fd_ >= 0; }
+
+    bool write_frame(std::uint32_t opcode, const std::string& payload) {
+        if (!valid()) return false;
+        std::string buf;
+        buf.resize(8 + payload.size());
+        const std::uint32_t len = static_cast<std::uint32_t>(payload.size());
+        // Entiers 32 bits little-endian (x86/x64 : copie directe).
+        std::memcpy(buf.data(), &opcode, 4);
+        std::memcpy(buf.data() + 4, &len, 4);
+        std::memcpy(buf.data() + 8, payload.data(), payload.size());
+
+        size_t done = 0;
+        while (done < buf.size()) {
+            const ssize_t n = ::send(fd_, buf.data() + done, buf.size() - done,
+                                     MSG_NOSIGNAL); // pas de SIGPIPE si Discord meurt
+            if (n > 0) {
+                done += static_cast<size_t>(n);
+                continue;
+            }
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                if (!wait_for(POLLOUT, 2000)) return false;
+                continue;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    // Lit une trame si disponible avant expiration. false = rien / lien mort.
+    bool read_frame(std::uint32_t* opcode, std::string* payload, int timeoutMs) {
+        if (!valid()) return false;
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        char head[8];
+        if (!read_exact(head, 8, deadline)) return false;
+        std::uint32_t op = 0, len = 0;
+        std::memcpy(&op, head, 4);
+        std::memcpy(&len, head + 4, 4);
+        // Garde-fou : une trame Discord depasse rarement quelques Ko.
+        if (len > 1u << 20) return false;
+        std::string body(len, '\0');
+        if (len && !read_exact(body.data(), len, deadline)) return false;
+        if (opcode) *opcode = op;
+        if (payload) *payload = std::move(body);
+        return true;
+    }
+
+private:
+    int fd_ = -1;
+
+    bool wait_for(short events, int timeoutMs) {
+        pollfd p{};
+        p.fd = fd_;
+        p.events = events;
+        const int r = ::poll(&p, 1, timeoutMs);
+        return r > 0 && (p.revents & (POLLIN | POLLOUT | POLLHUP));
+    }
+
+    // Lit exactement n octets avant l'echeance (socket non-bloquante).
+    bool read_exact(char* dst, std::uint32_t n, std::chrono::steady_clock::time_point deadline) {
+        std::uint32_t got = 0;
+        while (got < n) {
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now());
+            if (left.count() < 0 || !wait_for(POLLIN, static_cast<int>(left.count())))
+                return false;
+            const ssize_t r = ::recv(fd_, dst + got, n - got, 0);
+            if (r > 0) {
+                got += static_cast<std::uint32_t>(r);
+                continue;
+            }
+            if (r == 0) return false; // pair ferme : lien mort
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            return false;
+        }
+        return true;
+    }
+};
+
+#endif
+
 std::string nonce() {
     static std::atomic<unsigned> n{0};
     return std::to_string(now_unix()) + "-" + std::to_string(++n);
+}
+
+// PID du launcher pour le champ « pid » des trames SET_ACTIVITY.
+int self_pid() {
+#ifdef _WIN32
+    return static_cast<int>(::GetCurrentProcessId());
+#else
+    return static_cast<int>(::getpid());
+#endif
+}
+
+// Comparaison insensible a la casse : _stricmp (Win32) / strcasecmp (POSIX).
+int strCaseCmp(const char* a, const char* b) {
+#ifdef _WIN32
+    return ::_stricmp(a, b);
+#else
+    return ::strcasecmp(a, b);
+#endif
 }
 
 std::string format_hours(long long seconds) {
@@ -271,7 +428,7 @@ void worker() {
         const json frame = {{"cmd", "SET_ACTIVITY"},
                             {"nonce", nonce()},
                             {"args",
-                             {{"pid", static_cast<int>(GetCurrentProcessId())},
+                             {{"pid", self_pid()},
                               {"activity", build_activity(want)}}}};
         if (!pipe.write_frame(1, frame.dump())) {
             plog("envoi impossible, lien perdu.");
@@ -287,7 +444,7 @@ void worker() {
         const json clear = {{"cmd", "SET_ACTIVITY"},
                             {"nonce", nonce()},
                             {"args",
-                             {{"pid", static_cast<int>(GetCurrentProcessId())},
+                             {{"pid", self_pid()},
                               {"activity", nullptr}}}};
         pipe.write_frame(1, clear.dump());
     }
@@ -362,7 +519,7 @@ void set_game(const json& inst, const std::string& server) {
                 if (!c.is_object()) continue;
                 const std::string addr = c.value("Address", std::string{});
                 const std::string h = addr.substr(0, addr.find(':'));
-                if (_stricmp(h.c_str(), host.c_str()) == 0) {
+                if (strCaseCmp(h.c_str(), host.c_str()) == 0) {
                     d.cityName = c.value("Name", std::string{});
                     d.cityOwner = c.value("Owner", std::string{});
                     break;

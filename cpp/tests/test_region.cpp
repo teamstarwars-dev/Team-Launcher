@@ -415,14 +415,34 @@ int main() {
                     if (it->path().filename() != "region") continue;
                     const auto regs = region::list_regions(it->path().parent_path());
                     if (regs.empty()) continue;
-                    const auto chunks = region::list_chunks(regs[0].path);
+                    // Un .mca peut legitimement ne contenir AUCUN chunk : le
+                    // fichier subsiste apres une suppression de selection, ou
+                    // le jeu l'a cree sans rien y ecrire. Exiger des chunks
+                    // dans regs[0] faisait echouer la suite selon ce qui
+                    // trainait sur la machine, pas selon le code. On cherche
+                    // la premiere region non vide, et on saute s'il n'y en a
+                    // aucune.
+                    std::size_t pick = regs.size();
+                    std::vector<region::ChunkInfo> chunks;
+                    for (std::size_t i = 0; i < regs.size(); ++i) {
+                        auto c = region::list_chunks(regs[i].path);
+                        if (c.empty()) continue;
+                        chunks = std::move(c);
+                        pick = i;
+                        break;
+                    }
+                    if (pick == regs.size()) {
+                        std::printf("INFO monde reel : %zu region(s), toutes "
+                                    "vides (test saute)\n",
+                                    regs.size());
+                        continue;
+                    }
                     std::printf("INFO monde reel : %zu region(s), %zu chunk(s) "
                                 "dans %s\n",
                                 regs.size(), chunks.size(),
-                                regs[0].path.filename().string().c_str());
-                    CHECK(!chunks.empty());
-                    if (!chunks.empty()) {
-                        auto c = region::read_chunk_local(regs[0].path,
+                                regs[pick].path.filename().string().c_str());
+                    {
+                        auto c = region::read_chunk_local(regs[pick].path,
                                                           chunks[0].localX,
                                                           chunks[0].localZ);
                         CHECK(c.has_value());

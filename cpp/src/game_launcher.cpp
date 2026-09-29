@@ -3,13 +3,21 @@
 #include "datastore.hpp"
 #include "game_installer.hpp"
 #include "http_win.hpp"
+#include "proc.hpp" // posix_spawn (POSIX) ; vide sous Windows
 #include "util_hash.hpp"
 #include "util_str.hpp"
 #include "util_zip.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : sysinfo (RAM), strcasecmp/access/read (Java, process).
+#include <strings.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -64,7 +72,11 @@ void log_line(const std::string& text) {
         fs::create_directories(p.parent_path(), ec);
         const auto t = std::time(nullptr);
         std::tm tm{};
+#ifdef _WIN32
         localtime_s(&tm, &t);
+#else
+        localtime_r(&t, &tm);
+#endif
         char stamp[16];
         std::strftime(stamp, sizeof(stamp), "%H:%M:%S", &tm);
         std::ofstream out(p, std::ios::app);
@@ -79,12 +91,23 @@ void log_line(const std::string& text) {
 
 namespace {
 long long mem_status(bool total) {
+#ifdef _WIN32
     MEMORYSTATUSEX m{};
     m.dwLength = sizeof(m);
     if (GlobalMemoryStatusEx(&m))
         return static_cast<long long>((total ? m.ullTotalPhys : m.ullAvailPhys) /
                                       (1024ull * 1024ull));
     return -1;
+#else
+    struct sysinfo si{};
+    if (::sysinfo(&si) == 0) {
+        const unsigned long long bytes =
+            static_cast<unsigned long long>(total ? si.totalram : si.freeram) *
+            si.mem_unit;
+        return static_cast<long long>(bytes / (1024ull * 1024ull));
+    }
+    return -1;
+#endif
 }
 } // namespace
 
@@ -113,9 +136,17 @@ std::vector<std::string> find_javaw_in(const fs::path& dir) {
              dir, fs::directory_options::skip_permission_denied, ec);
          it != fs::recursive_directory_iterator(); it.increment(ec)) {
         if (ec) break;
+#ifdef _WIN32
         if (it->is_regular_file(ec) && _stricmp(it->path().filename().string().c_str(),
                                                 "javaw.exe") == 0)
             out.push_back(it->path().string());
+#else
+        // Linux : les JRE fournissent bin/java (pas de javaw), executable requis.
+        if (it->is_regular_file(ec) &&
+            ::strcasecmp(it->path().filename().string().c_str(), "java") == 0 &&
+            ::access(it->path().string().c_str(), X_OK) == 0)
+            out.push_back(it->path().string());
+#endif
     }
     return out;
 }
@@ -131,9 +162,14 @@ int detect_java_major(const std::string& javawPath) {
     int result = 0;
     try {
         const fs::path dir = fs::path(javawPath).parent_path();
+#ifdef _WIN32
         const fs::path javaExe = dir / "java.exe";
+#else
+        const fs::path javaExe = dir / "java";
+#endif
         const fs::path exe = fs::exists(javaExe) ? javaExe : fs::path(javawPath);
 
+#ifdef _WIN32
         SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
         HANDLE outR = nullptr, outW = nullptr, errW = nullptr;
         if (CreatePipe(&outR, &outW, &sa, 0)) {
@@ -187,6 +223,19 @@ int detect_java_major(const std::string& javawPath) {
                 CloseHandle(outR); CloseHandle(outW);
             }
         }
+#else
+        // `java -version` écrit sur stderr : capture fusionnée, 5 s comme Windows.
+        const auto r = proc::run_capture(exe.string(), {exe.string(), "-version"},
+                                         dir.string(), 5000);
+        if (r.code != -1) {
+            std::smatch m;
+            static const std::regex re("version \"(\\d+)(?:\\.(\\d+))?");
+            if (std::regex_search(r.output, m, re)) {
+                const int first = std::stoi(m[1].str());
+                result = first == 1 ? std::stoi(m[2].str()) : first;
+            }
+        }
+#endif
     } catch (...) {
         result = 0;
     }
@@ -207,6 +256,7 @@ std::optional<std::string> find_java(int requiredMajor) {
     log_line("Recherche des Java installés...");
     std::vector<std::string> candidates;
 
+#ifdef _WIN32
     const char* roots[] = {
         "C:\\Program Files\\Java",
         "C:\\Program Files\\Eclipse Adoptium",
@@ -224,6 +274,31 @@ std::optional<std::string> find_java(int requiredMajor) {
             "Packages\\Microsoft.4297127D64EC6_8wekyb3d8bbwe\\LocalCache\\Local\\runtime");
         candidates.insert(candidates.end(), store.begin(), store.end());
     }
+#else
+    // JAVA_HOME d'abord, puis arbos distro. /opt exclu du balayage récursif
+    // (trop gros) : en pratique comptent JAVA_HOME, les paquets distro et le
+    // JRE embarqué (download_java), plus le java du PATH ci-dessous.
+    std::vector<std::string> roots = {"/usr/lib/jvm", "/usr/java"};
+    if (const char* jh = std::getenv("JAVA_HOME"); jh && *jh)
+        roots.insert(roots.begin(), std::string(jh) + "/bin");
+    for (const auto& r : roots) {
+        auto found = find_javaw_in(r);
+        candidates.insert(candidates.end(), found.begin(), found.end());
+    }
+    log_line(std::to_string(candidates.size()) + " candidat(s) trouvé(s).");
+    if (const char* path = std::getenv("PATH"); path && *path) {
+        std::istringstream ps(path);
+        std::string d;
+        while (std::getline(ps, d, ':')) {
+            if (d.empty()) continue;
+            const fs::path cand = fs::path(d) / "java";
+            std::error_code ec2;
+            if (fs::is_regular_file(cand, ec2) &&
+                ::access(cand.string().c_str(), X_OK) == 0)
+                candidates.push_back(cand.string());
+        }
+    }
+#endif
 
     struct Cand { std::string path; int major; };
     std::vector<Cand> scored;
@@ -253,7 +328,11 @@ std::optional<std::string> download_java(int major,
 
         const std::string url =
             "https://api.adoptium.net/v3/binary/latest/" + std::to_string(major) +
+#ifdef _WIN32
             "/ga/windows/x64/jre/hotspot/normal/eclipse";
+#else
+            "/ga/linux/x64/jre/hotspot/normal/eclipse";
+#endif
         const fs::path zipPath = runtimeRoot / ("adoptium-jre-" + std::to_string(major) + ".zip");
         std::error_code ec;
         fs::create_directories(runtimeRoot, ec);
@@ -310,12 +389,20 @@ std::vector<std::string> build_jvm_args(const std::string& classpath,
     args.push_back("-Xmx" + std::to_string(ram) + "G");
 
     if (officialJvm && !officialJvm->empty()) {
+#ifdef _WIN32
         const std::string libDir = runtime_root().string() + "\\libraries";
+#else
+        const std::string libDir = runtime_root().string() + "/libraries";
+#endif
         for (const auto& token : *officialJvm) {
             std::string t = token;
             replace_all(t, "${natives_directory}", natives);
             replace_all(t, "${library_directory}", libDir);
+#ifdef _WIN32
             replace_all(t, "${classpath_separator}", ";");
+#else
+            replace_all(t, "${classpath_separator}", ":");
+#endif
             replace_all(t, "${classpath}", classpath);
             replace_all(t, "${launcher_name}", "TeamLauncher");
             replace_all(t, "${launcher_version}", "1.0");
@@ -412,6 +499,7 @@ std::optional<std::string> latest_release() {
 // ---------------------------------------------------------------------------
 
 namespace {
+#ifdef _WIN32
 std::wstring quote_arg(const std::wstring& a) {
     if (!a.empty() && a.find_first_of(L" \t\"") == std::wstring::npos) return a;
     std::wstring out = L"\"";
@@ -435,9 +523,11 @@ std::wstring quote_arg(const std::wstring& a) {
     out += L'"';
     return out;
 }
+#endif // _WIN32 (cote POSIX : argv direct, pas de quoting)
 } // namespace
 
 std::optional<GameProcess> start_game(const LaunchInput& in) {
+#ifdef _WIN32
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE outR = nullptr, outW = nullptr, errR = nullptr, errW = nullptr;
     if (!CreatePipe(&outR, &outW, &sa, 0)) return std::nullopt;
@@ -482,9 +572,26 @@ std::optional<GameProcess> start_game(const LaunchInput& in) {
     g.outRead = outR;
     g.errRead = errR;
     return g;
+#else
+    // argv direct : pas de quoting (posix_spawn ne passe par aucun shell).
+    // Les fds sont stockés en void* (même layout que les HANDLE Windows).
+    std::vector<std::string> argv;
+    argv.reserve(in.args.size() + 1);
+    argv.push_back(in.javaExe);
+    argv.insert(argv.end(), in.args.begin(), in.args.end());
+    auto child = proc::spawn(in.javaExe, argv, in.gameDir, /*mergeErr=*/false);
+    if (!child) return std::nullopt;
+    GameProcess g;
+    g.hProcess = reinterpret_cast<void*>(static_cast<intptr_t>(child->pid));
+    g.pid = static_cast<unsigned long>(child->pid);
+    g.outRead = reinterpret_cast<void*>(static_cast<intptr_t>(child->outFd));
+    g.errRead = reinterpret_cast<void*>(static_cast<intptr_t>(child->errFd));
+    return g;
+#endif
 }
 
 void close_game(GameProcess& g) {
+#ifdef _WIN32
     const bool dbg = std::getenv("TL_DEBUG_SHUTDOWN") != nullptr;
     // outRead/errRead : PAS de CloseHandle — un pump (thread detache) est en
     // attente de ReadFile dessus ; le noyau retient l'objet pipe tant que le
@@ -497,14 +604,29 @@ void close_game(GameProcess& g) {
     if (dbg) { std::fprintf(stderr, "CG: hProcess\n"); std::fflush(stderr); }
     if (g.hProcess) { CloseHandle(static_cast<HANDLE>(g.hProcess)); g.hProcess = nullptr; }
     if (dbg) { std::fprintf(stderr, "CG: done\n"); std::fflush(stderr); }
+#else
+    // Comme Windows : on ne ferme PAS outRead/errRead (pumps en read()
+    // bloquant ; fermer un fd pendant un read() est une course). Fds refermés
+    // à la fin du process launcher. Pas de handle process à fermer (waitpid
+    // moissonne par pid).
+    g.outRead = nullptr;
+    g.errRead = nullptr;
+    g.hProcess = nullptr;
+#endif
 }
 
 int wait_game(GameProcess& g) {
+#ifdef _WIN32
     if (!g.hProcess) return -1;
     WaitForSingleObject(static_cast<HANDLE>(g.hProcess), INFINITE);
     DWORD code = 1;
     if (!GetExitCodeProcess(static_cast<HANDLE>(g.hProcess), &code)) return -1;
     return static_cast<int>(code);
+#else
+    if (!g.hProcess) return -1;
+    return proc::wait_exit(static_cast<pid_t>(reinterpret_cast<intptr_t>(g.hProcess)),
+                           /*timeoutMs=*/-1);
+#endif
 }
 
 void start_game_log_writer(GameProcess& g, const fs::path& gameLog) {
@@ -518,6 +640,7 @@ void start_game_log_writer(GameProcess& g, const fs::path& gameLog) {
     sink->out.open(gameLog, std::ios::app);
     if (!sink->out) return;
 
+#ifdef _WIN32
     auto pump = [sink](HANDLE h) {
         char buf[4096];
         DWORD read = 0;
@@ -529,6 +652,20 @@ void start_game_log_writer(GameProcess& g, const fs::path& gameLog) {
     };
     const HANDLE o = static_cast<HANDLE>(g.outRead);
     const HANDLE e = static_cast<HANDLE>(g.errRead);
+#else
+    auto pump = [sink](int fd) {
+        char buf[4096];
+        for (;;) {
+            const ssize_t n = ::read(fd, buf, sizeof(buf));
+            if (n <= 0) break;
+            std::lock_guard<std::mutex> g(sink->m);
+            sink->out.write(buf, n);
+            sink->out.flush();
+        }
+    };
+    const int o = static_cast<int>(reinterpret_cast<intptr_t>(g.outRead));
+    const int e = static_cast<int>(reinterpret_cast<intptr_t>(g.errRead));
+#endif
     if (o) std::thread(pump, o).detach();
     if (e) std::thread(pump, e).detach();
 }

@@ -219,7 +219,11 @@ void moddev_page() {
     ImGui::PopStyleColor();
     ImGui::SameLine();
     if (ImGui::Button("...##devbrowse")) {
+#ifdef _WIN32
         if (auto p = pick_folder(L"Dossier du projet")) {
+#else
+        if (auto p = pick_folder("Dossier du projet")) {
+#endif
             std::snprintf(D.dir, sizeof(D.dir), "%s", p->c_str());
             D.tcChecked = false;
         }

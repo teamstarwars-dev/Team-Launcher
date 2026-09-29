@@ -4,10 +4,12 @@
 #include "pack_import.hpp"
 #include "pack_share.hpp"
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
 #include <commdlg.h>
+#endif
 
 // ---------------------------------------------------------------------------
 // Import de modpacks (module 4d) : selection du fichier, worker de fond,
@@ -48,6 +50,7 @@ void end_pack_task(int tid, bool cancelled, const std::string& error) {
 }
 
 std::optional<std::string> pick_modpack() {
+#ifdef _WIN32
     wchar_t file[MAX_PATH] = L"";
     OPENFILENAMEW ofn{};
     ofn.lStructSize = sizeof(ofn);
@@ -58,6 +61,10 @@ std::optional<std::string> pick_modpack() {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&ofn)) return std::nullopt;
     return wstr_to_utf8(file);
+#else
+    return pick_file_open("Importer un modpack", "Modpacks (*.zip *.mrpack)",
+                          "*.zip *.mrpack");
+#endif
 }
 
 } // namespace

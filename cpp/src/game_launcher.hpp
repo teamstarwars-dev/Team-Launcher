@@ -37,6 +37,13 @@ std::optional<std::string> download_java(int major,
 long long available_ram_mb();
 long long total_ram_mb();
 
+// RAM idéale selon la machine (phase A : répond à « détection auto ») :
+// moitié de la RAM totale, bornée [2, 8] Go ; 4 Go si indéterminée.
+// La version sans argument lit la machine (non testable), celle avec le
+// total en Mo est pure (tests).
+int ideal_ram_gb(long long totalMb);
+int ideal_ram_gb();
+
 // Construction des lignes de commande (fidèle au C#).
 std::vector<std::string> build_jvm_args(const std::string& classpath,
                                         const std::string& natives,
@@ -52,10 +59,18 @@ std::vector<std::string> build_game_args(const std::string& version,
                                          bool hasModernArgs,
                                          const std::string* joinServer);
 
-// Journal launcher.log (mememo LOCALAPPDATA\TeamLauncher\launcher.log comme le C#).
+// Journal launcher.log (LOCALAPPDATA\TeamLauncher sous Windows, XDG sous Linux).
+// Niveau filtrable par le réglage LogLevel (Traçage/Débogage/Info/Attention/
+// Erreur/Fatal/Éteint) : en dessous du seuil, la ligne est ignorée.
+// log_line(text) = Info (compatibilité des ~80 appels existants).
+enum class LogLevel { Trace = 0, Debug, Info, Warn, Error, Fatal, Off };
+LogLevel log_level_from(const std::string& name); // accepte FR/EN, insensible
+const char* log_level_name(LogLevel lv);          // nom canonique anglais
+void log_line(LogLevel lv, const std::string& text);
 void log_line(const std::string& text);
 
-// Resultat d'un lancement.
+// Resultat d'un lancement. HANDLE (Windows) ou fds/pid castés (POSIX) :
+// même layout, close_game/wait_game derrière.
 struct GameProcess {
     void* hProcess = nullptr; // HANDLE, fermer par close_game
     void* outRead = nullptr;  // pipe stdout du jeu

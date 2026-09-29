@@ -28,6 +28,10 @@ std::optional<std::string> dpapi_unprotect_b64(const std::string& b64);
 // Effacement sûr d'un secret en mémoire (SecureZeroMemory, anti-optimiseur).
 void secure_wipe(std::string& s);
 
+// Vrai sous Linux quand le repli fichier 0600 est utilisé (trousseau
+// indisponible) : l'UI doit avertir. Toujours faux sous Windows (DPAPI).
+bool insecure_fallback_active();
+
 // --- Champs de config.json ---
 inline constexpr const char* kEncPrefix = "enc:v1:";
 

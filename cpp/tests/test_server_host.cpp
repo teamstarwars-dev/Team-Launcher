@@ -5,6 +5,8 @@
 
 #include "server_host.hpp"
 
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
+
 #include "datastore.hpp"
 
 #include <cstdio>

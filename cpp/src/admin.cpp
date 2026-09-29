@@ -1,6 +1,14 @@
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <Windows.h>
+#else
+// Etape 5 (Linux) : gethostname/uname, /proc/cpuinfo, PCI display (/sys).
+#include <sys/utsname.h>
+#include <unistd.h>
+
+#include <fstream>
+#endif
 
 #include "admin.hpp"
 
@@ -11,8 +19,11 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <filesystem>
 #include <mutex>
 #include <thread>
+
+namespace fs = std::filesystem;
 
 using nlohmann::json;
 using namespace std::chrono_literals;
@@ -36,6 +47,7 @@ Ctx& ctx() {
     return c;
 }
 
+#ifdef _WIN32
 std::string wide_to_utf8(const wchar_t* w) {
     if (!w || !*w) return {};
     const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
@@ -54,6 +66,7 @@ std::string reg_string(HKEY root, const wchar_t* key, const wchar_t* value) {
         return {};
     return wide_to_utf8(buf);
 }
+#endif // _WIN32 (registre : pas d'equivalent, voir machine_info POSIX)
 
 // Dernier McVersion joue (C# : instance au LastPlayed le plus recent).
 std::string last_mc_version() {
@@ -108,6 +121,7 @@ std::string installation_id() {
 Machine machine_info() {
     Machine m;
 
+#ifdef _WIN32
     wchar_t host[MAX_COMPUTERNAME_LENGTH + 1] = L"";
     DWORD hn = MAX_COMPUTERNAME_LENGTH + 1;
     if (GetComputerNameW(host, &hn)) m.hostname = wide_to_utf8(host);
@@ -148,6 +162,82 @@ Machine machine_info() {
     m.ramMb = total_ram_mb();
     if (m.ramMb < 0) m.ramMb = 0;
     return m;
+#else
+    // Hostname POSIX.
+    char host[256] = "";
+    if (::gethostname(host, sizeof(host) - 1) == 0) m.hostname = host;
+
+    // OS : PRETTY_NAME (/etc/os-release) + noyau ; repli uname().
+    utsname un{};
+    const bool hasUname = ::uname(&un) == 0;
+    {
+        std::ifstream os("/etc/os-release");
+        std::string line;
+        while (std::getline(os, line)) {
+            const std::string key = "PRETTY_NAME=";
+            if (line.rfind(key, 0) != 0) continue;
+            std::string v = line.substr(key.size());
+            if (v.size() >= 2 && v.front() == '"' && v.back() == '"')
+                v = v.substr(1, v.size() - 2);
+            if (!v.empty()) m.osVersion = v;
+            break;
+        }
+    }
+    if (m.osVersion.empty() && hasUname)
+        m.osVersion = std::string(un.sysname) + " " + un.release;
+    else if (hasUname)
+        m.osVersion += std::string(" (") + un.sysname + " " + un.release + ")";
+
+    // CPU : premier « model name » de /proc/cpuinfo.
+    {
+        std::ifstream cpu("/proc/cpuinfo");
+        std::string line;
+        while (std::getline(cpu, line)) {
+            const std::string key = "model name";
+            if (line.rfind(key, 0) != 0) continue;
+            const size_t colon = line.find(':');
+            if (colon == std::string::npos) continue;
+            size_t b = line.find_first_not_of(" \t", colon + 1);
+            if (b == std::string::npos) continue;
+            size_t e = line.find_last_not_of(" \t\r");
+            m.cpuName = line.substr(b, e - b + 1);
+            break;
+        }
+    }
+
+    // GPU : premier périphérique PCI classe 03xx (affichage) sous /sys.
+    // Sans base pci.ids : vendeur connu + IDs (suffit à la télémétrie).
+    {
+        std::error_code ec;
+        const fs::path pci = "/sys/bus/pci/devices";
+        for (const auto& e : fs::directory_iterator(pci, ec)) {
+            if (ec) break;
+            std::ifstream cls(e.path() / "class");
+            std::string cl;
+            if (!std::getline(cls, cl) || cl.size() < 6 || cl.compare(0, 4, "0x03") != 0)
+                continue;
+            std::string vendor, device;
+            std::ifstream vf(e.path() / "vendor"), df(e.path() / "device");
+            std::getline(vf, vendor);
+            std::getline(df, device);
+            auto shortId = [](const std::string& v) {
+                return v.size() == 6 ? v.substr(2) : v; // "0x10de" -> "10de"
+            };
+            const std::string v = shortId(vendor), d = shortId(device);
+            std::string name;
+            if (v == "10de") name = "NVIDIA";
+            else if (v == "1002") name = "AMD";
+            else if (v == "8086") name = "Intel";
+            m.gpuName = name.empty() ? ("PCI " + v + ":" + d)
+                                     : (name + " (" + v + ":" + d + ")");
+            break;
+        }
+    }
+
+    m.ramMb = total_ram_mb();
+    if (m.ramMb < 0) m.ramMb = 0;
+    return m;
+#endif
 }
 
 json heartbeat_payload() {

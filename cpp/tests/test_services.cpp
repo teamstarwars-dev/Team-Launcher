@@ -10,6 +10,8 @@
 #include "presence.hpp"
 #include "shortcut.hpp"
 #include "telemetry.hpp"
+
+#include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
 #include "util_zip.hpp"
 
 #include <chrono>
@@ -62,10 +64,8 @@ int main() {
     std::error_code ec;
     fs::remove_all(tmp, ec);
     fs::create_directories(tmp);
-#ifdef _WIN32
     _putenv_s("TL_DATA_DIR", tmp.string().c_str());
     _putenv_s("TL_RUNTIME_DIR", (tmp / "runtime").string().c_str());
-#endif
     DataStore::load();
 
     // =====================================================================
@@ -254,7 +254,8 @@ int main() {
     CHECK(updates::compare_versions(" 6.0.1", "6.0.0") > 0); // espaces ignores
 
     // =====================================================================
-    // 4bis. Selection d'asset (JSON GitHub factice, hors ligne)
+    // 4bis. Selection d'asset (JSON GitHub factice, hors ligne ; preference
+    // OS courant : Windows prefere win-x64, Linux prefere linux-x64)
     // =====================================================================
     {
         const nlohmann::json rel = {
@@ -269,17 +270,28 @@ int main() {
               {{"name", "Team-Launcher-Win-x64.zip"},
                {"browser_download_url", "https://example.invalid/winx64"},
                {"size", 30}},
+              {{"name", "Team-Launcher-Linux-x64.zip"},
+               {"browser_download_url", "https://example.invalid/linuxzip"},
+               {"size", 25}},
               {{"name", "setup.exe"},
                {"browser_download_url", "https://example.invalid/setup"},
                {"size", 40}}}}};
         std::string name;
         long long size = -1;
+#ifdef _WIN32
         CHECK_EQ(updates::select_asset_url(rel, &name, &size),
                  std::string("https://example.invalid/winx64"));
         CHECK_EQ(name, std::string("Team-Launcher-Win-x64.zip"));
         CHECK_EQ(size, 30LL);
+#else
+        CHECK_EQ(updates::select_asset_url(rel, &name, &size),
+                 std::string("https://example.invalid/linuxzip"));
+        CHECK_EQ(name, std::string("Team-Launcher-Linux-x64.zip"));
+        CHECK_EQ(size, 25LL);
+#endif
 
-        // Sans zip Windows : chaine vide (l'UI proposera la page web)
+        // Sans zip Windows : chaine vide sous Windows (l'UI proposera la page
+        // web) ; sous Linux le tar.gz n'est pas un .zip exploitable non plus.
         const nlohmann::json linuxOnly = {
             {"tag_name", "v9.9.9"},
             {"assets",
@@ -298,14 +310,20 @@ int main() {
     }
 
     // =====================================================================
-    // 4ter. parse_release_json (hors ligne)
+    // 4ter. parse_release_json (hors ligne ; asset de l'OS courant)
     // =====================================================================
     {
         // Plus recent que la version compilee : info complete + asset
+#ifdef _WIN32
+        const std::string assetName = "team-launcher-win-x64.zip";
+#else
+        const std::string assetName = "team-launcher-linux-x64.zip";
+#endif
         const std::string body =
             R"({"tag_name":"v9.9.9","body":"notes","html_url":"https://example.invalid/r",)"
-            R"("assets":[{"name":"team-launcher-win-x64.zip",)"
-            R"("browser_download_url":"https://example.invalid/z","size":123}]})";
+            R"("assets":[{"name":")" +
+            assetName +
+            R"(","browser_download_url":"https://example.invalid/z","size":123}]})";
         std::string err;
         auto info = updates::parse_release_json(body, &err);
         CHECK(info.has_value());
@@ -382,17 +400,22 @@ int main() {
     }
 
     // =====================================================================
-    // 5bis. Raccourci .lnk (AutoShortcut)
+    // 5bis. Raccourci (.lnk Windows / .desktop Linux, AutoShortcut)
     // =====================================================================
     {
         // On ecrit dans le dossier de test, jamais sur le vrai Bureau.
+#ifdef _WIN32
         const fs::path lnk = tmp / "raccourci" / "Team Launcher.lnk";
+#else
+        const fs::path lnk = tmp / "raccourci" / "Team Launcher.desktop";
+#endif
         const fs::path target = tmp / "faux-launcher.exe";
         write_file(target, "MZ");
 
         CHECK(create_shortcut(lnk, target, target.parent_path(), "Test"));
         CHECK(fs::exists(lnk));
         CHECK(fs::file_size(lnk, ec) > 0);
+#ifdef _WIN32
         // Un .lnk commence par l'en-tete ShellLink : 4C 00 00 00 ("L").
         {
             const std::string raw = read_file(lnk);
@@ -402,15 +425,33 @@ int main() {
                 CHECK_EQ(static_cast<unsigned char>(raw[1]), 0x00u);
             }
         }
+#else
+        // Un .desktop contient son type + la cible.
+        {
+            const std::string raw = read_file(lnk);
+            CHECK(raw.find("[Desktop Entry]") != std::string::npos);
+            CHECK(raw.find("Type=Application") != std::string::npos);
+            CHECK(raw.find("Exec=") != std::string::npos);
+            CHECK(raw.find(target.string()) != std::string::npos);
+        }
+#endif
         // Cible vide : refus propre, aucun fichier cree
         const fs::path none = tmp / "raccourci" / "vide.lnk";
         CHECK(!create_shortcut(none, {}, {}, "x"));
         CHECK(!fs::exists(none));
 
+#ifdef _WIN32
         // desktop_dir() doit rendre un dossier existant sur une session Windows
         const fs::path desk = desktop_dir();
         CHECK(!desk.empty());
         if (!desk.empty()) CHECK(fs::is_directory(desk, ec));
+#else
+        // HOME isolé + Bureau créé : déterministe même sans session graphique.
+        setenv("HOME", tmp.string().c_str(), 1);
+        fs::create_directories(tmp / "Desktop", ec);
+        const fs::path desk = desktop_dir();
+        CHECK(desk == tmp / "Desktop");
+#endif
 
         // ensure_desktop_shortcut(force=false) ne doit RIEN faire quand le
         // drapeau est deja pose : c'est ce qui evite de recreer le raccourci
