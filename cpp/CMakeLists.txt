@@ -24,14 +24,24 @@ endif()
 
 # ---- SDL2 (dynamic only — jamais statique) ----
 #
-# Sous Linux on prend le SDL2 du systeme (paquet libsdl2-dev) : c'est ce
-# qu'attend une distribution, le .deb declare alors une dependance au lieu
-# d'embarquer sa propre copie, et le build est bien plus rapide. Le SDL
-# embarque dans third_party sert pour Windows, ou il n'y a pas de gestionnaire
-# de paquets, et de repli si le systeme n'en fournit pas.
+# Par defaut le SDL embarque dans third_party est compile, sur les DEUX
+# plateformes. Ce n'est pas un oubli : le .deb (installer/linux/make-deb.sh)
+# fait voyager sa propre libSDL2 avec un rpath $ORIGIN/lib, pour figer l'ABI.
+# Le paquet est telecharge directement, pas tire d'un depot de distribution :
+# dependre du libsdl2 de la machine exposerait a toutes les versions
+# d'Ubuntu, Debian et Mint en circulation.
+#
+# TL_SYSTEM_SDL=ON prend au contraire le SDL2 du systeme (libsdl2-dev).
+# Utile pour les compilations de developpement — compiler SDL depuis les
+# sources coutait 8 minutes de configuration a chaque fois — et pour un
+# empaqueteur de distribution qui veut une vraie dependance.
+option(TL_SYSTEM_SDL "Utiliser le SDL2 du systeme au lieu de la copie embarquee" OFF)
 set(TL_SDL_VENDORED OFF)
-if(NOT WIN32)
+if(TL_SYSTEM_SDL AND NOT WIN32)
   find_package(SDL2 QUIET)
+  if(NOT TARGET SDL2::SDL2)
+    message(WARNING "TL_SYSTEM_SDL=ON mais SDL2 introuvable : repli sur la copie embarquee.")
+  endif()
 endif()
 
 if(NOT TARGET SDL2::SDL2)
@@ -284,7 +294,12 @@ add_custom_command(TARGET TeamLauncher POST_BUILD
 )
 
 install(TARGETS TeamLauncher RUNTIME DESTINATION .)
-install(TARGETS SDL2 RUNTIME DESTINATION .)
+# SDL n'est a installer que si c'est NOTRE copie : avec le SDL du systeme
+# (Linux) la cible SDL2 n'existe pas, et install() echouait a la
+# configuration. Le paquet declarera une dependance a la place.
+if(TL_SDL_VENDORED)
+  install(TARGETS SDL2 RUNTIME DESTINATION .)
+endif()
 install(DIRECTORY assets/ DESTINATION assets)
 
 # ---- Tests unitaires (dev uniquement) ----
