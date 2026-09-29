@@ -11,6 +11,9 @@
 #define NOMINMAX
 #ifdef _WIN32
 #include <Windows.h>
+// SetCurrentProcessExplicitAppUserModelID : identite de l'application pour
+// la barre des taches et les notifications (fournie par shell32, deja liee).
+#include <shobjidl.h>
 #endif
 
 #include <cstdio>
@@ -31,6 +34,21 @@
 
 int main(int argc, char** argv) {
     SDL_SetMainReady();
+
+#ifdef _WIN32
+    // Identite d'application explicite, AVANT toute creation de fenetre.
+    //
+    // Sans elle, la barre des taches de Windows n'utilise pas l'icone posee
+    // sur la fenetre : elle resout l'icone a partir du CHEMIN de
+    // l'executable, via le cache du shell — qui gardait l'ancien logo alors
+    // que le binaire et la fenetre portaient deja le nouveau.
+    //
+    // C'est aussi le prerequis des notifications systeme natives : une
+    // notification Windows doit etre emise au nom d'un AppUserModelID connu.
+    // La chaine doit rester stable dans le temps, sinon Windows considere
+    // qu'il s'agit d'une autre application (raccourcis epingles perdus).
+    SetCurrentProcessExplicitAppUserModelID(L"TeamLauncher.Minecraft.Launcher");
+#endif
 
     // --portable : donnees a cote de l'exe (avant tout load)
     for (int i = 1; i < argc; ++i)
