@@ -23,27 +23,47 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
 endif()
 
 # ---- SDL2 (dynamic only — jamais statique) ----
-set(SDL_SHARED ON CACHE BOOL "Build shared SDL2" FORCE)
-set(SDL_STATIC OFF CACHE BOOL "No static SDL2" FORCE)
-set(SDL_TEST OFF CACHE BOOL "" FORCE)
-set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(SDL_TESTS OFF CACHE BOOL "" FORCE)
-# MMX/assembly SDL casse avec clang-cl x64 (intrinsics MSVC) — inutile pour un launcher
-set(SDL_ASSEMBLY OFF CACHE BOOL "" FORCE)
-set(SDL_MMX OFF CACHE BOOL "" FORCE)
-set(SDL_SSE OFF CACHE BOOL "" FORCE)
-set(SDL_SSE2 OFF CACHE BOOL "" FORCE)
-set(SDL_SSE3 OFF CACHE BOOL "" FORCE)
-set(SDL_SSEMATH OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
-# clang x64 définit __MMX__ par défaut → blocs MMX SDL incompatibles clang-cl/MSVC headers
-# (Windows uniquement : sous GCC ces options n'ont aucun sens, voire cassent
-# la compilation — "/clang:-msse3" n'est pas une option GCC).
-if(TARGET SDL2 AND CMAKE_C_COMPILER_ID MATCHES "Clang")
-  target_compile_options(SDL2 PRIVATE -U__MMX__ -U__3dNOW__)
-  # SDL_cpuinfo.h force __SSE3__ côté MSVC → code SSE3 présent mais cible sans sse3
-  target_compile_options(SDL2 PRIVATE /clang:-msse3)
+#
+# Sous Linux on prend le SDL2 du systeme (paquet libsdl2-dev) : c'est ce
+# qu'attend une distribution, le .deb declare alors une dependance au lieu
+# d'embarquer sa propre copie, et le build est bien plus rapide. Le SDL
+# embarque dans third_party sert pour Windows, ou il n'y a pas de gestionnaire
+# de paquets, et de repli si le systeme n'en fournit pas.
+set(TL_SDL_VENDORED OFF)
+if(NOT WIN32)
+  find_package(SDL2 QUIET)
 endif()
+
+if(NOT TARGET SDL2::SDL2)
+  set(TL_SDL_VENDORED ON)
+  set(SDL_SHARED ON CACHE BOOL "Build shared SDL2" FORCE)
+  set(SDL_STATIC OFF CACHE BOOL "No static SDL2" FORCE)
+  set(SDL_TEST OFF CACHE BOOL "" FORCE)
+  set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+  # MMX/assembly SDL casse avec clang-cl x64 (intrinsics MSVC) — inutile pour un launcher
+  set(SDL_ASSEMBLY OFF CACHE BOOL "" FORCE)
+  set(SDL_MMX OFF CACHE BOOL "" FORCE)
+  set(SDL_SSE OFF CACHE BOOL "" FORCE)
+  set(SDL_SSE2 OFF CACHE BOOL "" FORCE)
+  set(SDL_SSE3 OFF CACHE BOOL "" FORCE)
+  set(SDL_SSEMATH OFF CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
+
+  # clang x64 définit __MMX__ par défaut → blocs MMX SDL incompatibles avec
+  # les en-tetes MSVC.
+  #
+  # CORRECTIF : la garde ne testait que « compilateur = Clang », alors que le
+  # commentaire disait « Windows uniquement ». Sous Linux, clang recevait donc
+  # « /clang:-msse3 », qu'il interprete comme un NOM DE FICHIER — la
+  # compilation de SDL echouait. Il faut bien MSVC (donc clang-cl).
+  if(TARGET SDL2 AND MSVC AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_compile_options(SDL2 PRIVATE -U__MMX__ -U__3dNOW__)
+    # SDL_cpuinfo.h force __SSE3__ côté MSVC → code SSE3 présent mais cible sans sse3
+    target_compile_options(SDL2 PRIVATE /clang:-msse3)
+  endif()
+endif()
+message(STATUS "SDL2 : ${TL_SDL_VENDORED} (ON = copie embarquee, OFF = systeme)")
 
 # ---- Dear ImGui (sources, pas de lib séparée) ----
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
@@ -244,12 +264,16 @@ endif()
 tl_release_flags(TeamLauncher)
 
 # ---- Copie SDL2.dll à côté de l'exé (link dynamique) ----
-add_custom_command(TARGET TeamLauncher POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_FILE:SDL2::SDL2>
-    $<TARGET_FILE_DIR:TeamLauncher>
-  COMMENT "Copie SDL2.dll"
-)
+# Seulement quand SDL est la copie embarquee : avec le SDL du systeme
+# (Linux), la bibliotheque est deja installee et le chargeur la trouve.
+if(TL_SDL_VENDORED)
+  add_custom_command(TARGET TeamLauncher POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:SDL2::SDL2>
+      $<TARGET_FILE_DIR:TeamLauncher>
+    COMMENT "Copie SDL2.dll"
+  )
+endif()
 
 # ---- Assets externes (jamais embarqués) ----
 add_custom_command(TARGET TeamLauncher POST_BUILD

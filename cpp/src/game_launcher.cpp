@@ -114,6 +114,20 @@ long long mem_status(bool total) {
 long long available_ram_mb() { return mem_status(false); }
 long long total_ram_mb() { return mem_status(true); }
 
+int ideal_ram_gb(long long totalMb) {
+    // Moitie de la RAM physique : laisser autant a Windows/Linux, au
+    // navigateur et au reste. Au-dela de 8 Go la JVM de Minecraft ne gagne
+    // plus rien et le ramasse-miettes fait des pauses plus longues ; en
+    // dessous de 2 Go le jeu ne demarre pas correctement.
+    if (totalMb <= 0) return 4; // machine indeterminee : valeur sure
+    const long long half = totalMb / 2 / 1024;
+    if (half < 2) return 2;
+    if (half > 8) return 8;
+    return static_cast<int>(half);
+}
+
+int ideal_ram_gb() { return ideal_ram_gb(total_ram_mb()); }
+
 // ---------------------------------------------------------------------------
 // Java
 // ---------------------------------------------------------------------------

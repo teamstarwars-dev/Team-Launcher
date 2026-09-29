@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "game_launcher.hpp"
+
 #include "maintenance.hpp"
 #include "presence.hpp"
 #include "shortcut.hpp"
@@ -171,6 +173,29 @@ void tab_general() {
     ImGui::SetNextItemWidth(420.0f);
     if (ImGui::SliderInt("##ram", &s.maxRamGb, 1, 32, tr("%d Go", "%d GB")))
         DataStore::save();
+    // Detection automatique : la regle est dans ideal_ram_gb (moitie de
+    // la RAM physique, bornee 2-8 Go). On affiche la machine ET la valeur
+    // conseillee plutot que de l'imposer : un joueur qui a choisi sa valeur
+    // ne doit pas la voir changer dans son dos.
+    {
+        const long long totalMb = total_ram_mb();
+        const int ideal = ideal_ram_gb(totalMb);
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Détecter", "Detect"))) {
+            s.maxRamGb = ideal;
+            DataStore::save();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        if (totalMb > 0)
+            ImGui::Text(tr("Machine : %lld Go de RAM — conseillé : %d Go",
+                           "Machine: %lld GB of RAM - recommended: %d GB"),
+                        static_cast<long long>((totalMb + 512) / 1024), ideal);
+        else
+            ImGui::Text(tr("RAM de la machine indéterminée — conseillé : %d Go",
+                           "Machine RAM unknown - recommended: %d GB"),
+                        ideal);
+        ImGui::PopStyleColor();
+    }
 
     field_label("Dossier des instances");
     {

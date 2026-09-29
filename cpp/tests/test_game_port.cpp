@@ -182,6 +182,30 @@ int main() {
                      std::string("3b0c8ac703f828b04c6c197006d17218"));
         }
 
+        // --- 5bis. RAM idéale (règle déjà spécifiée dans l'en-tête) ---
+        // Moitié de la RAM physique, bornée [2, 8] Go ; 4 Go si la machine
+        // est indéterminée. La fonction etait DECLAREE mais jamais definie
+        // ni appelee : ces vecteurs verrouillent la regle.
+        {
+            CHECK_EQ(ideal_ram_gb(0), 4);      // indetermine
+            CHECK_EQ(ideal_ram_gb(-1), 4);
+            CHECK_EQ(ideal_ram_gb(2048), 2);   // 2 Go -> plancher
+            CHECK_EQ(ideal_ram_gb(4096), 2);   // moitie = 2
+            CHECK_EQ(ideal_ram_gb(8192), 4);   // 8 Go -> 4
+            CHECK_EQ(ideal_ram_gb(16384), 8);  // 16 Go -> 8
+            CHECK_EQ(ideal_ram_gb(32768), 8);  // 32 Go -> plafond
+            CHECK_EQ(ideal_ram_gb(131072), 8); // 128 Go -> plafond
+            CHECK_EQ(ideal_ram_gb(12288), 6);  // 12 Go -> 6
+            // Machine tres modeste : jamais en dessous de 2 Go, sinon le jeu
+            // ne demarre pas.
+            CHECK_EQ(ideal_ram_gb(1024), 2);
+            CHECK_EQ(ideal_ram_gb(1), 2);
+            // La version sans argument doit rester dans les memes bornes.
+            const int live = ideal_ram_gb();
+            CHECK(live >= 2 && live <= 8);
+            std::printf("INFO ram ideale sur cette machine : %d Go\n", live);
+        }
+
         // --- 6. BuildJvmArgs ---
         {
             const auto args = build_jvm_args("CP", "NAT", false, nullptr, 6,
