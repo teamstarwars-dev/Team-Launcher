@@ -1,5 +1,6 @@
 #include "ui_internal.hpp"
 
+#include "downloads.hpp"
 #include "fonts.hpp"
 #include "game_launcher.hpp"
 
@@ -313,6 +314,25 @@ void tab_appearance() {
             DataStore::save();
             fonts::request_rebuild();
         }
+    }
+
+    section("Téléchargements simultanés");
+    {
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::SliderInt("##maxdl", &s.maxDownloads, 1, 20, "%d")) {
+            DataStore::save();
+            downloads::set_limit(s.maxDownloads);
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s", tr("Au-delà de quelques téléchargements en parallèle, le "
+                     "débit total n'augmente plus et certains serveurs "
+                     "limitent les connexions. 4 convient à la plupart des "
+                     "connexions.",
+                     "Past a few parallel downloads the total throughput no "
+                     "longer increases and some servers throttle "
+                     "connections. 4 suits most connections."));
+        ImGui::PopStyleColor();
     }
 
     section("Barre latérale");

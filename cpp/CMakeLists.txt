@@ -175,6 +175,7 @@ set(TL_CORE_SOURCES
   src/worldedit.cpp
   src/moddev.cpp
   src/model3d.cpp
+  src/downloads.cpp
   third_party/miniz/miniz.c
   third_party/miniz/miniz_tdef.c
   third_party/miniz/miniz_tinfl.c
@@ -214,7 +215,7 @@ tl_release_flags(tl_core)
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 # Ressources Win32 (icone + bloc de version). Le .rc n'existe que sous
@@ -324,6 +325,7 @@ if(TL_BUILD_TESTS)
     "tests/test_worldedit.cpp|TLTestWorldEdit"
     "tests/test_moddev.cpp|TLTestModDev"
     "tests/test_model3d.cpp|TLTestModel3D"
+    "tests/test_downloads.cpp|TLTestDownloads"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

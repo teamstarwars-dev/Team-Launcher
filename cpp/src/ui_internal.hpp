@@ -214,6 +214,7 @@ void mapeditor_page();   // ui_mapeditor.cpp (page 11) : grille de chunks
 void citygen_page();     // ui_citygen.cpp (page 12) : ville OpenStreetMap
 void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
 void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
+void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
 bool onboarding_needed();  // ui_onboarding.cpp
 void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
 void explore_stop();     // ui_explore.cpp : joint le worker

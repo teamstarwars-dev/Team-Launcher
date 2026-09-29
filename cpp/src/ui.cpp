@@ -1,6 +1,7 @@
 #include "ui_internal.hpp"
 
 #include "fonts.hpp"
+#include "downloads.hpp"
 #include "icons.hpp"
 
 #include "apptasks.hpp" // tl::tasks::update/cancel (miroir lancement)
@@ -728,6 +729,10 @@ void init(SDL_Window*) {
     // glyphes de ponctuation (« ... », tirets) qui s'affichaient en « ? ».
     fonts::build(DataStore::settings.uiFont, DataStore::settings.fontScale);
 
+    // Le reglage « telechargements simultanes » existait dans la
+    // configuration mais n etait lu nulle part : la file l applique.
+    downloads::set_limit(DataStore::settings.maxDownloads);
+
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 8.0f;
     style.ChildRounding = 6.0f;
@@ -854,6 +859,7 @@ void frame(SDL_Window* window) {
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
+    nav(icons::Id::Download, "Téléchargements", 15);
     nav(icons::Id::Account, "Compte", 7);
     nav(icons::Id::Settings, "Paramètres", 8);
 
@@ -877,6 +883,7 @@ void frame(SDL_Window* window) {
     case 12: citygen_page(); break;
     case 13: moddev_page(); break;
     case 14: modelviewer_page(); break;
+    case 15: downloads_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
@@ -960,6 +967,12 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: skins_stop\n");
     skins_stop();
     if (dbg) std::fprintf(stderr, "SH: skins_stop done\n");
+    // File de telechargements : annule ce qui court et JOINT les
+    // travailleurs. Sans cela leurs threads survivent a la sortie de main()
+    // et le processus se termine anormalement (code 9 observe).
+    if (dbg) std::fprintf(stderr, "SH: downloads_stop\n");
+    downloads::shutdown();
+    if (dbg) std::fprintf(stderr, "SH: downloads_stop done\n");
     // Auth Microsoft : annule l'attente du device code et joint le thread.
     if (dbg) std::fprintf(stderr, "SH: auth_stop\n");
     auth::stop();
