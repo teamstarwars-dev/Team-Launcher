@@ -21,6 +21,7 @@
 
 #include "datastore.hpp"
 #include "maintenance.hpp"
+#include "fonts.hpp"
 #include "util_image.hpp"
 #include "ui.hpp"
 
@@ -124,6 +125,18 @@ int main(int argc, char** argv) {
                 SDL_free(event.drop.file);
                 event.drop.file = nullptr;
             }
+        }
+
+        // Changement de police ou d'echelle : l'atlas ne peut pas etre
+        // reconstruit au milieu d'une frame (la texture est reference par
+        // les listes de dessin en cours). Les parametres posent donc un
+        // drapeau, consomme ici, entre deux frames.
+        if (tl::ui::fonts::take_rebuild_request()) {
+            tl::ui::fonts::build(tl::DataStore::settings.uiFont,
+                                 tl::DataStore::settings.fontScale);
+            // Force le backend a re-televerser la texture de l'atlas.
+            ImGui_ImplOpenGL3_DestroyFontsTexture();
+            ImGui_ImplOpenGL3_CreateFontsTexture();
         }
 
         ImGui_ImplOpenGL3_NewFrame();

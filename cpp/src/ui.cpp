@@ -1,5 +1,8 @@
 #include "ui_internal.hpp"
 
+#include "fonts.hpp"
+#include "icons.hpp"
+
 #include "apptasks.hpp" // tl::tasks::update/cancel (miroir lancement)
 #include "backup.hpp"
 #include "crash_analyzer.hpp"
@@ -720,19 +723,10 @@ void init(SDL_Window*) {
     admin::start();           // telemetrie d'administration (desactivee par defaut)
     // Raccourci bureau a la premiere ouverture (C# MainForm).
     ensure_desktop_shortcut();
-    ImGuiIO& io = ImGui::GetIO();
-    ImFontConfig cfg;
-    cfg.SizePixels = 16.0f;
-    io.Fonts->AddFontDefault(&cfg); // defaut
-    ImFontConfig cfgBig;
-    cfgBig.SizePixels = 24.0f;
-    fBig = io.Fonts->AddFontDefault(&cfgBig); // titres / stats
-    ImFontConfig cfgSmall;
-    cfgSmall.SizePixels = 12.0f;
-    fSmall = io.Fonts->AddFontDefault(&cfgSmall); // meta cartes
-    ImFontConfig cfgTiny;
-    cfgTiny.SizePixels = 10.0f;
-    fTiny = io.Fonts->AddFontDefault(&cfgTiny); // compteurs cartes
+    // Polices : police du systeme plutot que le ProggyClean embarque dans
+    // ImGui — plus lisible aux grands corps, et surtout elle possede les
+    // glyphes de ponctuation (« ... », tirets) qui s'affichaient en « ? ».
+    fonts::build(DataStore::settings.uiFont, DataStore::settings.fontScale);
 
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 8.0f;
@@ -815,37 +809,53 @@ void frame(SDL_Window* window) {
                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 
     // ---- Sidebar ----
-    ImGui::BeginChild("##side", ImVec2(170, 0));
+    // Deux largeurs : complete (icone + libelle) et compacte (icone seule,
+    // libelle en infobulle), comme le fait CurseForge. Le choix est retenu
+    // dans la configuration, pas seulement pour la session.
+    const bool compact = DataStore::settings.sidebarCompact;
+    const float sideW = compact ? 56.0f : 170.0f;
+    ImGui::BeginChild("##side", ImVec2(sideW, 0));
     ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-    ImGui::TextUnformatted("TEAM");
-    ImGui::TextUnformatted("LAUNCHER");
+    if (compact) {
+        ImGui::TextUnformatted("TL");
+    } else {
+        ImGui::TextUnformatted("TEAM");
+        ImGui::TextUnformatted("LAUNCHER");
+    }
     ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::Text("v%s", TL_VERSION_STRING);
-    ImGui::PopStyleColor();
+    if (!compact) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::Text("v%s", TL_VERSION_STRING);
+        ImGui::PopStyleColor();
+    }
     ImGui::Spacing();
     ImGui::Spacing();
 
-    if (nav_button(tr("Accueil"), g.page == 0)) g.page = 0;
-    if (nav_button(tr("Instances"), g.page == 1)) g.page = 1;
+    auto nav = [&](icons::Id ic, const char* label, int page) {
+        if (icons::nav_item(ic, tr(label), g.page == page, compact))
+            g.page = page;
+    };
+
+    nav(icons::Id::Home, "Accueil", 0);
+    nav(icons::Id::Instances, "Instances", 1);
     // Exploration porte l'index 9 : les index 0-8 etaient deja documentes
     // (TL_AUTO_PAGE) et sont laisses stables. L'ordre visuel est independant.
-    if (nav_button(tr("Exploration"), g.page == 9)) g.page = 9;
-    if (nav_button(tr("Explorateur"), g.page == 10)) g.page = 10;
-    if (nav_button(tr("Édition de carte"), g.page == 11)) g.page = 11;
-    if (nav_button(tr("Ville OSM"), g.page == 12)) g.page = 12;
-    if (nav_button(tr("Mods (dev)"), g.page == 13)) g.page = 13;
-    if (nav_button(tr("Modèles 3D"), g.page == 14)) g.page = 14;
-    if (nav_button(tr("Jouer"), g.page == 2)) g.page = 2;
-    if (nav_button(tr("Serveurs"), g.page == 3)) g.page = 3;
-    if (nav_button(tr("Skins"), g.page == 4)) g.page = 4;
-    if (nav_button(tr("Actualités"), g.page == 5)) g.page = 5;
-    if (nav_button(tr("Bedrock"), g.page == 6)) g.page = 6;
+    nav(icons::Id::Explore, "Exploration", 9);
+    nav(icons::Id::Files, "Explorateur", 10);
+    nav(icons::Id::Map, "Édition de carte", 11);
+    nav(icons::Id::City, "Ville OSM", 12);
+    nav(icons::Id::ModDev, "Mods (dev)", 13);
+    nav(icons::Id::Model, "Modèles 3D", 14);
+    nav(icons::Id::Play, "Jouer", 2);
+    nav(icons::Id::Servers, "Serveurs", 3);
+    nav(icons::Id::Skins, "Skins", 4);
+    nav(icons::Id::News, "Actualités", 5);
+    nav(icons::Id::Bedrock, "Bedrock", 6);
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
-    if (nav_button(tr("Compte"), g.page == 7)) g.page = 7;
-    if (nav_button(tr("Paramètres"), g.page == 8)) g.page = 8;
+    nav(icons::Id::Account, "Compte", 7);
+    nav(icons::Id::Settings, "Paramètres", 8);
 
     ImGui::EndChild();
     ImGui::SameLine();

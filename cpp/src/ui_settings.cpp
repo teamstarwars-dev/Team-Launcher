@@ -1,5 +1,6 @@
 #include "ui_internal.hpp"
 
+#include "fonts.hpp"
 #include "game_launcher.hpp"
 
 #include "maintenance.hpp"
@@ -256,6 +257,81 @@ void tab_appearance() {
         reload_buffers();
         notify_toast(tr("Apparence"), tr("Couleurs réinitialisées.",
                                          "Colors reset to default."));
+    }
+
+    // --- Police et échelle ---------------------------------------------
+    // Le launcher se contentait de ProggyClean, la police bitmap de débogage
+    // d'ImGui : floue une fois agrandie aux titres, et sans les glyphes de
+    // ponctuation (« ... », tirets) qui s'affichaient donc en « ? ». On
+    // charge maintenant une police du système — rien n'est redistribué, donc
+    // aucune question de licence et pas un octet de plus dans le binaire.
+    section("Police et taille du texte");
+    {
+        const auto& list = fonts::available();
+        std::string current = tr("Automatique", "Automatic");
+        for (const auto& c : list)
+            if (c.id == s.uiFont) current = c.label;
+
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::BeginCombo("##uifont", current.c_str())) {
+            for (const auto& c : list)
+                if (ImGui::Selectable(c.label.c_str(), c.id == s.uiFont)) {
+                    s.uiFont = c.id;
+                    DataStore::save();
+                    fonts::request_rebuild();
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        if (list.size() <= 1)
+            ImGui::TextUnformatted(
+                tr("aucune police système trouvée : police de repli",
+                   "no system font found: fallback font"));
+        else
+            ImGui::TextUnformatted(tr("police de l'interface", "interface font"));
+        ImGui::PopStyleColor();
+
+        field_label("Échelle du texte");
+        float scale = static_cast<float>(s.fontScale);
+        ImGui::SetNextItemWidth(260.0f);
+        // Bornes 0,8–1,6 : en dessous le texte devient illisible, au-dessus
+        // les libellés débordent de leurs boutons.
+        if (ImGui::SliderFloat("##uiscale", &scale, 0.8f, 1.6f, "%.2fx")) {
+            s.fontScale = scale;
+        }
+        // La reconstruction se fait au relâchement, pas à chaque pixel de
+        // déplacement du curseur : reconstruire l'atlas coûte cher.
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            DataStore::save();
+            fonts::request_rebuild();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Réinitialiser", "Reset"))) {
+            s.fontScale = 1.0;
+            s.uiFont = "auto";
+            DataStore::save();
+            fonts::request_rebuild();
+        }
+    }
+
+    section("Barre latérale");
+    {
+        bool c = s.sidebarCompact;
+        if (ImGui::Checkbox(tr("Icônes seules (libellé au survol)",
+                               "Icons only (label on hover)"),
+                            &c)) {
+            s.sidebarCompact = c;
+            DataStore::save();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s", tr("La barre passe de 170 à 56 pixels. Les icônes sont "
+                     "dessinées en vectoriel, donc nettes à toutes les "
+                     "échelles de texte.",
+                     "The bar goes from 170 to 56 pixels. Icons are drawn as "
+                     "vectors, so they stay sharp at any text scale."));
+        ImGui::PopStyleColor();
     }
 
     section("Image de fond");

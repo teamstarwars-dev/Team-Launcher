@@ -67,6 +67,8 @@ struct AppSettings {
     // ---- Phase A : réglages avancés (extensibles par les phases suivantes) --
     std::string logLevel = "Info"; // Trace/Debug/Info/Warn/Error/Fatal/Off
     std::string theme = "classic"; // classic/light
+    std::string uiFont = "auto";   // « auto » ou chemin d une police systeme
+    bool sidebarCompact = false;   // barre laterale en icones seules
     bool colorblind = false;       // accents à fort contraste (Okabe-Ito)
     double fontScale = 1.0;        // 0.8..1.6 via FontGlobalScale
     std::string contentPath;       // racine contenu (vide = DataStore::dir())

@@ -366,6 +366,8 @@ static json serialize(const AppSettings& s) {
         {"MinimizeOnLaunch", s.minimizeOnLaunch},
         {"LogLevel", s.logLevel},
         {"Theme", s.theme},
+        {"UiFont", s.uiFont},
+        {"SidebarCompact", s.sidebarCompact},
         {"ColorblindMode", s.colorblind},
         {"FontScale", s.fontScale},
         {"ContentPath", s.contentPath},
@@ -468,6 +470,8 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("MinimizeOnLaunch", s.minimizeOnLaunch);
     getS("LogLevel", s.logLevel);
     getS("Theme", s.theme);
+    getS("UiFont", s.uiFont);
+    getB("SidebarCompact", s.sidebarCompact);
     getB("ColorblindMode", s.colorblind);
     getD("FontScale", s.fontScale);
     getS("ContentPath", s.contentPath);
