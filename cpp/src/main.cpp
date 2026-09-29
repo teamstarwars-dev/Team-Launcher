@@ -77,6 +77,40 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Icone de la fenetre (barre des taches, Alt+Tab, gestionnaire de
+    // fenetres). SDL ne reprend PAS l'icone de l'executable : sa classe de
+    // fenetre cherche une ressource nommee litteralement « SDL_icon.ico »,
+    // ne la trouve pas, et laisse Windows retomber sur ce qu'il a en cache —
+    // c'est-a-dire l'ancien logo. Sous Linux il n'y a de toute facon aucune
+    // ressource Win32 : la poser ici regle les deux plateformes d'un coup.
+    {
+        int iw = 0, ih = 0;
+        // L'image ronde a fond transparent, la meme que le .desktop.
+        // SDL_GetBasePath donne le dossier de l'executable sur les deux
+        // plateformes ; on retombe sur un chemin relatif s'il echoue.
+        std::vector<unsigned char> px;
+        if (char* base = SDL_GetBasePath()) {
+            px = tl::image::decode_rgba(
+                std::filesystem::path(base) / "assets" / "teamlauncher.png",
+                &iw, &ih);
+            SDL_free(base);
+        }
+        if (px.empty())
+            px = tl::image::decode_rgba(
+                std::filesystem::path("assets") / "teamlauncher.png", &iw, &ih);
+        if (!px.empty() && iw > 0 && ih > 0) {
+            // Masques RGBA explicites : sans eux l'ordre des octets depend
+            // du boutisme de la machine et les couleurs sortent inversees.
+            SDL_Surface* s = SDL_CreateRGBSurfaceFrom(
+                px.data(), iw, ih, 32, iw * 4, 0x000000FF, 0x0000FF00,
+                0x00FF0000, 0xFF000000);
+            if (s) {
+                SDL_SetWindowIcon(window, s);
+                SDL_FreeSurface(s); // ne libere pas `px`, qui vit jusqu'ici
+            }
+        }
+    }
+
     SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
     if (!gl_ctx) {
         std::fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError());

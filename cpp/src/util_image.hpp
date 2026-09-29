@@ -4,6 +4,7 @@
 // Creation/liberation sur le main thread uniquement (contexte GL courant).
 
 #include <filesystem>
+#include <vector>
 
 namespace tl::image {
 
@@ -13,6 +14,12 @@ unsigned from_mem(const void* data, int size, int* w = nullptr,
 unsigned from_path(const std::filesystem::path& p, int* w = nullptr,
                    int* h = nullptr);
 void free_tex(unsigned tex);
+
+// Decode en RGBA SANS toucher a OpenGL : necessaire pour l'icone de fenetre,
+// que SDL veut en pixels bruts et qu'il faut poser avant meme d'avoir un
+// contexte GL utilisable. Vecteur vide si le decodage echoue.
+std::vector<unsigned char> decode_rgba(const std::filesystem::path& p, int* w,
+                                       int* h);
 
 // Ecrit une image brute en PNG (encodeur de miniz, aucune dependance de plus).
 // comp : 3 = RGB, 4 = RGBA. `flipY` retourne verticalement — glReadPixels rend

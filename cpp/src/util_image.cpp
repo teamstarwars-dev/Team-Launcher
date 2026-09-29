@@ -65,6 +65,31 @@ unsigned from_path(const std::filesystem::path& p, int* w, int* h) {
     return from_mem(buf.data(), static_cast<int>(buf.size()), w, h);
 }
 
+std::vector<unsigned char> decode_rgba(const std::filesystem::path& p, int* ow,
+                                       int* oh) {
+    if (ow) *ow = 0;
+    if (oh) *oh = 0;
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return {};
+    const std::vector<char> raw((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+    if (raw.empty()) return {};
+
+    int w = 0, h = 0, comp = 0;
+    stbi_uc* px = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc*>(raw.data()),
+        static_cast<int>(raw.size()), &w, &h, &comp, 4);
+    if (!px || w <= 0 || h <= 0) {
+        if (px) stbi_image_free(px);
+        return {};
+    }
+    std::vector<unsigned char> out(px, px + static_cast<std::size_t>(w) * h * 4);
+    stbi_image_free(px);
+    if (ow) *ow = w;
+    if (oh) *oh = h;
+    return out;
+}
+
 void free_tex(unsigned tex) {
     if (tex) glDeleteTextures(1, &tex);
 }

@@ -330,11 +330,17 @@ json build_activity(const Desired& d) {
             activity["state"] = "Team Launcher";
         if (d.sessionStart > 0) activity["timestamps"] = {{"start", d.sessionStart}};
 
+        // Le chargeur et la version vont dans l'infobulle de la GRANDE
+        // image. Ils occupaient avant une petite vignette a laquelle on
+        // donnait « logo », c'est-a-dire la MEME image que la grande : le
+        // logo se superposait a lui-meme en badge dans un coin, ce qui
+        // passait pour un defaut d'affichage. Discord n'affiche `small_text`
+        // que s'il y a une `small_image`, donc retirer l'une impose de
+        // deplacer l'autre.
         const long long totalHours = d.instPlaySeconds / 3600;
-        std::string small = d.loader + " • Minecraft " + d.mcVersion;
-        if (totalHours > 0) small += " • " + std::to_string(totalHours) + " h";
-        assets["small_image"] = "logo";
-        assets["small_text"] = small;
+        std::string tip = d.loader + " • Minecraft " + d.mcVersion;
+        if (totalHours > 0) tip += " • " + std::to_string(totalHours) + " h";
+        assets["large_text"] = tip;
     } else {
         activity["details"] = "Dans le launcher";
         activity["state"] =
