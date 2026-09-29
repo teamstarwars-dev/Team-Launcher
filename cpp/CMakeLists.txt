@@ -222,6 +222,11 @@ endforeach()
 # Windows : la cible Linux prendra un .desktop a la place.
 if(WIN32)
   list(APPEND TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/app.rc)
+  # CMake ne devine pas ce qu'un .rc inclut : sans cette dependance
+  # explicite, remplacer l'icone ne declenchait AUCUNE recompilation et
+  # l'executable gardait l'ancienne (constate le 29/09/2026).
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/app.rc
+    PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/TeamLauncher.ico)
 endif()
 
 add_executable(TeamLauncher ${TL_SOURCES})

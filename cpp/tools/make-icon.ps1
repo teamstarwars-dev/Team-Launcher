@@ -13,7 +13,13 @@
 [CmdletBinding()]
 param(
     [string]$Source,
-    [string]$Output
+    [string]$Output,
+    # -Round : le logo est une pastille ronde sur fond opaque. On recadre sur
+    # le cercle et on rend transparent tout ce qui deborde. Sans cela l'icone
+    # est un CARRE NOIR dans la barre des taches et le menu Demarrer, avec en
+    # prime une large marge vide (le cercle n'occupe que ~77 % de l'image
+    # fournie).
+    [switch]$Round
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +42,37 @@ try {
         Write-Host "AVERTISSEMENT: image non carree ($($src.Width)x$($src.Height)), elle sera deformee." -ForegroundColor Yellow
     }
 
+    # Zone source a reprendre. En mode -Round on mesure l'etendue reelle du
+    # cercle (ligne et colonne mediennes) plutot que de supposer qu'il
+    # remplit l'image : le logo fourni a 23 % de marge noire de chaque cote.
+    $sx = 0; $sy = 0; $sw = $src.Width; $sh = $src.Height
+    if ($Round) {
+        $probe = New-Object System.Drawing.Bitmap $src
+        try {
+            $cx = [int]($probe.Width / 2); $cy = [int]($probe.Height / 2)
+            $lit = { param($p) ($p.R + $p.G + $p.B) -gt 40 }
+            $x0 = $cx; $x1 = $cx; $y0 = $cy; $y1 = $cy
+            for ($x = 0; $x -lt $probe.Width; $x++) {
+                if (& $lit $probe.GetPixel($x, $cy)) {
+                    if ($x -lt $x0) { $x0 = $x }; if ($x -gt $x1) { $x1 = $x }
+                }
+            }
+            for ($y = 0; $y -lt $probe.Height; $y++) {
+                if (& $lit $probe.GetPixel($cx, $y)) {
+                    if ($y -lt $y0) { $y0 = $y }; if ($y -gt $y1) { $y1 = $y }
+                }
+            }
+            # Cercle centre : on prend le plus grand demi-diametre des deux
+            # axes, plus 1,5 % de marge pour ne pas rogner l'anticrenelage.
+            $r = [math]::Max(($x1 - $x0), ($y1 - $y0)) / 2.0 * 1.015
+            $sx = [int]([math]::Max(0, $cx - $r))
+            $sy = [int]([math]::Max(0, $cy - $r))
+            $sw = [int]([math]::Min($probe.Width - $sx, 2 * $r))
+            $sh = [int]([math]::Min($probe.Height - $sy, 2 * $r))
+            Write-Host "Cercle detecte : ${sw}x${sh} a ($sx,$sy) sur $($src.Width)x$($src.Height)"
+        } finally { $probe.Dispose() }
+    }
+
     # 16 a 64 : tailles reellement utilisees par l'explorateur, la barre des
     # taches et la fenetre. 128 et 256 pour l'affichage en grandes icones.
     $sizes = @(16, 24, 32, 48, 64, 128, 256)
@@ -49,7 +86,18 @@ try {
             $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
             $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
             $g.Clear([System.Drawing.Color]::Transparent)
-            $g.DrawImage($src, 0, 0, $s, $s)
+            if ($Round) {
+                # Decoupe elliptique : les bords sont anticreneles par GDI+,
+                # donc pas de marche d'escalier sur le pourtour.
+                $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+                $path.AddEllipse(0, 0, $s, $s)
+                $g.SetClip($path)
+                $path.Dispose()
+            }
+            $g.DrawImage($src,
+                (New-Object System.Drawing.Rectangle 0, 0, $s, $s),
+                (New-Object System.Drawing.Rectangle $sx, $sy, $sw, $sh),
+                [System.Drawing.GraphicsUnit]::Pixel)
         } finally { $g.Dispose() }
 
         $ms = New-Object System.IO.MemoryStream

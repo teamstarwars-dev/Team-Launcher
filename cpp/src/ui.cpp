@@ -107,23 +107,62 @@ std::string hex_of(const ImVec4& c) {
 }
 
 void theme_reload() {
-    // 1. defauts v5 (aucune surcharge = rendu identique a avant)
-    kBg = hex(0x0e0e13);
-    kCard = hex(0x15151b);
-    kBorder = hex(0x22222a);
-    kAccent = hex(0x3b82f6);
-    kAccentHover = hex(0x5b9bf8);
-    kAccentActive = hex(0x2f6fd6);
-    kButton = hex(0x1e1e28);
-    kButtonHover = hex(0x262633);
-    kButtonActive = hex(0x1a122a);
-
     const auto& s = DataStore::settings;
+
+    // 1. palette de base selon la variante choisie. « classic » reprend
+    //    exactement les valeurs d'avant : aucune surcharge ne change le
+    //    rendu historique.
+    if (s.theme == "light") {
+        // Clair : le texte devient sombre. kText et kDim etaient jusqu'ici
+        // figes en clair-sur-sombre, ce qui rendait tout theme clair
+        // illisible — ils font maintenant partie de la palette.
+        kBg = hex(0xf4f4f7);
+        kCard = hex(0xffffff);
+        kBorder = hex(0xd8d8e0);
+        kText = hex(0x1b1b22);
+        kDim = hex(0x6b6b78);
+        kAccent = hex(0x2563eb);
+        kAccentHover = hex(0x3b82f6);
+        kAccentActive = hex(0x1d4ed8);
+        kDanger = hex(0xd23b49);
+        kButton = hex(0xe9e9f0);
+        kButtonHover = hex(0xdedee8);
+        kButtonActive = hex(0xcdcdda);
+    } else {
+        kBg = hex(0x0e0e13);
+        kCard = hex(0x15151b);
+        kBorder = hex(0x22222a);
+        kText = hex(0xf2f2f5);
+        kDim = hex(0x8a8a99);
+        kAccent = hex(0x3b82f6);
+        kAccentHover = hex(0x5b9bf8);
+        kAccentActive = hex(0x2f6fd6);
+        kDanger = hex(0xef5b69);
+        kButton = hex(0x1e1e28);
+        kButtonHover = hex(0x262633);
+        kButtonActive = hex(0x1a122a);
+    }
+
+    // 2. mode daltonisme : bleu et rouge sont la paire la plus courante de
+    //    l'interface (accent / danger), et c'est justement celle que les
+    //    deuteranopies et protanopies confondent le moins mal — mais le
+    //    rouge « framboise » par defaut vire au brun. On passe a la palette
+    //    Okabe-Ito, concue pour rester distinguable dans les trois formes
+    //    de daltonisme : bleu ciel pour l'accent, vermillon pour le danger.
+    //    Applique AVANT les couleurs personnalisees : un choix explicite de
+    //    l'utilisateur reste prioritaire.
+    if (s.colorblind) {
+        kAccent = hex(0x0072B2);      // bleu Okabe-Ito
+        kAccentHover = hex(0x2A8FCC);
+        kAccentActive = hex(0x005A8D);
+        kDanger = hex(0xD55E00);      // vermillon Okabe-Ito
+    }
+
     auto custom = [](const std::string& v, ImVec4& dst) {
         return !v.empty() && !legacy_color(v) && parse_hex_color(v, dst);
     };
 
-    // 2. surcharges : les couleurs derivees suivent la couleur choisie
+    // 3. surcharges de l utilisateur : les couleurs derivees suivent
     custom(s.bgColor, kBg);
     ImVec4 c;
     if (custom(s.cardColor, c)) {
