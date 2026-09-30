@@ -7,6 +7,13 @@ teamlauncher_*.deb
 
 # Dependances tierces (~106 Mo, clones amont) : recuperees par fetch-deps.ps1
 # sur des tags epingles. Exception : stb, un seul en-tete, versionne ici.
+#
+# CAS PARTICULIER third_party/discord_social_sdk : il ne peut PAS etre
+# recupere par fetch-deps.ps1. L'archive (~745 Mo) est derriere le portail
+# developpeur Discord, liee a l'application et soumise a l'acceptation de
+# leurs conditions. Elle se telecharge a la main depuis
+# « Discord Social SDK > Telechargements » (prendre DiscordSocialSdk-<ver>.zip,
+# la version C++, pas les greffons Unity ou Unreal) et se decompresse ici.
 third_party/*
 !third_party/.gitkeep
 !third_party/stb/
