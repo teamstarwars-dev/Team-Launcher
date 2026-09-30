@@ -129,6 +129,73 @@ int main() {
     CHECK(backup::remove(backup::list(inst).front().file));
     CHECK(!backup::remove(backup::dir(inst) / "inexistante.zip"));
 
+    // --- 1bis. Rotation explicite : nombre ET place ---------------------
+    {
+        const std::string r = "instance-rotation";
+        const fs::path rdir = backup::dir(r);
+        fs::remove_all(rdir, ec);
+        fs::create_directories(rdir, ec);
+        // Huit archives de 1000 octets, horodatees de la plus ancienne a la
+        // plus recente (le nom porte la date, mais la rotation se fie a la
+        // date de modification : on l'impose explicitement).
+        for (int i = 0; i < 8; ++i) {
+            char name[64];
+            std::snprintf(name, sizeof(name), "mondes-2021-01-%02d_00-00.zip",
+                          i + 1);
+            const fs::path p = rdir / name;
+            write_file(p, std::string(1000, 'z'));
+            fs::last_write_time(
+                p, fs::file_time_type::clock::now() + std::chrono::hours(i), ec);
+        }
+        CHECK_EQ(backup::list(r).size(), size_t{8});
+        // Tailles bien relevees : sans elles le quota de place est aveugle.
+        CHECK_EQ(backup::list(r).front().bytes, 1000LL);
+
+        // Limite par le NOMBRE : on garde les 3 plus recentes.
+        CHECK_EQ(backup::rotate(r, 3, 0), 5);
+        auto after = backup::list(r);
+        CHECK_EQ(after.size(), size_t{3});
+        // Ce sont bien les plus recentes qui restent.
+        CHECK(after.front().file.filename().string().find("-08_") !=
+              std::string::npos);
+
+        // Limite par la PLACE : 2500 octets ne laissent que 2 archives.
+        CHECK_EQ(backup::rotate(r, 10, 2500), 1);
+        CHECK_EQ(backup::list(r).size(), size_t{2});
+
+        // Quota plus petit qu'une seule archive : on garde quand meme la
+        // derniere. Supprimer l'unique sauvegarde pour respecter un quota
+        // serait le contraire du but recherche.
+        CHECK_EQ(backup::rotate(r, 10, 1), 1);
+        CHECK_EQ(backup::list(r).size(), size_t{1});
+        CHECK_EQ(backup::rotate(r, 10, 1), 0); // rien de plus a retirer
+
+        // keep <= 0 et maxBytes <= 0 : aucune limite, rien n'est supprime.
+        CHECK_EQ(backup::rotate(r, 0, 0), 0);
+        CHECK_EQ(backup::list(r).size(), size_t{1});
+
+        // last_backup_unix suit la plus recente ; 0 si l'instance n'a rien.
+        CHECK(backup::last_backup_unix(r) > 0);
+        CHECK_EQ(backup::last_backup_unix("instance-sans-rien"), 0LL);
+        fs::remove_all(rdir, ec);
+    }
+
+    // --- 1ter. Echeance de la sauvegarde automatique --------------------
+    // Fonction pure : on la verifie sans attendre des heures.
+    {
+        const long long now = 1'000'000'000LL;
+        const long long h = 3600;
+        CHECK(!backup::is_due(now, now - 100 * h, 0));  // desactive
+        CHECK(!backup::is_due(now, now - 100 * h, -5)); // valeur aberrante
+        CHECK(backup::is_due(now, 0, 6));               // jamais sauvegarde
+        CHECK(!backup::is_due(now, now - 5 * h, 6));    // pas encore
+        CHECK(backup::is_due(now, now - 6 * h, 6));     // pile a l'echeance
+        CHECK(backup::is_due(now, now - 7 * h, 6));     // en retard
+        // Horloge reculee (changement d'heure, correction NTP) : on
+        // s'abstient plutot que de sauvegarder en boucle.
+        CHECK(!backup::is_due(now, now + 10 * h, 6));
+    }
+
     // =====================================================================
     // 2. CrashAnalyzer
     // =====================================================================

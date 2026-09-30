@@ -788,6 +788,11 @@ void init(SDL_Window*) {
     // fois avec la limite par defaut.
     downloads::load_state();
 
+    // Minuteur de sauvegarde automatique. Il lit le reglage a chaque
+    // reveil, donc le demarrer meme quand l intervalle est nul : changer
+    // le reglage prend effet sans redemarrer le launcher.
+    backup::auto_start();
+
     // Cache de metadonnees : un plafond, sinon il grossit indefiniment. Le
     // menage se fait au demarrage plutot qu'a chaque ecriture — parcourir
     // le dossier a chaque reponse mise en cache couterait plus cher que ce
@@ -954,6 +959,13 @@ void frame(SDL_Window* window) {
     instance_detail_modal();
 
     // ---- Tâches de fond (panneau si >= 1 tâche) ----
+    // Le minuteur de sauvegarde s'abstient tant qu'une partie tourne. On
+    // derive l'etat de la phase courante a chaque frame plutot que de le
+    // poser a chaque transition : impossible de le desynchroniser en
+    // oubliant un chemin de sortie.
+    backup::set_game_running(g.phase == Phase::GameRunning ||
+                             g.phase == Phase::Preparing);
+
     apptasks_frame();
 
     // Recherche globale : en dernier, pour passer au-dessus de tout le
@@ -1040,6 +1052,8 @@ void shutdown() {
     // Enregistrer AVANT d'annuler : shutdown() passe les elements en cours
     // a « annule », or on veut les retrouver a reprendre au prochain
     // demarrage, pas classes comme abandonnes par l'utilisateur.
+    if (dbg) std::fprintf(stderr, "SH: backup_timer\n");
+    backup::auto_stop();
     downloads::save_state();
     downloads::shutdown();
     if (dbg) std::fprintf(stderr, "SH: downloads_stop done\n");

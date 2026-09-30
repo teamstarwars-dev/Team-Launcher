@@ -17,6 +17,10 @@
 #else
 #include "ui_internal.hpp"
 
+#include "backup.hpp"
+
+#include <ctime>
+
 #include <fstream>
 #endif
 #include <algorithm>
@@ -368,6 +372,134 @@ void instance_detail_modal() {
             ImGui::Spacing();
             if (ImGui::Button(tr("Ouvrir le dossier saves", "Open saves folder")))
                 open_subfolder(id, "saves");
+
+            // ---- Sauvegardes ----
+            // Le module backup existait mais n'etait appele NULLE PART dans
+            // l'interface : aucune sauvegarde n'etait joignable.
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            if (fBig) ImGui::PushFont(fBig);
+            ImGui::TextUnformatted(tr("Sauvegardes", "Backups"));
+            if (fBig) ImGui::PopFont();
+
+            static std::string s_confirmRestore; // archive en attente d'accord
+            const auto backups = backup::list(id);
+
+            ImGui::BeginDisabled(worlds.empty());
+            if (accent_button(tr("Sauvegarder maintenant", "Back up now"),
+                              ImVec2(230, 32))) {
+                const std::string z = backup::create(id);
+                if (z.empty()) {
+                    notify_toast(tr("Sauvegardes", "Backups"),
+                                 tr("Rien à sauvegarder.", "Nothing to back up."));
+                } else {
+                    const auto& st = DataStore::settings;
+                    backup::rotate(id, st.backupKeep > 0 ? st.backupKeep
+                                                         : backup::kMaxBackups,
+                                   static_cast<long long>(st.backupSpaceMb) *
+                                       1024 * 1024);
+                    notify_toast(tr("Sauvegardes", "Backups"),
+                                 tr("Sauvegarde créée.", "Backup created."));
+                }
+            }
+            ImGui::EndDisabled();
+            if (worlds.empty()) {
+                ImGui::SameLine();
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextUnformatted(
+                    tr("(aucun monde à sauvegarder)", "(no world to back up)"));
+                ImGui::PopStyleColor();
+            }
+
+            if (backups.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextWrapped(
+                    "%s",
+                    tr("Aucune sauvegarde. La sauvegarde automatique se règle "
+                       "dans Paramètres > Avancé.",
+                       "No backup yet. Automatic backups are configured in "
+                       "Settings > Advanced."));
+                ImGui::PopStyleColor();
+            }
+            for (const auto& b : backups) {
+                ImGui::PushID(b.file.string().c_str());
+                // Apercu : date et taille. Sans eux, choisir quelle archive
+                // restaurer revient a deviner.
+                char when[64] = "?";
+                const std::time_t t = static_cast<std::time_t>(b.mtime);
+                if (std::tm* lt = std::localtime(&t))
+                    std::strftime(when, sizeof(when), "%d/%m/%Y %H:%M", lt);
+                ImGui::TextUnformatted(when);
+                ImGui::SameLine(200);
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextUnformatted(detail::format_size_fr(b.bytes).c_str());
+                ImGui::PopStyleColor();
+                ImGui::SameLine(320);
+                if (ImGui::SmallButton(tr("Restaurer", "Restore")))
+                    s_confirmRestore = b.file.string();
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Ouvrir", "Open")))
+                    open_in_explorer(b.file.parent_path());
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Supprimer", "Delete")))
+                    backup::remove(b.file);
+                ImGui::PopID();
+            }
+
+            // Restauration : confirmation obligatoire. Elle REMPLACE le
+            // dossier des mondes, donc tout monde cree depuis l'archive
+            // disparait — ce n'est pas une fusion.
+            if (!s_confirmRestore.empty()) {
+                ImGui::OpenPopup("###bkrestore");
+                const std::string title =
+                    std::string(tr("Restaurer cette sauvegarde ?",
+                                   "Restore this backup?")) +
+                    "###bkrestore";
+                const ImVec2 c(ImGui::GetIO().DisplaySize.x * 0.5f,
+                               ImGui::GetIO().DisplaySize.y * 0.5f);
+                ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+                ImGui::SetNextWindowSize(ImVec2(500, 210), ImGuiCond_Appearing);
+                bool open = true;
+                if (ImGui::BeginPopupModal(title.c_str(), &open,
+                                           ImGuiWindowFlags_NoResize |
+                                               ImGuiWindowFlags_NoCollapse)) {
+                    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+                    ImGui::TextUnformatted(
+                        fs::path(s_confirmRestore).filename().string().c_str());
+                    ImGui::Spacing();
+                    ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
+                    ImGui::TextUnformatted(
+                        tr("Le dossier des mondes sera REMPLACÉ par le contenu "
+                           "de l'archive. Les mondes créés depuis cette "
+                           "sauvegarde seront perdus.",
+                           "The worlds folder will be REPLACED by the archive's "
+                           "contents. Worlds created since this backup will be "
+                           "lost."));
+                    ImGui::PopStyleColor();
+                    ImGui::PopTextWrapPos();
+                    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 52.0f);
+                    if (ImGui::Button(tr("Annuler"), ImVec2(150, 34))) {
+                        s_confirmRestore.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (danger_button(tr("Restaurer", "Restore"),
+                                      ImVec2(150, 34))) {
+                        const bool ok = backup::restore(id, s_confirmRestore);
+                        notify_toast(
+                            tr("Sauvegardes", "Backups"),
+                            ok ? tr("Mondes restaurés.", "Worlds restored.")
+                               : tr("Restauration impossible : archive illisible.",
+                                    "Restore failed: unreadable archive."));
+                        s_confirmRestore.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
+                if (!open) s_confirmRestore.clear();
+            }
+
             ImGui::PushStyleColor(ImGuiCol_Text, kDim);
             ImGui::TextWrapped(
                 "%s", tr("Lecture level.dat et import CurseForge : non portés.",

@@ -1,5 +1,6 @@
 #include "ui_internal.hpp"
 
+#include "backup.hpp"
 #include "downloads.hpp"
 #include "netcache.hpp"
 #include "fonts.hpp"
@@ -876,6 +877,44 @@ bool maint_start(const std::string& title, const std::string& status,
 void tab_advanced() {
     auto& s = DataStore::settings;
     maint_reap();
+
+    // --- Sauvegardes automatiques ---
+    section("Sauvegarde automatique des mondes");
+    {
+        ImGui::SetNextItemWidth(260.0f);
+        int h = s.backupAutoHours;
+        if (ImGui::SliderInt("##bkhours", &h, 0, 48,
+                             h == 0 ? tr("désactivée", "off")
+                                    : tr("toutes les %d h", "every %d h"))) {
+            s.backupAutoHours = h;
+            DataStore::save();
+            // Le minuteur lit le reglage a chaque reveil : rien a relancer.
+        }
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::SliderInt(tr("Archives conservées", "Archives kept"),
+                             &s.backupKeep, 1, 30, "%d"))
+            DataStore::save();
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::SliderInt(tr("Espace alloué", "Allocated space"),
+                             &s.backupSpaceMb, 0, 20480,
+                             s.backupSpaceMb == 0
+                                 ? tr("illimité", "unlimited")
+                                 : "%d Mo"))
+            DataStore::save();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s",
+            tr("Zippe le dossier des mondes de chaque instance. Jamais "
+               "pendant une partie : archiver un monde en cours d'écriture "
+               "donnerait une sauvegarde inutilisable. Les plus anciennes "
+               "sont supprimées au-delà du nombre ou de l'espace, mais la "
+               "plus récente est toujours gardée.",
+               "Zips each instance's worlds folder. Never while playing: "
+               "archiving a world being written would produce an unusable "
+               "backup. The oldest are removed beyond the count or the "
+               "space, but the most recent one is always kept."));
+        ImGui::PopStyleColor();
+    }
 
     // --- Cache des metadonnees ---
     // La taille se lit en parcourant le dossier : trop cher a faire a

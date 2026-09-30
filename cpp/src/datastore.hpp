@@ -75,7 +75,9 @@ struct AppSettings {
     int updateFreqHours = 24;      // vérification maj auto (phase G)
     std::string updateChannel = "stable"; // stable/beta
     int maxDownloads = 4;          // 1..20 (phase B)
-    int backupSpaceMb = 0;         // quota sauvegardes, 0 = illimité
+    int backupSpaceMb = 0;         // quota sauvegardes en Mo, 0 = illimité
+    int backupAutoHours = 0;       // sauvegarde auto toutes les N h, 0 = off
+    int backupKeep = 10;           // nombre d archives conservees
     int analyseThreads = 4;        // 1..12 (analyse mods, phase D)
     std::string closeBehavior = "minimize"; // minimize/quit (phase G)
     bool launchAtSystemStart = false;       // (phase G)

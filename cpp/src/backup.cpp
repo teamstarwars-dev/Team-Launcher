@@ -3,6 +3,9 @@
 #include "datastore.hpp"
 #include "util_zip.hpp"
 
+#include <atomic>
+#include <thread>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -78,7 +81,9 @@ std::vector<Entry> list(const std::string& instanceId) {
         if (ec) break;
         if (!e.is_regular_file(ec)) continue;
         if (e.path().extension() != ".zip") continue;
-        out.push_back({e.path(), mtime_of(e.path())});
+        std::error_code se;
+        const long long sz = static_cast<long long>(fs::file_size(e.path(), se));
+        out.push_back({e.path(), mtime_of(e.path()), se ? 0 : sz});
     }
     std::sort(out.begin(), out.end(),
               [](const Entry& a, const Entry& b) { return a.mtime > b.mtime; });
@@ -111,6 +116,103 @@ bool restore(const std::string& instanceId, const fs::path& zip) {
 bool remove(const fs::path& zip) {
     std::error_code ec;
     return fs::remove(zip, ec) && !ec;
+}
+
+// --- Rotation ---------------------------------------------------------------
+
+int rotate(const std::string& instanceId, int keep, long long maxBytes) {
+    auto entries = list(instanceId); // deja de la plus recente a la plus ancienne
+    int removed = 0;
+
+    // 1. Trop nombreuses : on coupe la queue.
+    if (keep > 0 && entries.size() > static_cast<std::size_t>(keep)) {
+        for (std::size_t i = static_cast<std::size_t>(keep); i < entries.size();
+             ++i)
+            if (tl::backup::remove(entries[i].file)) ++removed;
+        entries.resize(static_cast<std::size_t>(keep));
+    }
+
+    // 2. Trop volumineuses : on retire les plus anciennes jusqu'a repasser
+    //    sous le quota. On garde TOUJOURS la plus recente, meme si elle
+    //    depasse a elle seule : supprimer la seule sauvegarde existante
+    //    pour respecter un quota serait le contraire du but recherche.
+    if (maxBytes > 0) {
+        long long total = 0;
+        for (const auto& e : entries) total += e.bytes;
+        for (std::size_t i = entries.size(); i-- > 1 && total > maxBytes;) {
+            if (tl::backup::remove(entries[i].file)) {
+                total -= entries[i].bytes;
+                ++removed;
+            }
+        }
+    }
+    return removed;
+}
+
+// --- Sauvegarde automatique -------------------------------------------------
+
+bool is_due(long long nowUnix, long long lastUnix, int everyHours) {
+    if (everyHours <= 0) return false;      // desactive
+    if (lastUnix <= 0) return true;         // jamais sauvegarde
+    if (nowUnix < lastUnix) return false;   // horloge reculee : on s'abstient
+    return nowUnix - lastUnix >= static_cast<long long>(everyHours) * 3600;
+}
+
+long long last_backup_unix(const std::string& instanceId) {
+    const auto v = list(instanceId);
+    return v.empty() ? 0 : v.front().mtime;
+}
+
+namespace {
+
+std::thread g_timer;
+std::atomic<bool> g_stop{false};
+std::atomic<bool> g_gameRunning{false};
+
+void timer_loop() {
+    // Reveil toutes les minutes : assez fin pour un intervalle exprime en
+    // heures, assez rare pour ne rien couter.
+    while (!g_stop.load()) {
+        for (int i = 0; i < 60 && !g_stop.load(); ++i)
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (g_stop.load()) break;
+
+        const auto& s = DataStore::settings;
+        const int every = s.backupAutoHours;
+        if (every <= 0) continue;
+        // Jamais pendant une partie : zipper un monde en cours d'ecriture
+        // donnerait une archive incoherente, donc inutilisable.
+        if (g_gameRunning.load()) continue;
+
+        const auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        for (const auto& inst : s.instances) {
+            if (g_stop.load()) break;
+            if (!inst.is_object()) continue;
+            const std::string id = inst.value("Id", "");
+            if (id.empty()) continue;
+            if (!is_due(now, last_backup_unix(id), every)) continue;
+            if (create(id).empty()) continue; // pas de saves : rien a faire
+            rotate(id, s.backupKeep > 0 ? s.backupKeep : kMaxBackups,
+                   static_cast<long long>(s.backupSpaceMb) * 1024 * 1024);
+        }
+    }
+}
+
+} // namespace
+
+void set_game_running(bool running) { g_gameRunning.store(running); }
+
+void auto_start() {
+    if (g_timer.joinable()) return;
+    g_stop = false;
+    g_timer = std::thread(timer_loop);
+}
+
+void auto_stop() {
+    g_stop = true;
+    if (g_timer.joinable()) g_timer.join();
 }
 
 } // namespace tl::backup

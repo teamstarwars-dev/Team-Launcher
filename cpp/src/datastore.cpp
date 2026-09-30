@@ -368,6 +368,8 @@ static json serialize(const AppSettings& s) {
         {"Theme", s.theme},
         {"UiFont", s.uiFont},
         {"SidebarCompact", s.sidebarCompact},
+        {"BackupAutoHours", s.backupAutoHours},
+        {"BackupKeep", s.backupKeep},
         {"ColorblindMode", s.colorblind},
         {"FontScale", s.fontScale},
         {"ContentPath", s.contentPath},
@@ -472,6 +474,8 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getS("Theme", s.theme);
     getS("UiFont", s.uiFont);
     getB("SidebarCompact", s.sidebarCompact);
+    getI("BackupAutoHours", s.backupAutoHours);
+    getI("BackupKeep", s.backupKeep);
     getB("ColorblindMode", s.colorblind);
     getD("FontScale", s.fontScale);
     getS("ContentPath", s.contentPath);
