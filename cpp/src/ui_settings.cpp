@@ -237,6 +237,67 @@ void tab_general() {
 void tab_appearance() {
     auto& s = DataStore::settings;
 
+    // Le theme d'abord : les couleurs personnalisees ci-dessous se posent
+    // PAR-DESSUS lui, donc l'ordre a l'ecran doit refleter l'ordre
+    // d'application, sinon on ne comprend pas pourquoi changer de theme
+    // « ne fait rien » quand une couleur a ete forcee.
+    section("Thème");
+    {
+        struct Variant { const char* id; const char* fr; const char* en; };
+        static const Variant kVariants[] = {
+            {"classic", "Sombre (classique)", "Dark (classic)"},
+            {"light", "Clair", "Light"},
+        };
+        std::string cur = tr(kVariants[0].fr, kVariants[0].en);
+        for (const auto& v : kVariants)
+            if (s.theme == v.id) cur = tr(v.fr, v.en);
+
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::BeginCombo("##theme", cur.c_str())) {
+            for (const auto& v : kVariants)
+                if (ImGui::Selectable(tr(v.fr, v.en), s.theme == v.id)) {
+                    s.theme = v.id;
+                    DataStore::save();
+                    theme_reload();
+                }
+            ImGui::EndCombo();
+        }
+
+        bool cb = s.colorblind;
+        if (ImGui::Checkbox(tr("Mode daltonisme", "Colorblind mode"), &cb)) {
+            s.colorblind = cb;
+            DataStore::save();
+            theme_reload();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s",
+            tr("Remplace le bleu et le rouge de l'interface par la palette "
+               "Okabe-Ito, conçue pour rester distinguable dans les trois "
+               "formes de daltonisme. Le rouge par défaut vire au brun pour "
+               "une deutéranopie.",
+               "Replaces the interface blue and red with the Okabe-Ito "
+               "palette, designed to stay distinguishable in all three forms "
+               "of color blindness. The default red turns brown under "
+               "deuteranopia."));
+        ImGui::PopStyleColor();
+
+        // Si une couleur a ete forcee plus bas, le theme ne peut pas
+        // s'appliquer entierement : mieux vaut le dire que de laisser
+        // l'utilisateur croire a un bug.
+        if (!s.bgColor.empty() || !s.cardColor.empty() || !s.accentColor.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
+            ImGui::TextWrapped(
+                "%s", tr("Des couleurs personnalisées sont définies plus bas : "
+                         "elles s'appliquent par-dessus le thème. Utilise "
+                         "« Couleurs par défaut » pour voir le thème seul.",
+                         "Custom colors are set below: they apply on top of "
+                         "the theme. Use \"Default colors\" to see the theme "
+                         "on its own."));
+            ImGui::PopStyleColor();
+        }
+    }
+
     section("Couleurs du launcher");
     bool changed = false;
     changed |= color_field("Fond", b.bg, sizeof(b.bg), s.bgColor);
