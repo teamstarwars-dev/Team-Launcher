@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "presets.hpp"
+
 #include "fonts.hpp"
 #include "downloads.hpp"
 #include "netcache.hpp"
@@ -449,6 +451,21 @@ void start_worker() {
     req.loader = g.launchVanillaOnce ? std::string("Vanilla")
                                      : inst->value("Loader", "Vanilla");
     req.forceVerify = g.launchRepairOnce;
+
+    // Profil de lancement actif : il surcharge la memoire et les arguments
+    // JVM de l'instance. Les mods, eux, sont appliques au moment ou l'on
+    // choisit le profil et non ici : renommer des fichiers juste avant de
+    // lancer laisserait l'instance dans un etat imprevisible si le
+    // lancement echouait entre-temps.
+    if (const std::string pn = presets::active(*inst); !pn.empty()) {
+        for (const auto& p : presets::load(*inst))
+            if (p.name == pn) {
+                if (p.ramGb > 0) req.ramGb = p.ramGb;
+                if (!p.jvmArgs.empty()) req.jvmArgs = p.jvmArgs;
+                push_log(tr("Profil : ", "Profile: ") + pn);
+                break;
+            }
+    }
     // Consommes ici : ce sont des actions ponctuelles, elles ne doivent pas
     // s'appliquer au lancement suivant.
     g.launchVanillaOnce = false;

@@ -17,6 +17,8 @@
 #else
 #include "ui_internal.hpp"
 
+#include "presets.hpp"
+
 #include "backup.hpp"
 
 #include <ctime>
@@ -119,8 +121,12 @@ std::vector<std::string> list_mod_files(const fs::path& modsDir) {
         // C# "*.jar*" : .jar et .jar.disabled
         if (low.size() >= 4 && low.compare(low.size() - 4, 4, ".jar") == 0)
             out.push_back(it->path().string());
-        else if (low.size() > 12 &&
-                 low.compare(low.size() - 12, 12, ".jar.disabled") == 0)
+        // CORRECTIF : « .jar.disabled » fait 13 caracteres, pas 12. La
+        // comparaison ne pouvait donc JAMAIS reussir : un mod desactive
+        // disparaissait de la liste, et rien ne permettait plus de le
+        // reactiver depuis l'interface.
+        else if (low.size() > 13 &&
+                 low.compare(low.size() - 13, 13, ".jar.disabled") == 0)
             out.push_back(it->path().string());
     }
     detail::sort_mod_paths(out);
@@ -273,6 +279,135 @@ void instance_detail_modal() {
                          "not ported - use the instance folder."));
             ImGui::PopStyleColor();
         } else if (s_detailTab == 1) {
+            // ---- Profils de lancement ----
+            // Une meme instance sert a plusieurs usages : competitif avec
+            // peu de mods, ou tranquille avec shaders. Un profil retient
+            // l'etat des mods, la memoire et les arguments JVM.
+            {
+                auto* mut = find_instance(id);
+                const fs::path modsDir = instDir / "mods";
+                auto list = mut ? presets::load(*mut)
+                                : std::vector<presets::Preset>{};
+                const std::string cur = mut ? presets::active(*mut)
+                                            : std::string();
+
+                ImGui::TextUnformatted(tr("Profils de lancement",
+                                          "Launch profiles"));
+                static char s_newName[48] = "";
+                static int s_newRam = 0;
+
+                for (auto& p : list) {
+                    ImGui::PushID(p.name.c_str());
+                    const bool isCur = p.name == cur;
+                    ImGui::PushStyleColor(ImGuiCol_Text, isCur ? kAccent : kText);
+                    ImGui::TextUnformatted(p.name.c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine(220);
+                    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                    std::string meta;
+                    if (p.ramGb > 0) meta += std::to_string(p.ramGb) + " Go";
+                    if (p.hasMods) {
+                        if (!meta.empty()) meta += " · ";
+                        meta += std::to_string(p.disabled.size()) +
+                                tr(" mod(s) off", " mod(s) off");
+                    }
+                    ImGui::TextUnformatted(meta.empty() ? "-" : meta.c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine(380);
+                    if (ImGui::SmallButton(isCur ? tr("Réappliquer", "Re-apply")
+                                                 : tr("Appliquer", "Apply"))) {
+                        if (mut) {
+                            if (p.hasMods) {
+                                const auto res = presets::apply_mods(
+                                    modsDir, p.disabled,
+                                    presets::all_mods(modsDir));
+                                std::string msg =
+                                    std::to_string(res.enabled) +
+                                    tr(" activé(s), ", " enabled, ") +
+                                    std::to_string(res.disabled) +
+                                    tr(" désactivé(s)", " disabled");
+                                if (res.untouched > 0)
+                                    msg += tr(" · ", " - ") +
+                                           std::to_string(res.untouched) +
+                                           tr(" ajouté(s) depuis, non touché(s)",
+                                              " added since, left alone");
+                                if (res.failed > 0)
+                                    msg += tr(" · ", " - ") +
+                                           std::to_string(res.failed) +
+                                           tr(" en échec", " failed");
+                                notify_toast(tr("Profil", "Profile"), msg);
+                            }
+                            presets::set_active(*mut, p.name);
+                            DataStore::save();
+                            refresh_counts(id);
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(tr("Supprimer", "Delete"))) {
+                        if (mut) {
+                            std::vector<presets::Preset> kept;
+                            for (const auto& q : list)
+                                if (q.name != p.name) kept.push_back(q);
+                            presets::store(*mut, kept);
+                            if (cur == p.name) presets::set_active(*mut, "");
+                            DataStore::save();
+                        }
+                        ImGui::PopID();
+                        break;
+                    }
+                    ImGui::PopID();
+                }
+
+                // Capture : on enregistre l'etat EN PLACE. C'est le geste
+                // naturel — on regle ses mods, puis on nomme le resultat.
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
+                ImGui::SetNextItemWidth(180.0f);
+                ImGui::InputTextWithHint("##pname",
+                                         tr("Nom du profil", "Profile name"),
+                                         s_newName, sizeof(s_newName));
+                ImGui::PopStyleColor();
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(130.0f);
+                ImGui::SliderInt("##pram", &s_newRam, 0, 32,
+                                 s_newRam == 0 ? tr("RAM : instance",
+                                                    "RAM: instance")
+                                               : "%d Go");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!mut || s_newName[0] == '\0');
+                if (ImGui::SmallButton(tr("Enregistrer l'état actuel",
+                                          "Save current state"))) {
+                    presets::Preset p;
+                    p.name = s_newName;
+                    p.ramGb = s_newRam;
+                    p.hasMods = true;
+                    p.disabled = presets::current_disabled(modsDir);
+                    std::vector<presets::Preset> kept;
+                    for (const auto& q : list)
+                        if (q.name != p.name) kept.push_back(q);
+                    kept.push_back(p);
+                    presets::store(*mut, kept);
+                    presets::set_active(*mut, p.name);
+                    DataStore::save();
+                    s_newName[0] = '\0';
+                    notify_toast(tr("Profil", "Profile"),
+                                 tr("Profil enregistré.", "Profile saved."));
+                }
+                ImGui::EndDisabled();
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextWrapped(
+                    "%s",
+                    tr("Le profil retient quels mods sont actifs. Un mod "
+                       "installé après l'enregistrement n'est jamais "
+                       "désactivé automatiquement.",
+                       "A profile remembers which mods are enabled. A mod "
+                       "installed after saving is never disabled "
+                       "automatically."));
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+            }
+
             // ---- onglet Mods (C# LoadMods) ----
             const std::vector<std::string> mods =
                 list_mod_files(instDir / "mods");
