@@ -72,11 +72,41 @@ std::vector<Message> conversation(const std::string& friendId);
 bool add_friend(const std::string& pseudo, std::string* errOut);
 bool send(const std::string& friendId, const std::string& text,
           std::string* errOut);
+
+// Derniere erreur d'envoi asynchrone (l'envoi repond apres coup) : la
+// consommer affiche le probleme une fois, puis l'oublie.
+std::string take_send_error();
 bool set_blocked(const std::string& friendId, bool blocked,
                  std::string* errOut);
 bool report(const std::string& friendId, const std::string& reason,
             std::string* errOut);
 
+// --- Appels vocaux privés (1:1) -------------------------------------------
+// Un appel = un lobby Discord a deux (secret aleatoire echange en DM) +
+// StartCall, l'audio passant par les peripheriques par defaut via le SDK.
+// La signalisation (invitation / acceptation / refus / fin) transite en
+// metadonnees de DM, interceptees avant affichage : invisible dans le
+// launcher, lisible en clair dans Discord.
+struct CallInfo {
+    bool idle = true;      // aucun appel
+    bool outgoing = false; // on appelle, en attente du correspondant
+    bool incoming = false; // on est appele, en attente de decrochage
+    bool active = false;   // voix etablie
+    std::string peerId;
+    std::string peerName;
+    bool muted = false;
+    bool deaf = false;
+    long long startedUnix = 0; // voix etablie a cette heure, 0 sinon
+};
+CallInfo call_info();
+bool call_start(const std::string& friendId, std::string* errOut);
+bool call_accept(std::string* errOut);
+bool call_decline(std::string* errOut);
+bool call_hangup(std::string* errOut);
+bool call_set_muted(bool muted, std::string* errOut);
+bool call_set_deaf(bool deaf, std::string* errOut);
+// Dernier evenement d'appel (« Appel refusé. »...) : consomme une fois.
+std::string take_call_notice();
 // Lance la liaison du compte Discord. Le SDK ouvre lui-meme l'ecran
 // d'autorisation dans l'application Discord : le launcher n'a ni serveur de
 // redirection ni code a afficher, contrairement a l'authentification

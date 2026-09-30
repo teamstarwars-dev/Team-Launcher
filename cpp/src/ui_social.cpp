@@ -4,8 +4,10 @@
 #include "social.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -30,9 +32,12 @@ struct SocialState {
     std::string selected;      // ami courant
     char draft[512] = "";      // message en cours de saisie
     char addBuf[64] = "";      // pseudo a ajouter
+    char searchBuf[64] = "";   // filtre de recherche local
     char reportBuf[200] = "";  // motif de signalement
     std::string reportTarget;  // ami vise par le signalement
     std::string lastError;
+    std::string threadId;      // fil suivi pour l'autoscroll
+    size_t threadCount = 0;     // messages vus dans ce fil
 };
 SocialState S;
 
@@ -52,6 +57,43 @@ ImVec4 presence_color(social::Presence p) {
         case social::Presence::Offline: break;
     }
     return kDim;
+}
+
+// Tri : en jeu, en ligne, hors ligne, bloques tout en bas, puis pseudo.
+int presence_rank(const social::Friend& f) {
+    if (f.blocked) return 3;
+    switch (f.presence) {
+        case social::Presence::Playing: return 0;
+        case social::Presence::Online: return 1;
+        case social::Presence::Offline: break;
+    }
+    return 2;
+}
+
+// Minuscules byte a byte (suffit au filtre : on compare la frappe telle
+// quelle, sans plier les accents).
+std::string to_lower(std::string s) {
+    for (auto& ch : s)
+        ch = static_cast<char>(
+            std::tolower(static_cast<unsigned char>(ch)));
+    return s;
+}
+
+// Tronque avec « … » sans jamais couper un point de code UTF-8 en deux
+// (les pseudos Discord acceptent accents et emojis).
+std::string fit_ellipsis(const std::string& s, float maxW) {
+    if (s.empty() || maxW <= 0.0f) return s;
+    if (ImGui::CalcTextSize(s.c_str()).x <= maxW) return s;
+    std::string out = s;
+    while (!out.empty()) {
+        do {
+            out.pop_back();
+        } while (!out.empty() &&
+                 (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80);
+        const std::string cand = out + "…";
+        if (ImGui::CalcTextSize(cand.c_str()).x <= maxW) return cand;
+    }
+    return "…";
 }
 
 void draw_unavailable(const social::Status& st) {
@@ -105,6 +147,18 @@ void draw_unavailable(const social::Status& st) {
 }
 
 void draw_friend_list(const std::vector<social::Friend>& list) {
+    // Recherche : filtre local instantane sur le pseudo, sans appel reseau.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
+    ImGui::SetNextItemWidth(-32.0f);
+    ImGui::InputTextWithHint("##searchfriend",
+                             tr("Rechercher un ami", "Search friends"),
+                             S.searchBuf, sizeof(S.searchBuf));
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(S.searchBuf[0] == '\0');
+    if (ImGui::Button("x", ImVec2(24, 0))) S.searchBuf[0] = '\0';
+    ImGui::EndDisabled();
+
     ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
     ImGui::SetNextItemWidth(-90.0f);
     const bool enter = ImGui::InputTextWithHint(
@@ -129,28 +183,97 @@ void draw_friend_list(const std::vector<social::Friend>& list) {
         ImGui::PopStyleColor();
         return;
     }
+    // Copie triee : statut d'abord, pseudo ensuite. La liste du SDK arrive
+    // dans un ordre quelconque ; sans tri, les hors-ligne noient les
+    // connectes. La recherche filtre sur le pseudo (insensible a la casse).
+    const std::string query = to_lower(S.searchBuf);
+    std::vector<const social::Friend*> order;
+    order.reserve(list.size());
     for (const auto& f : list) {
-        ImGui::PushID(f.id.c_str());
-        const bool sel = f.id == S.selected;
-        if (ImGui::Selectable("##f", sel, 0, ImVec2(0, 38.0f)))
-            S.selected = f.id;
-        const ImVec2 p = ImGui::GetItemRectMin();
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 8, p.y + 4));
-        ImGui::PushStyleColor(ImGuiCol_Text, f.blocked ? kDim : kText);
-        ImGui::TextUnformatted(f.name.c_str());
+        if (!query.empty() && to_lower(f.name).find(query) == std::string::npos)
+            continue;
+        order.push_back(&f);
+    }
+    if (order.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s", query.empty()
+                      ? tr("Aucun ami pour l'instant.", "No friends yet.")
+                      : tr("Aucun ami trouvé.", "No friends found."));
         ImGui::PopStyleColor();
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 8, p.y + 20));
-        ImGui::PushStyleColor(ImGuiCol_Text, presence_color(f.presence));
-        ImGui::TextUnformatted(f.blocked ? tr("bloqué", "blocked")
-                                         : tr(presence_label(f.presence)));
-        ImGui::PopStyleColor();
-        if (f.unread > 0) {
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-            ImGui::Text("(%d)", f.unread);
+        return;
+    }
+    std::sort(order.begin(), order.end(), [](const social::Friend* a,
+                                             const social::Friend* b) {
+        const int ra = presence_rank(*a), rb = presence_rank(*b);
+        if (ra != rb) return ra < rb;
+        return a->name < b->name;
+    });
+
+    int lastRank = -1;
+    for (const social::Friend* fp : order) {
+        const auto& f = *fp;
+        const int rank = presence_rank(f);
+        // En-tete de section avec compteur, une seule fois par groupe.
+        if (rank != lastRank) {
+            lastRank = rank;
+            if (rank > 0) ImGui::Spacing();
+            const size_t n = std::count_if(
+                order.begin(), order.end(),
+                [rank](const social::Friend* o) {
+                    return presence_rank(*o) == rank;
+                });
+            const char* label = rank == 0   ? tr("En jeu", "In game")
+                                : rank == 1 ? tr("En ligne", "Online")
+                                : rank == 2 ? tr("Hors ligne", "Offline")
+                                            : tr("Bloqués", "Blocked");
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::Text("%s (%zu)", label, n);
             ImGui::PopStyleColor();
         }
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + 38.0f));
+        ImGui::PushID(f.id.c_str());
+        const bool sel = f.id == S.selected;
+        if (ImGui::Selectable("##f", sel, 0, ImVec2(0, 42.0f)))
+            S.selected = f.id;
+        const ImVec2 p0 = ImGui::GetItemRectMin();
+        const ImVec2 p1 = ImGui::GetItemRectMax();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        // Tout le contenu de la ligne passe par la draw-list (aucun
+        // curseur deplace) : le rendu ne depend ni du scroll ni de
+        // l'etat laisse par la ligne precedente. Plus de decalage.
+        const ImU32 dotCol = ImGui::ColorConvertFloat4ToU32(
+            f.blocked ? kDim : presence_color(f.presence));
+        dl->AddCircleFilled(ImVec2(p0.x + 11.0f, p0.y + 13.0f), 4.0f, dotCol);
+        // Pastille « non lus » calee a droite : sa largeur est reservee
+        // AVANT de tronquer le pseudo, pour ne plus jamais se chevaucher.
+        char badge[16] = "";
+        float badgeW = 0.0f;
+        if (f.unread > 0) {
+            std::snprintf(badge, sizeof(badge), "(%d)", f.unread);
+            badgeW = ImGui::CalcTextSize(badge).x + 8.0f;
+            dl->AddText(ImVec2(p1.x - badgeW, p0.y + 4.0f),
+                        ImGui::ColorConvertFloat4ToU32(kAccent), badge);
+        }
+        const std::string name = fit_ellipsis(
+            f.name, (p1.x - 8.0f - badgeW) - (p0.x + 20.0f));
+        dl->AddText(ImVec2(p0.x + 20.0f, p0.y + 4.0f),
+                    ImGui::ColorConvertFloat4ToU32(f.blocked ? kDim : kText),
+                    name.c_str(), name.c_str() + name.size());
+        // Deuxieme ligne : activite reelle (« Joue a ... ») si dispo,
+        // sinon le statut. Tronquee a la largeur utile, jamais debordante.
+        std::string sub;
+        if (f.blocked)
+            sub = tr("bloqué", "blocked");
+        else if (f.presence == social::Presence::Playing && !f.activity.empty())
+            sub = f.activity;
+        else
+            sub = tr(presence_label(f.presence));
+        const std::string subFit =
+            fit_ellipsis(sub, (p1.x - 8.0f) - (p0.x + 20.0f));
+        dl->AddText(ImVec2(p0.x + 20.0f, p0.y + 22.0f),
+                    ImGui::ColorConvertFloat4ToU32(
+                        f.blocked ? kDim : presence_color(f.presence)),
+                    subFit.c_str(), subFit.c_str() + subFit.size());
         ImGui::PopID();
     }
 }
@@ -168,19 +291,82 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         return;
     }
 
-    // --- en-tete : nom, appel vocal (a venir), blocage, signalement ---
+    // --- en-tete : nom, vocal, blocage, signalement ---
+    const social::CallInfo ci = social::call_info();
+    const bool voiceOk = social::status().voiceAvailable;
+    // Banniere d'appel entrant, quel que soit le fil affiche.
+    if (ci.incoming) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+        ImGui::TextUnformatted(tr("Appel entrant de :", "Incoming call from:"));
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::TextUnformatted(ci.peerName.c_str());
+        ImGui::SameLine();
+        if (accent_button(tr("Décrocher", "Answer"), ImVec2(120, 0))) {
+            std::string err;
+            if (!social::call_accept(&err)) S.lastError = err;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Refuser", "Decline"))) {
+            std::string err;
+            if (!social::call_decline(&err)) S.lastError = err;
+        }
+        ImGui::Separator();
+    }
     ImGui::TextUnformatted(cur->name.c_str());
     ImGui::SameLine();
-    // Le vocal arrive dans une phase separee : le bouton est la, mais
-    // desactive et annonce comme tel. Mieux vaut une promesse lisible
-    // qu'un bouton absent qu'on croit oublie.
-    ImGui::BeginDisabled(true);
-    ImGui::SmallButton(tr("Appel vocal", "Voice call"));
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextUnformatted(tr("(à venir)", "(coming soon)"));
-    ImGui::PopStyleColor();
+    if (ci.idle) {
+        // Aucun appel : proposer d'appeler ce correspondant.
+        ImGui::BeginDisabled(!voiceOk || cur->blocked);
+        if (ImGui::SmallButton(tr("Appel vocal", "Voice call"))) {
+            std::string err;
+            if (!social::call_start(cur->id, &err)) S.lastError = err;
+        }
+        ImGui::EndDisabled();
+    } else if (ci.peerId == cur->id && ci.outgoing) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted(tr("Appel en cours…", "Calling…"));
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Raccrocher", "Hang up"))) {
+            std::string err;
+            if (!social::call_hangup(&err)) S.lastError = err;
+        }
+    } else if (ci.peerId == cur->id && ci.active) {
+        if (ImGui::SmallButton(ci.muted ? tr("Micro coupé", "Muted")
+                                        : tr("Micro", "Mute"))) {
+            std::string err;
+            if (!social::call_set_muted(!ci.muted, &err)) S.lastError = err;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(ci.deaf ? tr("Son coupé", "Deafened")
+                                       : tr("Son", "Deafen"))) {
+            std::string err;
+            if (!social::call_set_deaf(!ci.deaf, &err)) S.lastError = err;
+        }
+        ImGui::SameLine();
+        const long long dur = ci.startedUnix > 0
+                                  ? std::time(nullptr) - ci.startedUnix
+                                  : 0;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%02lld:%02lld",
+                      dur / 60 < 0 ? 0 : dur / 60, dur % 60 < 0 ? 0 : dur % 60);
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted(buf);
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Raccrocher", "Hang up"))) {
+            std::string err;
+            if (!social::call_hangup(&err)) S.lastError = err;
+        }
+    } else {
+        // Appel avec un autre correspondant : le signaler sans proposer.
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted(tr("En appel avec :", "In a call with:"));
+        ImGui::PopStyleColor();
+        ImGui::SameLine();
+        ImGui::TextUnformatted(ci.peerName.c_str());
+    }
     ImGui::SameLine();
     if (ImGui::SmallButton(cur->blocked ? tr("Débloquer", "Unblock")
                                         : tr("Bloquer", "Block"))) {
@@ -218,6 +404,12 @@ void draw_conversation(const std::vector<social::Friend>& list) {
             ImGui::PopStyleColor();
         }
     }
+    // Autoscroll : changement de fil ou nouveau message -> bas du fil.
+    if (cur->id != S.threadId || msgs.size() != S.threadCount) {
+        S.threadId = cur->id;
+        S.threadCount = msgs.size();
+        ImGui::SetScrollHereY(1.0f);
+    }
     ImGui::EndChild();
 
     // --- saisie ---
@@ -240,6 +432,12 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         else
             S.lastError = err;
     }
+    // Echec d'envoi asynchrone (reponse du SDK apres coup) : affiche une
+    // fois, puis oublie. Idem pour les evenements d'appel.
+    if (std::string sendErr = social::take_send_error(); !sendErr.empty())
+        S.lastError = sendErr;
+    if (std::string callNote = social::take_call_notice(); !callNote.empty())
+        S.lastError = callNote;
 }
 
 void draw_report_modal() {
@@ -312,7 +510,13 @@ void social_page() {
     }
 
     const auto list = social::friends();
-    ImGui::BeginChild("##friends", ImVec2(240, 0), ImGuiChildFlags_Borders);
+    // Bloc d'amis proportionnel a la page (36 %), borne : assez large
+    // pour les longs pseudos, sans ecraser la conversation.
+    float friendsW = ImGui::GetContentRegionAvail().x * 0.36f;
+    if (friendsW < 300.0f) friendsW = 300.0f;
+    if (friendsW > 440.0f) friendsW = 440.0f;
+    ImGui::BeginChild("##friends", ImVec2(friendsW, 0),
+                      ImGuiChildFlags_Borders);
     draw_friend_list(list);
     ImGui::EndChild();
     ImGui::SameLine();
