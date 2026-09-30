@@ -29,6 +29,7 @@ struct Ctx {
     std::shared_ptr<discordpp::Client> client;
     discordpp::Client::Status status = discordpp::Client::Status::Disconnected;
     bool started = false;
+    bool loggingIn = false;
     std::string error;
 };
 
@@ -103,6 +104,13 @@ Status status() {
     // Le vocal viendra dans une phase separee, une fois le texte valide en
     // usage reel. Le bouton existe deja cote interface, desactive.
     s.voiceAvailable = false;
+#ifdef TL_HAS_DISCORD_SOCIAL
+    // Proposer la liaison n'a de sens que si le SDK est la, l'integration
+    // activee et une application configuree. Sinon le bouton ne pourrait
+    // rien faire.
+    s.canLink = !s.ready && ctx().started && DataStore::settings.discordEnabled &&
+                app_id() != 0;
+#endif
     if (!s.ready) s.detail = not_ready_reason();
     return s;
 }
@@ -201,6 +209,88 @@ void start() {
         });
     c.started = true;
     c.error.clear();
+#endif
+}
+
+bool login_in_progress() {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::lock_guard<std::mutex> lk(lock());
+    return ctx().loggingIn;
+#else
+    return false;
+#endif
+}
+
+void begin_login() {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::shared_ptr<discordpp::Client> client;
+    std::uint64_t id = 0;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        auto& c = ctx();
+        if (!c.started || !c.client || c.loggingIn) return;
+        c.loggingIn = true;
+        c.error.clear();
+        client = c.client;
+        id = app_id();
+    }
+
+    discordpp::DeviceAuthorizationArgs args;
+    args.SetClientId(id);
+    // Portee « communication » : elle couvre les amis, les messages et le
+    // vocal. On ne demande pas plus que necessaire — chaque portee
+    // supplementaire est une autorisation de plus a accorder.
+    args.SetScopes(discordpp::Client::GetDefaultCommunicationScopes());
+
+    // Le SDK ouvre lui-meme l'ecran d'autorisation dans l'application
+    // Discord : rien a afficher de notre cote, contrairement au flux par
+    // code d'appareil de Microsoft ou le launcher montre le code.
+    client->GetTokenFromDevice(
+        args, [client](discordpp::ClientResult result, std::string accessToken,
+                       std::string /*refreshToken*/,
+                       discordpp::AuthorizationTokenType tokenType,
+                       std::int32_t /*expiresIn*/, std::string /*scopes*/) {
+            if (!result.Successful()) {
+                std::lock_guard<std::mutex> lk(lock());
+                ctx().loggingIn = false;
+                ctx().error = "Liaison Discord refusée ou annulée.";
+                return;
+            }
+            // Le jeton est remis au SDK, qui le conserve et l'utilise pour
+            // se connecter. Le launcher ne le stocke pas lui-meme : moins
+            // il touche a un secret, mieux c'est.
+            client->UpdateToken(
+                tokenType, accessToken, [client](discordpp::ClientResult r) {
+                    {
+                        std::lock_guard<std::mutex> lk(lock());
+                        ctx().loggingIn = false;
+                        if (!r.Successful()) {
+                            ctx().error = "Jeton Discord refusé.";
+                            return;
+                        }
+                        ctx().error.clear();
+                    }
+                    client->Connect();
+                });
+        });
+#endif
+}
+
+void logout() {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::lock_guard<std::mutex> lk(lock());
+    auto& c = ctx();
+    c.loggingIn = false;
+    c.error.clear();
+    if (c.client) {
+        // Recreer le client est le moyen sur d'oublier le jeton : il n'y a
+        // pas d'API « effacer le jeton », et laisser l'ancien en place
+        // reconnecterait le compte precedent au prochain demarrage.
+        c.client->Disconnect();
+        c.client.reset();
+        c.status = discordpp::Client::Status::Disconnected;
+        c.started = false;
+    }
 #endif
 }
 

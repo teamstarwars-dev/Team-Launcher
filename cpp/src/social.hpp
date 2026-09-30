@@ -50,6 +50,11 @@ struct Message {
 struct Status {
     bool ready = false;
     bool voiceAvailable = false; // phase vocale, volontairement pas encore la
+    // Vrai quand le fournisseur est operationnel mais qu il manque juste
+    // la liaison du compte : l interface propose alors le bouton. Faux si
+    // le SDK est absent, ou l integration desactivee — proposer de lier un
+    // compte n y changerait rien.
+    bool canLink = false;
     std::string providerName;
     std::string detail;
 };
@@ -71,6 +76,18 @@ bool set_blocked(const std::string& friendId, bool blocked,
                  std::string* errOut);
 bool report(const std::string& friendId, const std::string& reason,
             std::string* errOut);
+
+// Lance la liaison du compte Discord. Le SDK ouvre lui-meme l'ecran
+// d'autorisation dans l'application Discord : le launcher n'a ni serveur de
+// redirection ni code a afficher, contrairement a l'authentification
+// Microsoft. Sans effet si une liaison est deja en cours.
+void begin_login();
+
+// Une liaison est-elle en cours ? Sert a griser le bouton.
+bool login_in_progress();
+
+// Delie le compte : oublie le jeton et se deconnecte.
+void logout();
 
 // Demarre / arrete la liaison avec le fournisseur.
 void start();

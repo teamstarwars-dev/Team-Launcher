@@ -73,6 +73,35 @@ void draw_unavailable(const social::Status& st) {
     ImGui::TextUnformatted(st.detail.c_str());
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
+
+    // Bouton de liaison : affiche seulement quand le SDK est la et que
+    // c'est bien l'absence de compte lie qui bloque. Inutile de proposer
+    // « Lier mon compte » si la bibliotheque manque.
+    if (!st.canLink) return;
+    ImGui::Spacing();
+    ImGui::Spacing();
+    const bool busy = social::login_in_progress();
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 280.0f) * 0.5f);
+    ImGui::BeginDisabled(busy);
+    if (accent_button(busy ? tr("Autorisation en cours…", "Authorizing…")
+                           : tr("Lier mon compte Discord",
+                                "Link my Discord account"),
+                      ImVec2(280, 36)))
+        social::begin_login();
+    ImGui::EndDisabled();
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    const char* hint =
+        tr("Discord ouvrira lui-même l'écran d'autorisation. Il doit être "
+           "lancé et connecté sur ce PC.",
+           "Discord will open the authorization screen itself. It must be "
+           "running and signed in on this PC.");
+    ImGui::SetCursorPosX((ImGui::GetWindowWidth() -
+                          (std::min)(ImGui::CalcTextSize(hint).x, avail.x - 40.0f)) *
+                         0.5f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + avail.x - 40.0f);
+    ImGui::TextUnformatted(hint);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
 }
 
 void draw_friend_list(const std::vector<social::Friend>& list) {
