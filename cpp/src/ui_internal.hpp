@@ -45,6 +45,21 @@ inline std::string tr(const std::string& fr) { return lang::t(fr); }
 // Palette v5 (#0e0e13 / #15151b / #22222a / #f2f2f5 / #8a8a99 / #3b82f6)
 // ---------------------------------------------------------------------------
 
+// Teinte de survol d'une surface. Une couleur ecrite en dur ne peut convenir
+// qu'a UN theme : « un peu plus clair » sur fond sombre devient « invisible »
+// sur fond clair. On decale donc a partir de la luminance de la surface —
+// on eclaircit ce qui est sombre, on assombrit ce qui est clair.
+inline ImVec4 shade_by(const ImVec4& base, float amount) {
+    // Luminance perceptuelle (Rec. 709) : le vert pese bien plus que le bleu.
+    const float lum = 0.2126f * base.x + 0.7152f * base.y + 0.0722f * base.z;
+    const float k = lum < 0.5f ? amount : -amount;
+    auto c = [&](float v) {
+        const float r = v + k;
+        return r < 0.0f ? 0.0f : (r > 1.0f ? 1.0f : r);
+    };
+    return ImVec4(c(base.x), c(base.y), c(base.z), base.w);
+}
+
 inline ImVec4 hex(unsigned rgb, float a = 1.0f) {
     return ImVec4(((rgb >> 16) & 0xFF) / 255.0f, ((rgb >> 8) & 0xFF) / 255.0f,
                   (rgb & 0xFF) / 255.0f, a);
@@ -111,6 +126,12 @@ struct UiState {
     int sortIdx = 0; // 0 temps de jeu, 1 nom, 2 lancements, 3 recemment jouee
     bool smallGrid = true;
     char searchBuf[64] = "";
+    // Tags : modale d'edition (saisie libre separee par des virgules) et
+    // filtre actif de la liste ("" = pas de filtre).
+    std::string tagsId;       // instance en cours d'edition
+    char tagsBuf[256] = "";
+    bool tagsRequest = false; // demande d'ouverture de la modale
+    std::string tagFilter;
 
     // modales instance (1 creer, 2 editer, 3 supprimer)
     int modal = 0;

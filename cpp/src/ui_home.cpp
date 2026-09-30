@@ -177,7 +177,8 @@ void home_page() {
         const bool hovSee = ImGui::IsMouseHoveringRect(hMin, hMax);
         if (hovSee)
             ImGui::GetWindowDrawList()->AddRectFilled(
-                hMin, hMax, ImGui::ColorConvertFloat4ToU32(hex(0x1a1a22)), 6.0f);
+                hMin, hMax,
+                ImGui::ColorConvertFloat4ToU32(shade_by(kBg, 0.05f)), 6.0f);
         ImGui::SetCursorScreenPos(tPos);
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
         ImGui::TextUnformatted(seeAll);
@@ -209,7 +210,8 @@ void home_page() {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (hov)
             dl->AddRectFilled(cwp, ImVec2(cwp.x + cws.x, cwp.y + cws.y),
-                              ImGui::ColorConvertFloat4ToU32(hex(0x1a1a22)),
+                              ImGui::ColorConvertFloat4ToU32(
+                                  shade_by(kCard, 0.05f)),
                               6.0f);
         const std::string nm = e.value("Name", "?");
         dl->AddRectFilled(ImVec2(p.x, p.y + 4), ImVec2(p.x + 42, p.y + 46),

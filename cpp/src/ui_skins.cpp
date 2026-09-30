@@ -28,15 +28,22 @@ namespace tl::ui {
 
 namespace {
 
-const ImVec4 kSkinBg = hex(0x0b0d10);
-const ImVec4 kSkinCard = hex(0x15181d);
-const ImVec4 kSkinHover = hex(0x1a1e24);
-const ImVec4 kSkinAccent = hex(0x7aa2f7);
-const ImVec4 kSkinText = hex(0xe6e8eb);
-const ImVec4 kSkinDim = hex(0x8b919a);
-const ImVec4 kSkinDanger = hex(0xe05555);
-const ImVec4 kSkinBtn = hex(0x1c2128);
-const ImVec4 kSkinBtnOn = hex(0x14181e);
+// Cette page avait sa PROPRE palette sombre, figee a l'initialisation
+// statique. Elle serait donc restee noire en theme clair, et ignorait le
+// mode daltonisme et les couleurs personnalisees. Les neuf teintes suivent
+// maintenant la palette globale.
+//
+// Ce sont des fonctions et non des constantes : la palette change a chaud
+// quand on bascule de theme, une valeur figee au demarrage ne suivrait pas.
+inline ImVec4 kSkinBg() { return kBg; }
+inline ImVec4 kSkinCard() { return kCard; }
+inline ImVec4 kSkinHover() { return shade_by(kCard, 0.05f); }
+inline ImVec4 kSkinAccent() { return kAccent; }
+inline ImVec4 kSkinText() { return kText; }
+inline ImVec4 kSkinDim() { return kDim; }
+inline ImVec4 kSkinDanger() { return kDanger; }
+inline ImVec4 kSkinBtn() { return kButton; }
+inline ImVec4 kSkinBtnOn() { return kButtonActive; }
 const ImVec4 kWhite = ImVec4(1, 1, 1, 1);
 
 struct OnlineSkin {
@@ -1091,9 +1098,9 @@ void download_online(const OnlineSkin& s) {
 // --- widgets ---------------------------------------------------------------
 
 bool ghost_btn(const char* label, const ImVec4& col) {
-    ImGui::PushStyleColor(ImGuiCol_Button, kSkinBtn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kSkinHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn);
+    ImGui::PushStyleColor(ImGuiCol_Button, kSkinBtn());
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kSkinHover());
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn());
     ImGui::PushStyleColor(ImGuiCol_Text, col);
     const bool r = ImGui::Button(label);
     ImGui::PopStyleColor(4);
@@ -1101,16 +1108,16 @@ bool ghost_btn(const char* label, const ImVec4& col) {
 }
 
 bool action_btn(const char* label) {
-    ImGui::PushStyleColor(ImGuiCol_Button, kSkinBtn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kSkinHover);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn);
+    ImGui::PushStyleColor(ImGuiCol_Button, kSkinBtn());
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kSkinHover());
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn());
     const bool r = ImGui::Button(label);
     ImGui::PopStyleColor(3);
     return r;
 }
 
 bool accent_skin_btn(const char* label, const ImVec2& size) {
-    ImGui::PushStyleColor(ImGuiCol_Button, kSkinAccent);
+    ImGui::PushStyleColor(ImGuiCol_Button, kSkinAccent());
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hex(0x8fb4f9));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, hex(0x6a92e8));
     ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
@@ -1120,10 +1127,10 @@ bool accent_skin_btn(const char* label, const ImVec2& size) {
 }
 
 bool tab_btn(const char* label, bool active) {
-    ImGui::PushStyleColor(ImGuiCol_Button, active ? kSkinHover : ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? kSkinHover : kSkinBtn);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn);
-    ImGui::PushStyleColor(ImGuiCol_Text, active ? kSkinAccent : kSkinDim);
+    ImGui::PushStyleColor(ImGuiCol_Button, active ? kSkinHover() : ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? kSkinHover() : kSkinBtn());
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kSkinBtnOn());
+    ImGui::PushStyleColor(ImGuiCol_Text, active ? kSkinAccent() : kSkinDim());
     const bool r = ImGui::Button(label);
     ImGui::PopStyleColor(4);
     return r;
@@ -1162,13 +1169,13 @@ void draw_thumb(ImDrawList* dl, const ImVec2& t0, float size,
         dl->AddImage(tex_id(it->second), t0, t1);
         return;
     }
-    dl->AddRectFilled(t0, t1, ImGui::ColorConvertFloat4ToU32(kSkinHover), 6.0f);
+    dl->AddRectFilled(t0, t1, ImGui::ColorConvertFloat4ToU32(kSkinHover()), 6.0f);
     const std::string ini =
         name.empty() ? "?" : std::string(1, static_cast<char>(
                                                std::toupper(static_cast<unsigned char>(name[0]))));
     const ImVec2 ts = ImGui::CalcTextSize(ini.c_str());
     dl->AddText(ImVec2((t0.x + t1.x - ts.x) * 0.5f, (t0.y + t1.y - ts.y) * 0.5f),
-                ImGui::ColorConvertFloat4ToU32(kSkinDim), ini.c_str());
+                ImGui::ColorConvertFloat4ToU32(kSkinDim()), ini.c_str());
 }
 
 void open_modal(int kind) {
@@ -1192,7 +1199,7 @@ void card_local(const std::string& path, int idx) {
     const ImVec2 p0 = ImGui::GetItemRectMin();
     const ImVec2 p1 = ImGui::GetItemRectMax();
     const ImU32 bg = ImGui::ColorConvertFloat4ToU32(
-        sel ? kSkinAccent : (hov ? kSkinHover : kSkinCard));
+        sel ? kSkinAccent() : (hov ? kSkinHover() : kSkinCard()));
     dl->AddRectFilled(p0, p1, bg, 10.0f);
 
     const bool fav = is_fav(name);
@@ -1206,12 +1213,12 @@ void card_local(const std::string& path, int idx) {
     const std::string label = ellipsis(name, 84.0f);
     const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
     dl->AddText(ImVec2(cx - ts.x * 0.5f, y),
-                ImGui::ColorConvertFloat4ToU32(sel ? kWhite : kSkinText),
+                ImGui::ColorConvertFloat4ToU32(sel ? kWhite : kSkinText()),
                 label.c_str());
     if (fav) {
         y += 14.0f + 6.0f;
         draw_heart(dl, cx, y + 5.0f, 12.0f,
-                   ImGui::ColorConvertFloat4ToU32(kSkinDanger));
+                   ImGui::ColorConvertFloat4ToU32(kSkinDanger()));
     }
     ImGui::PopID();
 }
@@ -1226,7 +1233,7 @@ void card_online(const OnlineSkin& s, int idx) {
     const ImVec2 p0 = ImGui::GetItemRectMin();
     const ImVec2 p1 = ImGui::GetItemRectMax();
     dl->AddRectFilled(p0, p1,
-                      ImGui::ColorConvertFloat4ToU32(hov ? kSkinHover : kSkinCard),
+                      ImGui::ColorConvertFloat4ToU32(hov ? kSkinHover() : kSkinCard()),
                       10.0f);
     const float y = p0.y + (128.0f - (56.0f + 6.0f + 14.0f)) * 0.5f;
     const float cx = (p0.x + p1.x) * 0.5f;
@@ -1237,7 +1244,7 @@ void card_online(const OnlineSkin& s, int idx) {
     const std::string label = ellipsis(s.name, 84.0f);
     const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
     dl->AddText(ImVec2(cx - ts.x * 0.5f, y + 56.0f + 6.0f),
-                ImGui::ColorConvertFloat4ToU32(kSkinText), label.c_str());
+                ImGui::ColorConvertFloat4ToU32(kSkinText()), label.c_str());
     ImGui::PopID();
 }
 
@@ -1270,7 +1277,7 @@ void left_column() {
     const ImVec2 b0 = ImGui::GetWindowPos();
     const ImVec2 b1(b0.x + ImGui::GetWindowSize().x,
                     b0.y + ImGui::GetWindowSize().y);
-    dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(kSkinCard), 12.0f);
+    dl->AddRectFilled(b0, b1, ImGui::ColorConvertFloat4ToU32(kSkinCard()), 12.0f);
 
     const bool has = S.previewTex != 0;
     static bool dragging = false;
@@ -1325,12 +1332,12 @@ void left_column() {
         const ImVec2 ts = ImGui::CalcTextSize(txt);
         dl->AddText(ImVec2((b0.x + b1.x - ts.x) * 0.5f,
                            (b0.y + b1.y - ts.y) * 0.5f),
-                    ImGui::ColorConvertFloat4ToU32(kSkinDim), txt);
+                    ImGui::ColorConvertFloat4ToU32(kSkinDim()), txt);
     }
     ImGui::EndChild();
 
     // indice + Recadrer
-    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
     if (fSmall) ImGui::PushFont(fSmall);
     ImGui::TextUnformatted(tr("Glissez pour tourner - molette pour zoomer"));
     if (fSmall) ImGui::PopFont();
@@ -1339,7 +1346,7 @@ void left_column() {
         const float bw = ImGui::CalcTextSize(tr("Recadrer")).x + 20.0f;
         ImGui::SameLine(ImGui::GetWindowWidth() - bw - 4.0f);
         ImGui::BeginDisabled(!has);
-        if (ghost_btn(tr("Recadrer"), kSkinText)) {
+        if (ghost_btn(tr("Recadrer"), kSkinText())) {
             S.zoom = 1.0f;
             S.rot = 0.0f;
         }
@@ -1348,7 +1355,7 @@ void left_column() {
 
     if (has) {
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, kSkinText);
+        ImGui::PushStyleColor(ImGuiCol_Text, kSkinText());
         ImGui::TextUnformatted(stem_of(S.selected).c_str());
         ImGui::PopStyleColor();
         ImGui::Spacing();
@@ -1360,16 +1367,16 @@ void left_column() {
 
         const bool fav = is_fav(stem_of(S.selected));
         if (ghost_btn(fav ? tr("Retirer favori") : tr("Favori"),
-                      fav ? kSkinDanger : kSkinText))
+                      fav ? kSkinDanger() : kSkinText()))
             toggle_favorite();
         ImGui::SameLine();
-        if (ghost_btn(tr("Exporter"), kSkinText)) export_selected();
+        if (ghost_btn(tr("Exporter"), kSkinText())) export_selected();
         ImGui::SameLine();
-        if (ghost_btn(tr("Supprimer"), kSkinDanger)) delete_selected();
+        if (ghost_btn(tr("Supprimer"), kSkinDanger())) delete_selected();
     }
 
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
     if (has) {
         const std::string hint =
             tr("Skin sélectionné : ", "Selected skin: ") + stem_of(S.selected) +
@@ -1452,17 +1459,17 @@ void right_column() {
     // grille
     ImGui::Spacing();
     if (online && S.loadingOnline) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
         ImGui::TextUnformatted(tr("Chargement du catalogue en ligne..."));
         ImGui::PopStyleColor();
     } else if (online && S.online.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
         ImGui::TextWrapped(
             "%s", tr("Catalogue vide. Clique sur « Catalogue en ligne » ou cherche "
                      "un pseudo."));
         ImGui::PopStyleColor();
     } else if (!online && S.view.empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
         if (S.tab == 2)
             ImGui::TextWrapped(
                 "%s", tr("Aucun favori. Sélectionne un skin puis clique « Favori »."));
@@ -1495,7 +1502,7 @@ void right_column() {
 
     if (!S.status.empty()) {
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+        ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
         if (fSmall) ImGui::PushFont(fSmall);
         // Traduction au moment de l'affichage : S.status est aussi ecrit par le
         // worker, qui ne doit pas lire la langue (course sur settings.language).
@@ -1508,13 +1515,13 @@ void right_column() {
     // COMPTE (comme Numek)
     ImGui::Spacing();
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
     if (fSmall) ImGui::PushFont(fSmall);
     ImGui::TextUnformatted(tr("COMPTE"));
     if (fSmall) ImGui::PopFont();
     ImGui::PopStyleColor();
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim);
+    ImGui::PushStyleColor(ImGuiCol_Text, kSkinDim());
     ImGui::TextWrapped("%s", account_label().c_str());
     ImGui::PopStyleColor();
     ImGui::Spacing();
@@ -1554,7 +1561,7 @@ void skins_modal() {
         const float total = 12.0f + bw + 10.0f + bw;
         ImGui::SetCursorPosX(ImGui::GetWindowWidth() -
                              ImGui::GetStyle().WindowPadding.x - total);
-        if (ghost_btn(tr("Annuler"), kSkinText)) ImGui::CloseCurrentPopup();
+        if (ghost_btn(tr("Annuler"), kSkinText())) ImGui::CloseCurrentPopup();
         ImGui::SameLine();
         if (accent_skin_btn(tr("OK"), ImVec2(bw, 0))) ok = true;
         if (ok) {

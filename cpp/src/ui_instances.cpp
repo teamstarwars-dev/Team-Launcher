@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "icons.hpp"
+
 #include "util_str.hpp" // strCaseCmp (tri insensible à la casse)
 
 namespace tl::ui {
@@ -91,6 +93,43 @@ void instances_page() {
     ImGui::SameLine();
     if (ImGui::Button(g.smallGrid ? tr("Petit") : tr("Grand"), ImVec2(76, 34)))
         g.smallGrid = !g.smallGrid;
+
+    // ---- Filtres par tag ----
+    // Les tags existants sont deduits des instances : pas de liste a gerer
+    // a part, donc rien a nettoyer quand une instance disparait.
+    {
+        std::vector<std::string> tags;
+        for (auto& e : a) {
+            if (!e.is_object()) continue;
+            const auto it = e.find("Tags");
+            if (it == e.end() || !it->is_array()) continue;
+            for (const auto& t : *it) {
+                if (!t.is_string()) continue;
+                const std::string v = t.get<std::string>();
+                if (v.empty()) continue;
+                if (std::find(tags.begin(), tags.end(), v) == tags.end())
+                    tags.push_back(v);
+            }
+        }
+        if (!tags.empty()) {
+            std::sort(tags.begin(), tags.end(), [](const auto& x, const auto& y) {
+                return tl::strCaseCmp(x.c_str(), y.c_str()) < 0;
+            });
+            ImGui::Spacing();
+            const bool none = g.tagFilter.empty();
+            ImGui::PushStyleColor(ImGuiCol_Button, none ? kAccent : kButton);
+            if (ImGui::SmallButton(tr("Tous", "All"))) g.tagFilter.clear();
+            ImGui::PopStyleColor();
+            for (const auto& t : tags) {
+                ImGui::SameLine();
+                const bool on = g.tagFilter == t;
+                ImGui::PushStyleColor(ImGuiCol_Button, on ? kAccent : kButton);
+                if (ImGui::SmallButton(t.c_str()))
+                    g.tagFilter = on ? std::string() : t; // re-clic = tout
+                ImGui::PopStyleColor();
+            }
+        }
+    }
     ImGui::Spacing();
 
     // ---- Liste filtree + triee (C# FilterInstances / FilterList) ----
@@ -109,13 +148,44 @@ void instances_page() {
                     break;
                 }
             }
+            // La recherche porte aussi sur les tags : taper « pvp » doit
+            // ramener les instances marquees ainsi, pas seulement celles
+            // dont le nom contient « pvp ».
+            if (!hit)
+                if (const auto it = e.find("Tags");
+                    it != e.end() && it->is_array())
+                    for (const auto& t : *it) {
+                        if (!t.is_string()) continue;
+                        std::string n = t.get<std::string>();
+                        for (auto& c : n) c = (char)tolower((unsigned char)c);
+                        if (n.find(needle) != std::string::npos) {
+                            hit = true;
+                            break;
+                        }
+                    }
             if (!hit) continue;
+        }
+        if (!g.tagFilter.empty()) {
+            bool tagged = false;
+            if (const auto it = e.find("Tags"); it != e.end() && it->is_array())
+                for (const auto& t : *it)
+                    if (t.is_string() && t.get<std::string>() == g.tagFilter) {
+                        tagged = true;
+                        break;
+                    }
+            if (!tagged) continue;
         }
         list.push_back(&e);
     }
     std::stable_sort(
         list.begin(), list.end(), [&](const nlohmann::json* x,
                                       const nlohmann::json* y) {
+            // Les favoris passent devant, quel que soit le tri choisi :
+            // c'est tout l'interet de les epingler. A egalite, le tri
+            // demande s'applique normalement.
+            const bool fx = x->value("Favorite", false);
+            const bool fy = y->value("Favorite", false);
+            if (fx != fy) return fx;
             switch (g.sortIdx) {
             case 1: // OrdinalIgnoreCase (C#)
                 return tl::strCaseCmp(x->value("Name", "").c_str(),
@@ -184,15 +254,20 @@ void instances_page() {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (hov)
             dl->AddRectFilled(cwp, ImVec2(cwp.x + cws.x, cwp.y + cws.y),
-                              ImGui::ColorConvertFloat4ToU32(hex(0x1a1a22)),
+                              ImGui::ColorConvertFloat4ToU32(
+                                  shade_by(kCard, 0.05f)),
                               6.0f);
         if (selectedBorder && id == g.selInstId && !g.autoActive)
             dl->AddRect(cwp, ImVec2(cwp.x + cws.x, cwp.y + cws.y),
                         ImGui::ColorConvertFloat4ToU32(kAccent), 6.0f, 0, 1.5f);
 
         // banniere + lettre (C# MakeLetter)
+        // Banniere : legerement en retrait de la carte, dans les deux sens
+        // selon le theme. En dur (0x101018) elle faisait une bande noire sur
+        // une carte blanche en theme clair.
         dl->AddRectFilled(cwp, ImVec2(cwp.x + cws.x, cwp.y + bannerH),
-                          IM_COL32(0x10, 0x10, 0x18, 255));
+                          ImGui::ColorConvertFloat4ToU32(
+                              shade_by(kCard, 0.04f)));
         {
             char initial[2] = {nm.empty() ? '?'
                                           : (char)toupper((unsigned char)nm[0]),
@@ -229,6 +304,40 @@ void instances_page() {
             ImGui::PushStyleColor(ImGuiCol_Text, kDim);
             if (ImGui::Button(tr("Editer"), ImVec2(64, 22))) open_edit_modal(id);
             ImGui::PopStyleColor();
+
+            // Etoile des favoris, en haut a GAUCHE de la banniere. Sans
+            // marque visible, on ne comprend pas pourquoi une instance
+            // passe devant alors que le tri porte sur autre chose.
+            // Cliquable : epingler ne doit pas obliger a ouvrir le menu
+            // contextuel.
+            const bool fav = e.value("Favorite", false);
+            ImGui::SetCursorScreenPos(ImVec2(cwp.x + 7, oy));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.18f));
+            const ImVec2 sp = ImGui::GetCursorScreenPos();
+            if (ImGui::Button("##fav", ImVec2(24, 22))) {
+                if (auto* m = find_instance(id)) {
+                    (*m)["Favorite"] = !fav;
+                    DataStore::save();
+                }
+            }
+            ImGui::PopStyleColor(3);
+            const bool hov = ImGui::IsItemHovered();
+            // Etoile pleine si favori, simple contour sinon — et l'etoile
+            // en creux n'apparait qu'au survol, pour ne pas encombrer
+            // toutes les cartes.
+            if (fav || hov) {
+                icons::draw(ImGui::GetWindowDrawList(), icons::Id::Star,
+                            ImVec2(sp.x + 5, sp.y + 4), 14.0f,
+                            ImGui::ColorConvertFloat4ToU32(
+                                fav ? ImVec4(1.0f, 0.78f, 0.24f, 1.0f) : kDim));
+            }
+            if (hov)
+                ImGui::SetTooltip("%s", fav ? tr("Retirer des favoris",
+                                                 "Remove from favorites")
+                                            : tr("Épingler en favori",
+                                                 "Pin as favorite"));
         }
 
         // corps (C# StackPanel margin(pad,10) spacing 3)
@@ -310,6 +419,35 @@ void instances_page() {
                 open_in_explorer(d);
             }
             ImGui::Separator();
+            {
+                const bool fav = e.value("Favorite", false);
+                if (ImGui::MenuItem(fav ? tr("Retirer des favoris",
+                                             "Remove from favorites")
+                                        : tr("Épingler en favori",
+                                             "Pin as favorite"))) {
+                    // `e` est une reference CONSTANTE dans cette boucle :
+                    // on repasse par la recherche mutable pour ecrire.
+                    if (auto* m = find_instance(id)) {
+                        (*m)["Favorite"] = !fav;
+                        DataStore::save();
+                    }
+                }
+            }
+            if (ImGui::MenuItem(tr("Tags..."))) {
+                g.tagsId = id;
+                // Pre-remplit le champ avec les tags existants.
+                std::string joined;
+                if (const auto it = e.find("Tags");
+                    it != e.end() && it->is_array())
+                    for (const auto& t : *it)
+                        if (t.is_string()) {
+                            if (!joined.empty()) joined += ", ";
+                            joined += t.get<std::string>();
+                        }
+                std::snprintf(g.tagsBuf, sizeof(g.tagsBuf), "%s", joined.c_str());
+                g.tagsRequest = true;
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem(tr("Modifier"))) open_edit_modal(id);
             if (ImGui::MenuItem(tr("Ouvrir"))) {
                 std::error_code ec;
@@ -340,7 +478,84 @@ void instances_page() {
 // Modales instance (creer / editer / supprimer)
 // ---------------------------------------------------------------------------
 
+// Modale d'edition des tags d'une instance. Saisie libre separee par des
+// virgules plutot qu'une liste a cocher : les categories sont propres a
+// chaque utilisateur, on ne peut pas les deviner a l'avance.
+void tags_modal() {
+    if (g.tagsRequest) {
+        ImGui::OpenPopup("###insttags");
+        g.tagsRequest = false;
+    }
+    const ImVec2 center(ImGui::GetIO().DisplaySize.x * 0.5f,
+                        ImGui::GetIO().DisplaySize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(460, 230), ImGuiCond_Appearing);
+    const std::string title = std::string(tr("Tags")) + "###insttags";
+    bool open = true;
+    if (!ImGui::BeginPopupModal(title.c_str(), &open,
+                                ImGuiWindowFlags_NoResize |
+                                    ImGuiWindowFlags_NoCollapse))
+        return;
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped(
+        "%s", tr("Sépare les tags par des virgules. Ils servent à filtrer la "
+                 "liste et sont pris en compte par la recherche.",
+                 "Separate tags with commas. They filter the list and are "
+                 "included in the search."));
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##tagsedit", "pvp, survie, avec les copains",
+                             g.tagsBuf, sizeof(g.tagsBuf));
+    ImGui::PopStyleColor();
+
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 52.0f);
+    if (ImGui::Button(tr("Annuler"), ImVec2(150, 34))) ImGui::CloseCurrentPopup();
+    ImGui::SameLine();
+    if (accent_button(tr("Enregistrer", "Save"), ImVec2(150, 34))) {
+        if (auto* e = find_instance(g.tagsId)) {
+            nlohmann::json arr = nlohmann::json::array();
+            std::string cur;
+            auto flush = [&] {
+                // Espaces de bordure retires : « pvp , survie » et
+                // « pvp,survie » doivent donner les memes tags, sinon le
+                // filtre se retrouve avec des doublons invisibles.
+                const auto b = cur.find_first_not_of(" \t");
+                const auto f = cur.find_last_not_of(" \t");
+                if (b != std::string::npos) {
+                    const std::string t = cur.substr(b, f - b + 1);
+                    bool dup = false;
+                    for (const auto& x : arr)
+                        if (x.get<std::string>() == t) dup = true;
+                    if (!dup) arr.push_back(t);
+                }
+                cur.clear();
+            };
+            for (const char* p = g.tagsBuf; *p; ++p) {
+                if (*p == ',')
+                    flush();
+                else
+                    cur.push_back(*p);
+            }
+            flush();
+            if (arr.empty())
+                e->erase("Tags"); // pas de tableau vide qui traine
+            else
+                (*e)["Tags"] = arr;
+            DataStore::save();
+        }
+        // Un tag peut avoir disparu : ne pas laisser un filtre sur un tag
+        // qui n'existe plus, sinon la liste parait vide sans raison.
+        g.tagFilter.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
 void instance_modals() {
+    tags_modal();
     // Les titres sont traduits mais l'identifiant ImGui (apres ###) reste fixe :
     // changer de langue ne doit pas fermer la modale ouverte.
     if (g.modalRequest && g.modal) {

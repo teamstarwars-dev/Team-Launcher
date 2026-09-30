@@ -41,7 +41,9 @@ namespace {
 
 const ImVec4 kOk = hex(0x9ece6a);      // en ligne / Partager
 const ImVec4 kWarn = hex(0xe0af68);    // Importer
-const ImVec4 kCardHover = hex(0x1e2229);
+// Survol derive du theme courant : en dur, cette teinte etait invisible sur
+// un fond clair. `const` global impossible ici, la palette change a chaud.
+inline ImVec4 card_hover() { return shade_by(kCard, 0.05f); }
 
 // --- presse-papiers (C# Clipboard.GetText/SetText) : Win32 CF_TEXT sous
 // Windows, presse-papiers SDL via ImGui sous Linux (même contenu texte).
@@ -867,7 +869,7 @@ void favorite_card(const std::string& addr, int idx) {
         ImGui::GetCursorScreenPos(),
         ImVec2(ImGui::GetCursorScreenPos().x + w,
                ImGui::GetCursorScreenPos().y + h));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, hov ? kCardHover : kCard);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, hov ? card_hover() : kCard);
     ImGui::BeginChild("##fav", ImVec2(w, h), ImGuiChildFlags_Borders);
 
     // titre + sous-titre (adresse dupliquee, fidele C#)
@@ -1308,7 +1310,7 @@ void servers_page() {
 
     if (ImGui::BeginTabBar("##srvtabs")) {
         ImGui::PushStyleColor(ImGuiCol_Tab, kCard);
-        ImGui::PushStyleColor(ImGuiCol_TabHovered, kCardHover);
+        ImGui::PushStyleColor(ImGuiCol_TabHovered, card_hover());
         ImGui::PushStyleColor(ImGuiCol_TabActive, kAccent);
         const int forced = (autoTab >= 0) ? autoTab : -1;
         if (ImGui::BeginTabItem(tr("Mes serveurs"), nullptr,
