@@ -201,6 +201,22 @@ public static class Theme
         t.BackColor = Bg;
         t.ForeColor = Text;
         t.DrawMode = TabDrawMode.OwnerDrawFixed;
+        t.BorderStyle = BorderStyle.None;
+
+        // Supprimer la bordure blanche native Win32
+        t.HandleCreated += (_, _) =>
+        {
+            const int GWL_STYLE = -16;
+            const int WS_BORDER = 0x00800000;
+            const int WS_EX_CLIENTEDGE = 0x00000200;
+            nint hwnd = t.Handle;
+            nint style = GetWindowLong(hwnd, GWL_STYLE);
+            SetWindowLong(hwnd, GWL_STYLE, style & ~WS_BORDER);
+            nint exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+            SetWindowLong(hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_CLIENTEDGE);
+            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0020); // SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED
+        };
     }
 
     private static Color OnColor(Color bg) =>
@@ -228,4 +244,14 @@ public static class Theme
     }
 
     private static Color FromHex(string hex) { TryParse(hex, out var c); return c; }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint SetWindowLong(IntPtr hWnd, int nIndex, nint dwNewLong);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter,
+        int X, int Y, int cx, int cy, uint uFlags);
 }

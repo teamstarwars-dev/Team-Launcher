@@ -252,10 +252,15 @@ public class SkinPreview : Control
             Array.Sort(arr, (a, b) => b.Depth.CompareTo(a.Depth));
             foreach (var f in arr)
             {
-                _outlinePen.Color = ControlPaint.Dark(f.Color, 0.2f);
-                using var brush = GetBrush(f.Color);
-                g.FillPolygon(brush, f.Pts);
-                g.DrawPolygon(_outlinePen, f.Pts);
+                if (f.Pts == null || f.Pts.Length < 3) continue;
+                try
+                {
+                    _outlinePen.Color = ControlPaint.Dark(f.Color, 0.2f);
+                    using var brush = GetBrush(f.Color);
+                    g.FillPolygon(brush, f.Pts);
+                    g.DrawPolygon(_outlinePen, f.Pts);
+                }
+                catch { }
             }
         }
 

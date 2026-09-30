@@ -1,136 +1,229 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Team Launcher — Un launcher Minecraft léger, complet, sans fioritures</title>
-    <meta name="description" content="Team Launcher est un launcher Minecraft Java gratuit : instances, mods, serveurs hébergés, Discord Rich Presence. Sans publicité, sans collecte de données.">
-    <meta property="og:title" content="Team Launcher — Launcher Minecraft léger et complet">
-    <meta property="og:description" content="Gère tes instances, mods et serveurs Minecraft. Gratuit, sans pub, connexion Microsoft officielle.">
-    <meta property="og:type" content="website">
-    <meta property="og:image" content="img/logo.png">
-    <link rel="icon" href="img/logo.png">
-    <link rel="stylesheet" href="css/style.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Launcher — Reconstruction</title>
+<meta name="description" content="Le site de Team Launcher est en cours de reconstruction. Le launcher et le jeu restent disponibles.">
+<link rel="icon" href="img/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --fg: #eef2ff;
+    --muted: #94a3b8;
+    --card: rgba(255,255,255,.04);
+    --line: rgba(255,255,255,.08);
+    --accent: #60a5fa;
+    --accent2: #a78bfa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    font-family: Manrope, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow-x: hidden;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    padding: 28px 48px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: inherit;
+    text-decoration: none;
+  }
+  .brand img { width: 30px; height: 30px; }
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 24px 80px;
+    text-align: center;
+  }
+  .inner {
+    max-width: 680px;
+  }
+  .glass {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 20px;
+    padding: clamp(32px, 5vw, 56px);
+  }
+  .mark {
+    width: 48px; height: 48px;
+    margin: 0 auto 22px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    position: relative;
+  }
+  .mark::after {
+    content: "";
+    position: absolute;
+    inset: 12px;
+    border: 3px solid rgba(255,255,255,.95);
+    border-radius: 50%;
+    border-right-color: transparent;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+  h1 {
+    font-size: clamp(2rem, 4.5vw, 3rem);
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    line-height: 1.1;
+    margin-bottom: 16px;
+  }
+  .lead {
+    color: var(--muted);
+    font-size: 1.05rem;
+    line-height: 1.7;
+    max-width: 48ch;
+    margin: 0 auto 32px;
+  }
+  .bar {
+    height: 4px;
+    background: rgba(255,255,255,.06);
+    border-radius: 999px;
+    overflow: hidden;
+    margin-bottom: 28px;
+  }
+  .bar > i {
+    display: block;
+    height: 100%;
+    width: 42%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    animation: slide 2.6s ease-in-out infinite;
+  }
+  @keyframes slide {
+    0% { width: 24%; margin-left: 0; }
+    50% { width: 48%; margin-left: 28%; }
+    100% { width: 24%; margin-left: 76%; }
+  }
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+  .stat {
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 14px 10px;
+  }
+  .stat b {
+    display: block;
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .stat span {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  a.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 13px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 12px;
+    text-decoration: none;
+    transition: .15s ease;
+  }
+  .btn-ghost {
+    color: var(--fg);
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,.03);
+  }
+  .btn-ghost:hover { background: rgba(255,255,255,.06); }
+  footer {
+    padding: 22px 48px;
+    border-top: 1px solid var(--line);
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  footer a { color: var(--muted); text-decoration: none; margin: 0 8px; }
+  footer a:hover { color: var(--fg); }
+  @media (max-width: 560px) {
+    header, footer { padding: 18px; }
+    .stats { grid-template-columns: 1fr; }
+  }
+</style>
 </head>
 <body>
-
 <header>
-    <div class="navbar">
-        <a class="brand" href="index.html">
-            <img src="img/logo.png" alt="Logo Team Launcher">
-            Team Launcher
-        </a>
-        <nav>
-            <a href="index.html" class="active">Accueil</a>
-            <a href="presentation.html">Présentation</a>
-            <a href="equipe.html">Équipe</a>
-            <a href="telechargement.html">Téléchargement</a>
-            <a href="contact.html">Contact</a>
-        </nav>
-    </div>
+  <a class="brand" href="index.html">
+    <img src="img/logo.png" alt="">
+    Team Launcher
+  </a>
 </header>
 
 <main>
-    <section class="hero">
-        <div>
-            <div class="kicker">Launcher Minecraft Java — gratuit et sans pub</div>
-            <h1>Ton jeu. Tes instances.<br>Sans usine à gaz.</h1>
-            <p class="lead">
-                Team Launcher gère tes instances Forge, Fabric, NeoForge et Vanilla,
-                héberge tes propres serveurs, connecte ton vrai compte Microsoft —
-                le tout dans une fenêtre qui démarre plus vite que le jeu lui-même.
-            </p>
-            <p style="margin-top: 26px;">
-                <a class="btn btn-primary btn-big" href="telechargement.html">↓ Télécharger
-                    <span class="sub">Windows 10 / 11 — installateur ~90 Mo</span>
-                </a>
-            </p>
-            <div class="badge-row">
-                <span class="badge">Gratuit</span>
-                <span class="badge">Sans publicité</span>
-                <span class="badge">Connexion Microsoft officielle</span>
-                <span class="badge">Aucune donnée collectée</span>
-            </div>
-        </div>
-        <div class="hero-shot">
-            <img src="img/capture-accueil.png" alt="Capture d'écran du launcher Team Launcher">
-        </div>
-    </section>
+  <div class="inner">
+    <div class="glass">
+      <div class="mark"></div>
+      <h1>On peaufine le nouveau site.</h1>
+      <p class="lead">
+        Quelques travaux de fond en cours. Le téléchargement du launcher
+        et le jeu restent disponibles pendant toute la durée des travaux.
+      </p>
 
-    <h2>Ce qu'il fait mieux que les autres</h2>
-    <div class="grid-3">
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-            <h3>Instances sans douleur</h3>
-            <p>Crée, duplique, importe (CurseForge, Modrinth .mrpack) et répare
-               tes instances. Mods, mondes, screenshots : tout est à sa place.</p>
-        </div>
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-            <h3>Héberge ton serveur</h3>
-            <p>Vanilla, Fabric, Forge ou NeoForge en 3 clics. Importe ta map,
-               ouvre le tunnel Internet, partage l'adresse. Ta box reste fermée.</p>
-        </div>
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <h3>Vrai compte Microsoft</h3>
-            <p>Connexion officielle par code d'appareil : pseudo et skin récupérés
-               automatiquement. Aucune configuration, aucun fichier à bricoler.</p>
-        </div>
-    </div>
+      <div class="bar"><i></i></div>
 
-    <h2>Pensé pour rester léger</h2>
-    <div class="card">
-        <ul class="checklist">
-            <li>Démarrage instantané — pas de pub, pas de page d'accueil qui charge 10 secondes</li>
-            <li>Fichiers officiels Mojang vérifiés par hash, mis en cache entre les lancements</li>
-            <li>Java téléchargé automatiquement selon la version du jeu</li>
-            <li>Analyse de crash en clair : tu sais pourquoi ça a planté</li>
-            <li>Mises à jour automatiques intégrées</li>
-        </ul>
-    </div>
+      <div class="stats">
+        <div class="stat">
+          <b>Design</b>
+          <span>En cours</span>
+        </div>
+        <div class="stat">
+          <b>Contenu</b>
+          <span>En cours</span>
+        </div>
+        <div class="stat">
+          <b>Relance</b>
+          <span>Bientôt</span>
+        </div>
+      </div>
 
-    <h2>Dernières nouveautés</h2>
-    <div class="grid-3">
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            <h3>v4.2.2 — Léger et auto-update</h3>
-            <p>Launcher léger (20 Mo RAM), mises à jour auto via Velopack, mémoire auto-ajustée.</p>
-        </div>
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            <h3>v4.2.1 — Langue sans restart</h3>
-            <p>Changer de langue ne ferme plus Minecraft. La page se rafraîchit instantanément.</p>
-        </div>
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <h3>v4.2.0 — Bouton Discord</h3>
-            <p>Bouton "Visiter le site" sur la Rich Presence Discord. Correction du crash OpenAL audio.</p>
-        </div>
-        <div class="card">
-            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
-            <h3>v4.1.0 — Admin Panel</h3>
-            <p>Télémétrie centralisée, mises à jour auto, installateur Windows avec Inno Setup.</p>
-        </div>
+      <div class="actions">
+        <a class="btn btn-ghost" href="contact.html">Nous contacter</a>
+      </div>
     </div>
-
-    <h2>Dernières actualités</h2>
-    <div id="news-feed" class="news-feed">
-        <p class="news-loading">Chargement des actualités…</p>
-    </div>
+  </div>
 </main>
 
 <footer>
-    <div class="footer-inner">
-        <span>© 2026 Team Launcher</span>
-        <nav>
-            <a href="mentions-legales.html">Mentions légales</a>
-            <a href="confidentialite.html">Politique de confidentialité</a>
-            <a href="conditions-utilisation.html">Conditions d'utilisation</a>
-        </nav>
-    </div>
+  © 2026 Team Launcher
+  ·
+  <a href="mentions-legales.html">Mentions légales</a>
+  ·
+  <a href="contact.html">Contact</a>
 </footer>
-
-<script src="js/news.js"></script>
 </body>
 </html>
