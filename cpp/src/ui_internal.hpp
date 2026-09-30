@@ -241,6 +241,7 @@ void citygen_page();     // ui_citygen.cpp (page 12) : ville OpenStreetMap
 void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
 void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
 void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
+void social_page();      // ui_social.cpp (page 16) : amis et messages
 void search_frame();     // ui_search.cpp : palette de recherche (Ctrl+K)
 void search_open();
 bool onboarding_needed();  // ui_onboarding.cpp

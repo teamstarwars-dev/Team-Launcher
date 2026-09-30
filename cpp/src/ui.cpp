@@ -943,6 +943,7 @@ void frame(SDL_Window* window) {
     ImGui::Separator();
     ImGui::Spacing();
     nav(icons::Id::Download, "Téléchargements", 15);
+    nav(icons::Id::Account, "Amis", 16);
     nav(icons::Id::Account, "Compte", 7);
     nav(icons::Id::Settings, "Paramètres", 8);
 
@@ -967,6 +968,7 @@ void frame(SDL_Window* window) {
     case 13: moddev_page(); break;
     case 14: modelviewer_page(); break;
     case 15: downloads_page(); break;
+    case 16: social_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();

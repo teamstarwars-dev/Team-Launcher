@@ -74,7 +74,17 @@ Périmètre : amis par pseudo, messages privés texte + images, petits groupes d
 
 C'est le bon choix, et de loin. Un vocal correct demande bien plus que « transporter du son » : codec Opus, annulation d'écho, suppression de bruit, contrôle de gain, gigue et perte de paquets, traversée de NAT avec serveurs TURN de repli, et un relais média à héberger. C'est un métier à soi seul, et un poste de coût permanent. Discord a déjà tout cela, et les joueurs y sont.
 
-#### La question à trancher avant d'écrire la première ligne
+#### TRANCHÉ le 30/09/2026 : tout chez Discord
+
+Amis, messages **et** vocal passent par Discord. Aucun serveur à héberger, aucune donnée personnelle à conserver, aucune modération à assurer nous-mêmes — et une seule identité, donc aucune des incohérences décrites plus bas.
+
+**État au 30/09/2026.** La couche `social.hpp` et la page 16 sont écrites, complètes et **indépendantes du fournisseur** : liste d'amis, conversation, ajout par pseudo, blocage, signalement, et bouton d'appel vocal désactivé avec la mention « à venir ».
+
+Il manque le **SDK social de Discord** : une bibliothèque native à récupérer sur le portail développeur après acceptation de leurs conditions, puis à lier au launcher. À savoir — les amis et les messages privés ne passent **pas** par le canal IPC local déjà utilisé pour la Rich Presence, qui ne sait que déclarer une activité.
+
+Tant que le SDK n'est pas là, la page affiche ce qui manque et **aucune donnée fictive** : une fausse liste d'amis ou un faux fil de discussion laisseraient croire que les messages partent. Brancher le SDK revient à implémenter les fonctions de `social.cpp` et à définir `TL_HAS_DISCORD_SOCIAL` ; l'interface, le modèle et les règles ne sont pas à refaire.
+
+#### Pourquoi les autres options ont été écartées
 
 Si le vocal vient de Discord mais que les amis et les messages viennent d'un backend maison, **il y a deux systèmes d'identité en parallèle**, et ils ne se recouvrent pas :
 

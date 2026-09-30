@@ -257,6 +257,7 @@ const Entry kTable[] = {
     {"Développement de mods", "Mod development"},
     {"Modèles 3D", "3D models"},
     {"Téléchargements", "Downloads"},
+    {"Amis", "Friends"},
     {"Visualiseur de modèles", "Model viewer"},
     {"Tout désélectionner", "Deselect all"},
     {"Supprimer la sélection", "Delete selection"},
