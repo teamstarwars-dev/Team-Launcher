@@ -60,8 +60,12 @@ Détection de conflits avant lancement (versions incompatibles, dépendances man
 ### Phase 6 — Sauvegardes, comptes, profils
 Sauvegarde programmée toutes les X heures avec rotation sur N, restauration en un clic avec aperçu, presets de lancement, gestion de plusieurs comptes Microsoft avec bascule rapide.
 
-### Phase 7 — Démarrage, aide, mises à jour
+### Phase 7 — Démarrage, aide, mises à jour — **FAITE le 30/09/2026**
 Fermer vs réduire, lancement au démarrage du système, jeu affiché au lancement, menu d'aide (centre d'aide, Discord, ticket, export zip des journaux, suggestion, « Quoi de neuf »), canal stable/bêta, notes de version après mise à jour, mode diagnostic complet.
+
+Livré : `startup.cpp` (entrée de session, `--autostart`), `support.cpp` (rapport machine + export zip expurgé), `ui_help.cpp` (page 17), canal bêta dans `maintenance.cpp`, vérification périodique, format de date, et `syscolor.cpp` — barre de titre accordée au système, demandée le même jour. Détail et pièges dans `ETAPE1-estimations.md`.
+
+Non livré, et pourquoi : l'icône de **zone de notification**. SDL2 n'en propose pas (SDL3 oui) ; le mode « réduire » laisse donc la fenêtre dans la barre des tâches, et la sortie explicite vit dans la page Aide.
 
 ### Phase 8 — Architecture et performance
 Système de plugins internes, API HTTP locale, préchargement de la JVM pendant la sélection d'instance.

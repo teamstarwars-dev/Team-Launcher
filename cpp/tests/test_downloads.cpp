@@ -5,6 +5,8 @@
 
 #include "downloads.hpp"
 
+#include "test_env.hpp" // _putenv_s portable (isolation TL_DATA_DIR)
+
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -50,6 +52,16 @@ static bool wait_until(F f, int ms = 5000) {
 }
 
 int main() {
+    // Etat isole des le debut : sans ca, les sections 1-10 persistent dans
+    // le VRAI downloads.json de la machine (bug constate : entrees
+    // "exemple.test" dans %LOCALAPPDATA%\TeamLauncher).
+    {
+        const auto tmp0 = std::filesystem::temp_directory_path() / "tl-dl-test";
+        std::error_code ec0;
+        std::filesystem::remove_all(tmp0, ec0);
+        std::filesystem::create_directories(tmp0, ec0);
+        _putenv_s("TL_DATA_DIR", tmp0.string().c_str());
+    }
     // =====================================================================
     // 1. Refus des entrees vides
     // =====================================================================
@@ -306,11 +318,7 @@ int main() {
         std::error_code ec;
         std::filesystem::remove_all(tmp, ec);
         std::filesystem::create_directories(tmp, ec);
-#ifdef _WIN32
         _putenv_s("TL_DATA_DIR", tmp.string().c_str());
-#else
-        setenv("TL_DATA_DIR", tmp.string().c_str(), 1);
-#endif
         reset_for_tests();
         std::filesystem::remove(state_path(), ec);
 

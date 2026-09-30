@@ -9,6 +9,7 @@
 #include "maintenance.hpp"
 #include "presence.hpp"
 #include "shortcut.hpp"
+#include "startup.hpp"
 
 #define SDL_MAIN_HANDLED
 #include <SDL.h>
@@ -49,6 +50,7 @@ struct Buffers {
     char discordId[96] = "";
     char curseForge[160] = "";
     char webhook[320] = "";
+    char helpDiscord[320] = "";
     char bg[16] = "";
     char card[16] = "";
     char accent[16] = "";
@@ -69,6 +71,7 @@ void reload_buffers() {
     set(b.discordId, sizeof(b.discordId), s.discordAppId);
     set(b.curseForge, sizeof(b.curseForge), s.curseForgeApiKey);
     set(b.webhook, sizeof(b.webhook), s.discordTelemetryWebhook);
+    set(b.helpDiscord, sizeof(b.helpDiscord), s.helpDiscordUrl);
     set(b.bg, sizeof(b.bg), s.bgColor.empty() ? hex_of(kBg) : s.bgColor);
     set(b.card, sizeof(b.card), s.cardColor.empty() ? hex_of(kCard) : s.cardColor);
     set(b.accent, sizeof(b.accent),
@@ -233,6 +236,129 @@ void tab_general() {
         notify_toast(tr("Paramètres enregistrés."),
                      tr("Langue appliquée immédiatement.",
                         "Language applied immediately."));
+    }
+
+    // Format de date : independant de la langue. On peut vouloir lire le
+    // launcher en francais et des dates ISO, ou l'inverse ; les lier
+    // obligeait a changer de langue pour changer de format.
+    field_label("Format des dates");
+    {
+        const char* const kFormats[] = {"dd/MM/yyyy", "MM/dd/yyyy",
+                                        "yyyy-MM-dd"};
+        int idx = 0;
+        for (int i = 0; i < 3; ++i)
+            if (s.dateFormat == kFormats[i]) idx = i;
+        ImGui::SetNextItemWidth(200.0f);
+        if (ImGui::Combo("##datefmt", &idx, kFormats, 3)) {
+            s.dateFormat = kFormats[idx];
+            DataStore::save();
+        }
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::Text(tr("Aperçu : %s", "Preview: %s"),
+                    format_date("2026-09-30").c_str());
+        ImGui::PopStyleColor();
+    }
+
+    section("DÉMARRAGE ET FERMETURE");
+
+    // Case a cocher lue a la SOURCE (registre / fichier autostart), pas
+    // dans le reglage : un profil recopie ou un nettoyeur de demarrage
+    // peut avoir retire l'entree, et afficher « activé » serait faux.
+    {
+        static bool known = false;
+        static bool real = false;
+        if (!known) {
+            known = true;
+            real = startup::autostart_enabled();
+            // Reglage et realite d'accord : on recale sans rien ecrire au
+            // systeme, l'utilisateur n'a rien demande.
+            if (s.launchAtSystemStart != real) {
+                s.launchAtSystemStart = real;
+                DataStore::save();
+            }
+        }
+        ImGui::BeginDisabled(!startup::autostart_supported());
+        bool v = real;
+        if (ImGui::Checkbox(tr("Lancer Team Launcher à l'ouverture de session",
+                               "Start Team Launcher when I log in"),
+                            &v)) {
+            std::string err;
+            if (startup::set_autostart(v, &err)) {
+                real = v;
+                s.launchAtSystemStart = v;
+                DataStore::save();
+            } else {
+                notify_toast(tr("Démarrage automatique", "Automatic start"),
+                             err);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped("%s",
+                           tr("Le launcher démarre alors réduit : il ne "
+                              "passe pas devant ce que vous faites.",
+                              "The launcher then starts minimised: it does "
+                              "not jump in front of what you are doing."));
+        ImGui::PopStyleColor();
+    }
+
+    field_label("Bouton de fermeture de la fenêtre");
+    {
+        int idx = s.closeBehavior == "quit" ? 1 : 0;
+        const char* names[] = {"Réduire la fenêtre", "Quitter le launcher"};
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::Combo("##close", &idx, names, 2)) {
+            s.closeBehavior = idx == 1 ? "quit" : "minimize";
+            DataStore::save();
+        }
+        if (idx == 0) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextWrapped(
+                "%s",
+                tr("Le launcher reste dans la barre des tâches. Pour le "
+                   "fermer réellement : page Aide > Quitter le launcher.",
+                   "The launcher stays in the taskbar. To really close it: "
+                   "Help page > Quit the launcher."));
+            ImGui::PopStyleColor();
+        }
+    }
+
+    field_label("Instance sélectionnée au démarrage");
+    {
+        // Liste construite a chaque frame : elle doit suivre les creations
+        // et suppressions d'instances sans qu'on ait a la rafraichir.
+        std::vector<std::string> ids{"last", "none"};
+        std::vector<std::string> labels{
+            tr("La dernière jouée", "The last one played"),
+            tr("Aucune", "None")};
+        for (const auto& e : inst_array()) {
+            if (!e.is_object()) continue;
+            const std::string id = e.value("Id", "");
+            if (id.empty()) continue;
+            ids.push_back(id);
+            labels.push_back(e.value("Name", id));
+        }
+        int idx = 0;
+        for (size_t i = 0; i < ids.size(); ++i)
+            if (ids[i] == s.startupGame) idx = static_cast<int>(i);
+        std::vector<const char*> items;
+        items.reserve(labels.size());
+        for (const auto& l : labels) items.push_back(l.c_str());
+        ImGui::SetNextItemWidth(320.0f);
+        if (ImGui::Combo("##startgame", &idx, items.data(),
+                         static_cast<int>(items.size()))) {
+            s.startupGame = ids[static_cast<size_t>(idx)];
+            DataStore::save();
+        }
+    }
+
+    field_label("Salon d'entraide Discord (affiché dans la page Aide)");
+    ImGui::SetNextItemWidth(420.0f);
+    if (ImGui::InputTextWithHint("##helpdisc", "https://discord.gg/...",
+                                 b.helpDiscord, sizeof(b.helpDiscord))) {
+        s.helpDiscordUrl = trimmed(b.helpDiscord);
+        DataStore::save();
     }
 }
 
@@ -791,6 +917,41 @@ void tab_integrations() {
     ImGui::Text("%s%s", tr("Version installée : "), TL_VERSION_STRING);
     ImGui::PopStyleColor();
 
+    // Canal. « /releases/latest » ne renvoie jamais de preversion : passer
+    // en bêta change de point d'entree, pas seulement de filtre.
+    field_label("Canal de mise à jour");
+    {
+        int ch = s.updateChannel == "beta" ? 1 : 0;
+        const char* names[] = {"Stable", "Bêta"};
+        ImGui::SetNextItemWidth(200.0f);
+        if (ImGui::Combo("##chan", &ch, names, 2)) {
+            s.updateChannel = ch == 1 ? "beta" : "stable";
+            DataStore::save();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s",
+            ch == 1
+                ? tr("Les préversions sont proposées dès leur publication. "
+                     "Elles ne sont pas relues : attendez-vous à des "
+                     "régressions, et gardez une sauvegarde de vos mondes.",
+                     "Pre-releases are offered as soon as they are "
+                     "published. They are not reviewed: expect "
+                     "regressions, and keep a backup of your worlds.")
+                : tr("Seules les versions publiées comme définitives sont "
+                     "proposées.",
+                     "Only releases published as final are offered."));
+        ImGui::PopStyleColor();
+    }
+
+    field_label("Vérifier les mises à jour");
+    ImGui::SetNextItemWidth(320.0f);
+    if (ImGui::SliderInt("##updfreq", &s.updateFreqHours, 0, 168,
+                         s.updateFreqHours == 0
+                             ? tr("seulement à la demande", "on request only")
+                             : tr("toutes les %d h", "every %d h")))
+        DataStore::save();
+
     // Portage UpdateService/UpdateChecker (sans Velopack) : verification,
     // telechargement avec progression, installation differee au redemarrage.
     update_panel();
@@ -1168,6 +1329,11 @@ void settings_page() {
         autoTab = v ? std::atoi(v) : -1;
     }
     auto forced = [&](int i) {
+        // Demande venue d'ailleurs (page Aide) : elle prime, et se consomme.
+        if (g.settingsTab == i) {
+            g.settingsTab = -1;
+            return ImGuiTabItemFlags_SetSelected;
+        }
         if (autoTab != i) return ImGuiTabItemFlags_None;
         autoTab = -1;
         return ImGuiTabItemFlags_SetSelected;

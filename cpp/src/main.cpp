@@ -25,6 +25,7 @@
 #include "datastore.hpp"
 #include "maintenance.hpp"
 #include "fonts.hpp"
+#include "syscolor.hpp"
 #include "util_image.hpp"
 #include "ui.hpp"
 
@@ -51,9 +52,16 @@ int main(int argc, char** argv) {
 #endif
 
     // --portable : donnees a cote de l'exe (avant tout load)
-    for (int i = 1; i < argc; ++i)
+    // --autostart : pose par l'entree de demarrage de session (startup.cpp).
+    //   La fenetre s'ouvre alors reduite : surgir au premier plan a chaque
+    //   ouverture de session serait insupportable.
+    bool autostarted = false;
+    for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--portable") == 0)
             tl::DataStore::isPortable = true;
+        else if (std::strcmp(argv[i], "--autostart") == 0)
+            autostarted = true;
+    }
     tl::DataStore::load();
 
     // Mise a jour stagee : application differee (l'exe en cours est
@@ -83,8 +91,11 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
+    // Titre sans numero de version : la barre de titre sert a reconnaitre
+    // la fenetre, pas a afficher un bulletin de build. La version reste
+    // lisible dans Paramètres > Intégrations et dans la page Aide.
     SDL_Window* window = SDL_CreateWindow(
-        "Team Launcher v" TL_VERSION_STRING,
+        "Team Launcher",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         960, 620,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
@@ -129,6 +140,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Barre de titre accordee au systeme (mode sombre, couleur d'accent).
+    // Posee avant la premiere frame pour eviter un clignotement.
+    tl::syscolor::poll(window);
+
+    if (autostarted) SDL_MinimizeWindow(window);
+
     SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
     if (!gl_ctx) {
         std::fprintf(stderr, "SDL_GL_CreateContext: %s\n", SDL_GetError());
@@ -162,15 +179,19 @@ int main(int argc, char** argv) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
+            // SDL_QUIT et WINDOWEVENT_CLOSE arrivent TOUS LES DEUX sur un
+            // clic sur la croix (SDL synthetise le premier quand la
+            // derniere fenetre se ferme). Les deux passent donc par le
+            // meme arbitre, qui decide de quitter ou de reduire.
             if (event.type == SDL_QUIT) {
                 if (dbgSh) std::fprintf(stderr, "SH: SDL_QUIT\n");
-                running = false;
+                if (tl::ui::handle_close_request(window)) running = false;
             }
             if (event.type == SDL_WINDOWEVENT &&
                 event.window.event == SDL_WINDOWEVENT_CLOSE &&
                 event.window.windowID == SDL_GetWindowID(window)) {
                 if (dbgSh) std::fprintf(stderr, "SH: WINDOWEVENT_CLOSE\n");
-                running = false;
+                if (tl::ui::handle_close_request(window)) running = false;
             }
             if (event.type == SDL_DROPFILE && event.drop.file) {
                 tl::ui::on_drop_file(event.drop.file);
@@ -191,11 +212,28 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_CreateFontsTexture();
         }
 
+        // L'utilisateur peut basculer clair/sombre ou changer sa couleur
+        // d'accentuation pendant que le launcher tourne. Deux lectures de
+        // registre par seconde ne coutent rien, et evitent de rester sur
+        // une barre de titre depareillee jusqu'au prochain demarrage.
+        {
+            static Uint32 lastTheme = 0;
+            const Uint32 nowMs = SDL_GetTicks();
+            if (nowMs - lastTheme > 1000) {
+                lastTheme = nowMs;
+                tl::syscolor::poll(window);
+            }
+        }
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
         tl::ui::frame(window);
+
+        // Sortie demandee depuis la page Aide : elle ignore le reglage de
+        // fermeture, c'est un ordre explicite.
+        if (tl::ui::quit_requested()) running = false;
 
         ImGui::Render();
         int w = 0, h = 0;

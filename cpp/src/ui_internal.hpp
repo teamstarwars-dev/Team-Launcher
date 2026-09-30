@@ -123,6 +123,11 @@ struct UiState {
     bool autoActive = false;
     bool ctxAuto = false; // TL_AUTO_CTX : ouvre le menu contextuel (test)
     int page = 0;    // 0 Accueil, 1 Instances, 2 Jouer, 3 Parametres
+    // Onglet a ouvrir a la prochaine frame de la page Parametres (-1 =
+    // laisser celui que l'utilisateur regardait). Consomme par
+    // settings_page : les raccourcis de la page Aide arrivent ainsi
+    // directement sur la bonne section.
+    int settingsTab = -1;
     int sortIdx = 0; // 0 temps de jeu, 1 nom, 2 lancements, 3 recemment jouee
     bool smallGrid = true;
     char searchBuf[64] = "";
@@ -177,6 +182,7 @@ nlohmann::json* find_instance(const std::string& id);
 bool inst_played(const nlohmann::json& e);
 std::string inst_last_label(const nlohmann::json& e);
 std::string format_playtime(long long s);
+std::string format_date(const std::string& iso); // reglage DateFormat
 nlohmann::json* selected_instance();
 void refresh_counts(const std::string& id);
 std::optional<std::string> pick_javaw();
@@ -242,6 +248,13 @@ void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
 void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
 void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
 void social_page();      // ui_social.cpp (page 16) : amis et messages
+void help_page();        // ui_help.cpp (page 17) : aide et assistance
+void help_stop();        // ui_help.cpp : joint le worker d'export
+// Phase 7 (ui_help.cpp), appeles depuis ui::init / ui::frame :
+void whatsnew_init();    // decide si les notes de version sont a montrer
+void autoupdate_init();  // verification periodique (UpdateCheckHours)
+void whatsnew_modal();   // la modale, une fois par frame
+void apply_startup_selection(); // reglage « Jeu au démarrage »
 void search_frame();     // ui_search.cpp : palette de recherche (Ctrl+K)
 void search_open();
 bool onboarding_needed();  // ui_onboarding.cpp
@@ -263,6 +276,10 @@ struct NewsState {
     int taskId = 0; // entree panneau AppTasks (0 = aucune)
 };
 extern NewsState newsState;
+
+// Historique local (ui_news.cpp) : la page Aide montre les memes entrees
+// dans « Quoi de neuf » que la page Actualités.
+std::vector<NewsEntry> changelog_entries();
 
 struct PingResult {
     bool ok = false;

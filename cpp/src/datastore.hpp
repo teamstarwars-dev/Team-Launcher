@@ -79,11 +79,24 @@ struct AppSettings {
     int backupAutoHours = 0;       // sauvegarde auto toutes les N h, 0 = off
     int backupKeep = 10;           // nombre d archives conservees
     int analyseThreads = 4;        // 1..12 (analyse mods, phase D)
-    std::string closeBehavior = "minimize"; // minimize/quit (phase G)
+    // minimize/quit. Defaut « quit » : sans icone de zone de notification,
+    // une fenetre qui ne se ferme pas quand on clique sur la croix passe
+    // pour une panne. C'est un choix a faire, pas a subir.
+    std::string closeBehavior = "quit";
     bool launchAtSystemStart = false;       // (phase G)
     std::string startupGame = "last";       // last/<id> (phase G)
     std::string lastGameId;
     std::string dateFormat = "dd/MM/yyyy"; // (phase G)
+    // Version affichee au dernier demarrage. Sert a reconnaitre qu'une mise
+    // a jour vient d'etre appliquee et a ne proposer les notes de version
+    // qu'une fois. Vide = premiere execution : rien a montrer.
+    std::string lastRunVersion;
+    // Heure Unix de la derniere verification de mise a jour reussie ou
+    // tentee. Sert au rythme automatique (UpdateCheckHours) ; 0 = jamais.
+    long long lastUpdateCheckUnix = 0;
+    // Salon d'entraide. Vide par defaut : mieux vaut un bouton desactive
+    // qu'un lien d'invitation invente, qui ne menerait nulle part.
+    std::string helpDiscordUrl;
 };
 
 // Identifiant d'instance : 32 hexa (Guid .NET « N »), BCryptGenRandom / getrandom().

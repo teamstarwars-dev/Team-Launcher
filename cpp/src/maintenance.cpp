@@ -17,6 +17,7 @@
 #include "game_installer.hpp"
 #include "game_launcher.hpp"
 #include "http_win.hpp"
+#include "startup.hpp" // exe_path_utf8 (deploiement : installe ou portable)
 #include "util_str.hpp" // wide_to_utf8 (wstr_to_utf8_local)
 #include "util_zip.hpp" // zip_extract_all (maj Linux en process)
 
@@ -187,6 +188,10 @@ namespace {
 
 constexpr const char* kLatestApi =
     "https://api.github.com/repos/teamstarwars-dev/Team-Luncher-/releases/latest";
+// Canal beta : /releases/latest ne renvoie JAMAIS de preversion, quoi
+// qu'on lui demande. Il faut la liste complete, et y choisir soi-meme.
+constexpr const char* kListApi =
+    "https://api.github.com/repos/teamstarwars-dev/Team-Luncher-/releases?per_page=20";
 constexpr const char* kMarkerName = "pending.json";
 #ifdef _WIN32
 constexpr const char* kScriptName = "apply-update.bat";
@@ -221,9 +226,16 @@ std::string trim_copy(const std::string& s) {
 // DIVERGENCE : le C# passait Settings.UpdateUrl tel quel a Velopack (qui
 // savait deriver le flux). Ici une URL personnalisee est utilisee directement
 // comme point d'API JSON ; sinon l'API GitHub officielle.
+bool beta_channel() {
+    return trim_copy(DataStore::settings.updateChannel) == "beta";
+}
+
 std::string feed_url() {
+    // Une URL posee a la main l'emporte sur le canal : elle sert justement
+    // a pointer ailleurs que sur le depot officiel.
     const std::string u = trim_copy(DataStore::settings.updateUrl);
-    return u.empty() ? kLatestApi : u;
+    if (!u.empty()) return u;
+    return beta_channel() ? kListApi : kLatestApi;
 }
 
 std::string to_lower(std::string s) {
@@ -355,6 +367,25 @@ std::string select_asset_url(const json& release, std::string* nameOut,
     return best;
 }
 
+namespace {
+
+// Une entree de release -> Info, sans comparaison de version : le tri du
+// canal beta a besoin de lire la version AVANT de decider.
+std::optional<Info> release_of(const json& j) {
+    if (!j.is_object()) return std::nullopt;
+    Info info;
+    info.version = j.value("tag_name", std::string{});
+    if (!info.version.empty() && (info.version[0] == 'v' || info.version[0] == 'V'))
+        info.version.erase(0, 1);
+    if (info.version.empty()) return std::nullopt;
+    info.notes = j.value("body", std::string{});
+    info.url = j.value("html_url", std::string{});
+    info.assetUrl = select_asset_url(j, &info.assetName, &info.assetSize);
+    return info;
+}
+
+} // namespace
+
 std::optional<Info> parse_release_json(const std::string& body, std::string* errOut) {
     json j;
     try {
@@ -362,6 +393,27 @@ std::optional<Info> parse_release_json(const std::string& body, std::string* err
     } catch (const std::exception& ex) {
         if (errOut) *errOut = std::string("Réponse GitHub illisible : ") + ex.what();
         return std::nullopt;
+    }
+    // Canal beta : le flux est la LISTE des releases. On garde la plus
+    // haute version utilisable — les brouillons jamais (ils n'ont pas de
+    // binaire publie), les preversions seulement en beta. On ne se fie pas
+    // a l'ordre renvoye par GitHub, qui trie par date de publication : une
+    // correction publiee apres coup sur une ancienne branche passerait
+    // devant la version la plus recente.
+    if (j.is_array()) {
+        const bool beta = beta_channel();
+        std::optional<Info> best;
+        for (const auto& e : j) {
+            if (!e.is_object()) continue;
+            if (e.value("draft", false)) continue;
+            if (!beta && e.value("prerelease", false)) continue;
+            auto info = release_of(e);
+            if (!info) continue;
+            if (compare_versions(info->version, current_version()) <= 0) continue;
+            if (!best || compare_versions(info->version, best->version) > 0)
+                best = std::move(info);
+        }
+        return best; // nullopt = deja a jour (errOut reste vide)
     }
     if (!j.is_object()) {
         if (errOut) *errOut = "Réponse GitHub inattendue (objet JSON attendu).";
@@ -394,6 +446,54 @@ std::optional<Info> check(std::string* errOut) {
         return std::nullopt;
     }
     return parse_release_json(r->body, errOut);
+}
+
+namespace {
+
+// Dossier de l'executable courant (vide si introuvable).
+fs::path exe_dir() {
+    const std::string p = startup::exe_path_utf8();
+    if (p.empty()) return {};
+    return fs::path(p).parent_path();
+}
+
+} // namespace
+
+Deploy deployment() {
+    const fs::path dir = exe_dir();
+    if (dir.empty()) return Deploy::Portable;
+    std::error_code ec;
+#ifdef _WIN32
+    // Inno Setup depose toujours son desinstalleur a cote du programme :
+    // sa presence est le seul marqueur fiable, et il ne peut pas se
+    // retrouver la par accident dans un dossier portable.
+    if (fs::is_regular_file(dir / "unins000.exe", ec)) return Deploy::Installed;
+#else
+    // Paquet .deb ou install.sh : le binaire vit sous /usr ou /opt, ou
+    // l'utilisateur n'ecrit pas. Un dossier decompresse dans son profil
+    // reste portable.
+    const std::string s = dir.string();
+    if (s.rfind("/usr", 0) == 0 || s.rfind("/opt", 0) == 0)
+        return Deploy::Installed;
+#endif
+    return Deploy::Portable;
+}
+
+bool install_dir_writable() {
+    const fs::path dir = exe_dir();
+    if (dir.empty()) return false;
+    // Les droits ne se deduisent pas des permissions affichees (ACL,
+    // virtualisation, montage en lecture seule) : on essaie d'ecrire.
+    std::error_code ec;
+    const fs::path probe = dir / ".tl-write-test";
+    {
+        std::ofstream out(probe, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out << 'x';
+        if (!out) return false;
+    }
+    fs::remove(probe, ec);
+    return true;
 }
 
 std::filesystem::path updates_dir() { return DataStore::dir() / "updates"; }

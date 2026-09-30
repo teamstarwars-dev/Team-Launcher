@@ -2,6 +2,8 @@
 
 #include "presets.hpp"
 #include "social.hpp"
+#include "startup.hpp"
+#include "support.hpp"
 
 #include "fonts.hpp"
 #include "downloads.hpp"
@@ -274,13 +276,25 @@ bool inst_played(const nlohmann::json& e) {
     return d.size() >= 10 && d.substr(0, 10) != "0001-01-01";
 }
 
+// Date ISO (« aaaa-mm-jj... ») -> format choisi dans les reglages. Le
+// format suivait la langue ; il en est maintenant independant, parce que
+// l'un ne determine pas l'autre : on peut lire le launcher en francais et
+// vouloir des dates ISO.
+std::string format_date(const std::string& iso) {
+    if (iso.size() < 10) return iso;
+    const std::string yy = iso.substr(0, 4), mm = iso.substr(5, 2),
+                      dd = iso.substr(8, 2);
+    const std::string& f = DataStore::settings.dateFormat;
+    if (f == "yyyy-MM-dd") return yy + "-" + mm + "-" + dd;
+    if (f == "MM/dd/yyyy") return mm + "/" + dd + "/" + yy;
+    return dd + "/" + mm + "/" + yy; // defaut : dd/MM/yyyy
+}
+
 std::string inst_last_label(const nlohmann::json& e) {
     if (!inst_played(e)) return tr("Jamais lancée", "Never launched");
-    const std::string d = e.value("LastPlayed", "");
-    // fr : jj/mm/aaaa ; en : mm/jj/aaaa
-    const std::string dd = d.substr(8, 2), mm = d.substr(5, 2), yy = d.substr(0, 4);
-    return lang::is_en() ? "Last session on " + mm + "/" + dd + "/" + yy
-                         : "Dernière session le " + dd + "/" + mm + "/" + yy;
+    const std::string d = format_date(e.value("LastPlayed", ""));
+    return lang::is_en() ? "Last session on " + d
+                         : "Dernière session le " + d;
 }
 
 // C# HomePage.FormatPlayTime
@@ -483,6 +497,9 @@ void start_worker() {
     g.statInstId.clear();
     if (!g.autoActive) {
         (*inst)["Launches"] = inst->value("Launches", 0) + 1;
+        // Derniere instance lancee : c'est elle que « Jeu au démarrage :
+        // le dernier joué » resélectionnera a la prochaine ouverture.
+        DataStore::settings.lastGameId = instId;
         DataStore::save();
         g.statInstId = instId;
         g.statActive = true;
@@ -782,6 +799,37 @@ std::string trimmed(const char* s) {
 // API publique
 // ---------------------------------------------------------------------------
 
+// Sortie demandee par l'interface (page Aide) : la boucle principale la
+// lit apres la frame. Un booleen suffit — il n'est touche que par le fil
+// de l'interface.
+namespace {
+bool s_quitRequested = false;
+}
+
+void request_quit() { s_quitRequested = true; }
+bool quit_requested() { return s_quitRequested; }
+
+bool handle_close_request(SDL_Window* window) {
+    // Seul le reglage decide. Une preparation en cours n'est pas une
+    // raison de refuser : shutdown() annule et joint proprement le worker,
+    // c'est deja le comportement eprouve.
+    if (DataStore::settings.closeBehavior != "minimize") return true;
+    if (window) SDL_MinimizeWindow(window);
+    // Dit une fois par session pourquoi la fenetre n'a pas disparu : sans
+    // icone de zone de notification, une fenetre qui « refuse » de se
+    // fermer passe autrement pour une panne.
+    static bool told = false;
+    if (!told) {
+        told = true;
+        notify_toast(tr("Launcher réduit", "Launcher minimised"),
+                     tr("Pour quitter : page Aide, ou Paramètres > Général "
+                        "> Démarrage et fermeture.",
+                        "To quit: Help page, or Settings > General > "
+                        "Startup and closing."));
+    }
+    return false;
+}
+
 void init(SDL_Window*) {
     theme_reload(); // couleurs personnalisees avant le style ImGui
     telemetry::report_startup(); // C# ReportStartupAsync : 1 fois par session
@@ -796,6 +844,12 @@ void init(SDL_Window*) {
     // ImGui — plus lisible aux grands corps, et surtout elle possede les
     // glyphes de ponctuation (« ... », tirets) qui s'affichaient en « ? ».
     fonts::build(DataStore::settings.uiFont, DataStore::settings.fontScale);
+
+    // Phase 7 : notes de version (si la version a change depuis la derniere
+    // execution) et instance preselectionnee au demarrage.
+    whatsnew_init();
+    apply_startup_selection();
+    autoupdate_init();
 
     // Le reglage « telechargements simultanes » existait dans la
     // configuration mais n etait lu nulle part : la file l applique.
@@ -860,6 +914,12 @@ void frame(SDL_Window* window) {
             push_log(std::string("[test] version forcee : ") + v);
         }
         autoPlayPending = std::getenv("TL_AUTO_PLAY") != nullptr;
+        // Liaison Discord sans clic (repro du flux device).
+        static bool autoDiscordLink = false;
+        if (!autoDiscordLink) {
+            autoDiscordLink = true;
+            if (std::getenv("TL_AUTO_DISCORD_LINK")) social::begin_login();
+        }
         if (const char* p = std::getenv("TL_AUTO_PAGE")) g.page = std::atoi(p);
         if (std::getenv("TL_AUTO_CTX")) g.ctxAuto = true;
         // Auth Microsoft : ouvre la modale de connexion sans clic (test).
@@ -916,11 +976,9 @@ void frame(SDL_Window* window) {
         ImGui::TextUnformatted("LAUNCHER");
     }
     ImGui::PopStyleColor();
-    if (!compact) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::Text("v%s", TL_VERSION_STRING);
-        ImGui::PopStyleColor();
-    }
+    // Numero de version retire de la barre laterale : il n'apporte rien au
+    // quotidien et occupait la place la plus visible de l'ecran. Il reste
+    // affiche la ou on le cherche — page Aide, et Paramètres > Intégrations.
     ImGui::Spacing();
     ImGui::Spacing();
 
@@ -948,6 +1006,7 @@ void frame(SDL_Window* window) {
     ImGui::Separator();
     ImGui::Spacing();
     nav(icons::Id::Download, "Téléchargements", 15);
+    nav(icons::Id::Help, "Aide", 17);
     nav(icons::Id::Account, "Amis", 16);
     nav(icons::Id::Account, "Compte", 7);
     nav(icons::Id::Settings, "Paramètres", 8);
@@ -974,6 +1033,7 @@ void frame(SDL_Window* window) {
     case 14: modelviewer_page(); break;
     case 15: downloads_page(); break;
     case 16: social_page(); break;
+    case 17: help_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
@@ -981,6 +1041,9 @@ void frame(SDL_Window* window) {
     // ---- Modales instance (contexte racine) ----
     instance_modals();
     instance_detail_modal();
+
+    // ---- Notes de version (une seule fois apres une mise a jour) ----
+    whatsnew_modal();
 
     // ---- Tâches de fond (panneau si >= 1 tâche) ----
     // Le minuteur de sauvegarde s'abstient tant qu'une partie tourne. On
@@ -1098,6 +1161,10 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: explore_stop\n");
     explore_stop();
     if (dbg) std::fprintf(stderr, "SH: explore_stop done\n");
+    // Page Aide : export de journaux et verification de mise a jour.
+    if (dbg) std::fprintf(stderr, "SH: help_stop\n");
+    help_stop();
+    if (dbg) std::fprintf(stderr, "SH: help_stop done\n");
     // Import de modpack : annuler et joindre le worker.
     if (dbg) std::fprintf(stderr, "SH: packs_stop\n");
     packs_stop();

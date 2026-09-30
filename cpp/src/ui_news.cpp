@@ -310,4 +310,9 @@ void news_page() {
     ImGui::EndChild();
 }
 
+
+// Historique local, pour la page Aide (« Quoi de neuf »). Le meme
+// chargeur que la page Actualités : une seule source, un seul fichier.
+std::vector<NewsEntry> changelog_entries() { return load_changelog(); }
+
 } // namespace tl::ui

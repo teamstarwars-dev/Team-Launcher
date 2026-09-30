@@ -697,3 +697,49 @@ Décision de l'utilisateur du 27/09/2026 : pas de certificat de signature de cod
 - `install.sh` : mode utilisateur (`~/.local`, testé : layout + .desktop + icône + rpath OK) et `--system` (`/opt`, root).
 - **Jalon : premier run graphique Linux** (WSLg) : la fenêtre s'ouvre et tourne (le « hang » headless était la boucle principale en attente d'input !), capture `TL_SCREENSHOT` OK — onboarding + page Instances + chemin XDG corrects.
 - Reste : signature éventuelle du .deb (non signé, comme Windows — décision à prendre), dépôt APT (hors sujet pour l'instant).
+
+## Phase 7 — Démarrage, aide, mises à jour (30/09/2026)
+
+Sept points de la liste v7, tous **déclarés dans `AppSettings` depuis la phase A mais jamais branchés** : `closeBehavior`, `launchAtSystemStart`, `startupGame`, `lastGameId`, `dateFormat`, `updateChannel`, `updateFreqHours`. Même motif que `ideal_ram_gb`, `maxDownloads` ou `backupSpaceMb` avant eux : le champ existait, se sauvegardait, se rechargeait, et ne servait à rien.
+
+Deux fonctions du même acabit ont été trouvées au passage, **déclarées dans `maintenance.hpp` et jamais définies** : `updates::deployment()` et `updates::install_dir_writable()`. Le lien n'a cassé qu'au moment où la page Aide a voulu afficher « installé / portable ». Elles sont maintenant écrites : présence d'`unins000.exe` à côté de l'exécutable sous Windows, préfixe `/usr` ou `/opt` sous Linux ; et pour l'inscriptibilité, une écriture réelle plutôt qu'une lecture de permissions (ACL, virtualisation et montages en lecture seule mentent).
+
+### Nouveaux modules
+
+- **`startup.hpp/.cpp`** — entrée de démarrage de session : valeur `TeamLauncher` sous `HKCU\...\CurrentVersion\Run` (Windows) ou `~/.config/autostart/teamlauncher.desktop` (Linux). Aucun droit d'administrateur, rien hors du profil. Le launcher est lancé avec `--autostart`, que `main()` traduit par « fenêtre réduite » : surgir au premier plan à chaque ouverture de session serait insupportable. **L'état est relu à la source, pas déduit du réglage** — un profil recopié ou un nettoyeur de démarrage peut avoir retiré l'entrée, et afficher « activé » serait un mensonge.
+- **`support.hpp/.cpp`** — rapport machine et export zip des journaux (`rapport.txt`, fin de `launcher.log` plafonnée à 4 Mo, `config-expurge.json`). L'expurgation est récursive, tableaux compris (`PteroHosts` est un tableau d'objets qui portent des clés d'API) et **distingue « (masqué) » de « (vide) »** : savoir qu'un réglage n'est pas renseigné est souvent tout le diagnostic.
+- **`syscolor.hpp/.cpp`** — barre de titre accordée au système (voir plus bas).
+- **`ui_help.cpp`** (page 17) — centre d'aide, ticket, suggestion, salon Discord (réglable, bouton grisé tant qu'il n'est pas configuré : mieux qu'un lien d'invitation inventé), export des journaux, « Quoi de neuf », raccourcis vers le diagnostic et les mises à jour, et sortie explicite.
+
+### Canal bêta
+
+`/releases/latest` **ne renvoie jamais de préversion**, quoi qu'on lui demande : le canal bêta interroge donc `/releases`, qui rend un tableau. `parse_release_json` accepte maintenant les deux formes. Sur un tableau : les brouillons sont toujours écartés, les préversions seulement en stable, et **c'est la plus haute version qui gagne, pas la plus récemment publiée** — GitHub trie par date de publication, donc un correctif sorti après coup sur une ancienne branche passerait devant la version la plus récente.
+
+### Fermeture : défaut inversé
+
+Le champ valait `"minimize"` par défaut depuis la phase A. Sans icône de zone de notification — SDL2 n'en propose pas, SDL3 oui —, une fenêtre qui ne disparaît pas quand on clique sur la croix passe pour une panne. Le défaut est donc passé à `"quit"`, et le mode « réduire » reste offert, avec une bulle qui dit une fois par session où se trouve la sortie, et un bouton « Quitter le launcher » dans la page Aide qui n'apparaît **que** dans ce mode.
+
+`SDL_QUIT` et `SDL_WINDOWEVENT_CLOSE` arrivent tous les deux sur un clic sur la croix : les deux passent par le même arbitre.
+
+### Vérification périodique des mises à jour
+
+`updateFreqHours` pilote enfin quelque chose. La date de dernière tentative (`LastUpdateCheckUnix`) est écrite **avant** la requête : un réseau coupé ne doit pas faire retenter à chaque démarrage. Le résultat n'est pas affiché depuis le fil de fond — le toast vit dans l'état de l'interface, sans verrou — mais déposé et consommé à la frame suivante. Échec réseau : silence. Une vérification que personne n'a demandée n'a pas à interrompre qui que ce soit pour annoncer que le réseau est coupé.
+
+### Barre de titre accordée au système (demande du 30/09/2026)
+
+La barre du haut n'est pas dessinée par le launcher : c'est le système qui la rend. On ne peut donc pas la peindre, seulement lui dire quelles couleurs employer.
+
+- **Windows** : `DwmSetWindowAttribute` (chargée à la demande depuis `dwmapi.dll`, pas de bibliothèque d'import en plus) avec mode sombre immersif, couleur de légende, de texte et de bordure. Les valeurs viennent de `Themes\Personalize\SystemUsesLightTheme` — et **non** `AppsUseLightTheme`, qui gouverne les applications et non les barres de titre, les deux pouvant différer —, de `ColorPrevalence` (« afficher la couleur d'accentuation sur les barres de titre ») et de `DWM\AccentColor`. Quand la prévalence est désactivée, on **rend** la légende à Windows (`0xFFFFFFFF`) au lieu de lui imposer une teinte : c'est le réglage de l'utilisateur, pas le nôtre. Deux inversions d'ordre d'octets à ne pas rater : `AccentColor` est en `0xAABBGGRR`, `COLORREF` en `0x00BBGGRR`.
+- **Linux** : la décoration est dessinée par le gestionnaire de fenêtres selon le thème du bureau. Elle est **déjà** native ; une application qui tenterait de la repeindre s'en écarterait. `query()` y renvoie tout de même la préférence clair/sombre.
+
+Relu une fois par seconde : l'utilisateur peut basculer clair/sombre pendant que le launcher tourne.
+
+### Numéro de version retiré de deux endroits
+
+Demande du 30/09/2026 : le titre de la fenêtre (`"Team Launcher v6.0.0"` → `"Team Launcher"`) et le coin haut-gauche de la barre latérale. Il occupait la place la plus visible de l'écran sans rien apporter au quotidien. Il reste lisible page Aide et Paramètres > Intégrations.
+
+### Tests
+
+`tests/test_support.cpp` (`TLTestSupport`) : reconnaissance des clés sensibles **et absence de faux positifs** (`PlayerName`, `MaxRamGb`, `NewsUrl` doivent rester lisibles, sinon le rapport ne sert plus à rien), expurgation récursive, choix de release sur une liste volontairement désordonnée, rapport sans secret, archive contenant bien ses trois pièces et dossier de travail effacé. L'écriture réelle de l'entrée de démarrage est derrière `TL_TEST_AUTOSTART=1` — elle sort du bac à sable du test — et remet l'utilisateur dans l'état où elle l'a trouvé.
+
+**22 suites vertes sous Linux, 21 sous Windows** (`TLTestGamePort.exe` reste en « suppression en attente » sur cette machine, indépendamment du code).

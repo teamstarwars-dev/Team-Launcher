@@ -383,6 +383,9 @@ static json serialize(const AppSettings& s) {
         {"StartupGame", s.startupGame},
         {"LastGameId", s.lastGameId},
         {"DateFormat", s.dateFormat},
+        {"LastRunVersion", s.lastRunVersion},
+        {"LastUpdateCheckUnix", s.lastUpdateCheckUnix},
+        {"HelpDiscordUrl", s.helpDiscordUrl},
     };
 }
 
@@ -416,6 +419,12 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
         if (it == j.end() || it->is_null()) return;
         if (!it->is_number()) throw std::runtime_error("config: nombre attendu");
         out = it->get<int>();
+    };
+    auto getI64 = [&j](const char* k, long long& out) {
+        auto it = j.find(k);
+        if (it == j.end() || it->is_null()) return;
+        if (!it->is_number()) throw std::runtime_error("config: nombre attendu");
+        out = it->get<long long>();
     };
     auto getD = [&j](const char* k, double& out) {
         auto it = j.find(k);
@@ -489,6 +498,9 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getS("StartupGame", s.startupGame);
     getS("LastGameId", s.lastGameId);
     getS("DateFormat", s.dateFormat);
+    getS("LastRunVersion", s.lastRunVersion);
+    getI64("LastUpdateCheckUnix", s.lastUpdateCheckUnix);
+    getS("HelpDiscordUrl", s.helpDiscordUrl);
 }
 
 // ---------------------------------------------------------------------------

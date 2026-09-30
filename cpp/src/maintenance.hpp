@@ -113,8 +113,11 @@ std::string select_asset_url(const nlohmann::json& release,
                              std::string* nameOut = nullptr,
                              long long* sizeOut = nullptr);
 
-// Pur (testable hors ligne) : interprete le corps JSON de /releases/latest.
-// nullopt sans errOut = pas plus recent que current_version().
+// Pur (testable hors ligne) : interprete le corps JSON de /releases/latest
+// (objet) ou de /releases (tableau, canal beta). Sur un tableau : les
+// brouillons sont ignores, les preversions ne sont retenues qu'en canal
+// beta, et c'est la plus HAUTE version qui gagne — pas la plus recemment
+// publiee. nullopt sans errOut = pas plus recent que current_version().
 std::optional<Info> parse_release_json(const std::string& body,
                                        std::string* errOut = nullptr);
 
