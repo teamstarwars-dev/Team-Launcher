@@ -87,6 +87,25 @@ int limit();
 // Incremente a chaque mutation : l'interface ne se redessine que si besoin.
 std::uint64_t version();
 
+// --- Persistance -----------------------------------------------------------
+//
+// La file survit a une fermeture ou a un plantage : un modpack de 150 mods
+// interrompu au 80e ne doit pas etre a reprendre depuis le debut a la main.
+//
+// Ce qui est repris : les elements en attente ou en cours, remis en attente
+// au chargement (ils ont ete interrompus). Le telechargement RECOMMENCE au
+// debut — `http::get_to_file` ne fait pas de reprise par plage d'octets, et
+// pretendre reprendre un fichier partiel donnerait une archive corrompue.
+//
+// Ce qui n'est PAS repris : les URL contenant un secret (jeton de
+// telechargement, cle en parametre). Elles ne sont pas ecrites sur le
+// disque, meme dans le dossier de l'utilisateur. La detection reutilise
+// `http::redact_url` : si l'URL redigee differe de l'originale, c'est
+// qu'elle porte un secret.
+std::filesystem::path state_path();
+void save_state();
+void load_state();
+
 // Attend que la file soit vide (tests, et arret propre du launcher).
 // timeoutMs < 0 = infini. false si le delai expire.
 bool wait_idle(int timeoutMs);

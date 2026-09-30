@@ -1,12 +1,16 @@
 #include "downloads.hpp"
 
+#include "datastore.hpp"
 #include "http_win.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <map>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -77,6 +81,9 @@ void bump(Engine& e) {
 // ce qui reste en file. On n'en cree jamais plus que necessaire : un modpack
 // de 3 fichiers n'a pas besoin de 20 threads.
 void ensure_workers(Engine& e);
+// Definie plus bas (elle a besoin des helpers de serialisation), mais
+// appelee des le worker : declaration anticipee.
+void save_locked(Engine& e);
 
 void worker_loop() {
     Engine& e = eng();
@@ -144,7 +151,14 @@ void worker_loop() {
         {
             std::lock_guard<std::mutex> lk(e.m);
             auto it = e.items.find(id);
-            if (it != e.items.end()) {
+            // Fermeture du launcher : `shutdown()` a leve le drapeau
+            // d'annulation de TOUT le monde. Ce n'est pas une annulation de
+            // l'utilisateur, c'est une interruption — l'element doit rester
+            // a reprendre au prochain demarrage, pas etre classe abandonne.
+            // Sans cette distinction, quitter pendant un telechargement le
+            // perdait definitivement (constate en test bout en bout).
+            const bool interrupted = e.stopping;
+            if (it != e.items.end() && !interrupted) {
                 Item& x = it->second.item;
                 if (cancel->load()) {
                     x.state = State::Cancelled;
@@ -162,6 +176,9 @@ void worker_loop() {
             }
             --e.running;
             bump(e);
+            // Pendant la fermeture on n'ecrit plus : l'instantane pris juste
+            // avant `shutdown()` est le bon, le reecrire l'ecraserait.
+            if (!interrupted) save_locked(e);
             e.cvIdle.notify_all();
         }
         e.cv.notify_all();
@@ -177,6 +194,165 @@ void ensure_workers(Engine& e) {
 }
 
 } // namespace
+
+// --- Persistance ------------------------------------------------------------
+
+fs::path state_path() { return DataStore::dir() / "downloads.json"; }
+
+namespace {
+
+// Au-dela, l'historique des termines n'apporte plus rien et le fichier
+// grossit sans fin.
+constexpr std::size_t kKeepFinished = 50;
+
+const char* state_name(State s) {
+    switch (s) {
+        case State::Queued: return "queued";
+        case State::Running: return "queued"; // interrompu -> a refaire
+        case State::Done: return "done";
+        case State::Failed: return "failed";
+        case State::Cancelled: return "cancelled";
+    }
+    return "queued";
+}
+
+State state_from(const std::string& s) {
+    if (s == "done") return State::Done;
+    if (s == "failed") return State::Failed;
+    if (s == "cancelled") return State::Cancelled;
+    return State::Queued;
+}
+
+} // namespace
+
+namespace {
+
+// Version interne : le verrou est DEJA tenu par l'appelant. Ecrire depuis
+// l'interieur des sections critiques evite la danse « relacher, ecrire,
+// reprendre », qui laisserait la file changer entre-temps et permettrait
+// deux ecritures concurrentes dans le desordre. Le fichier fait quelques
+// kilooctets, le verrou n'est donc tenu qu'un instant de plus.
+void save_locked(Engine& e) {
+    nlohmann::json arr = nlohmann::json::array();
+    std::size_t finished = 0;
+    {
+        // Du plus recent au plus ancien : on garde les N derniers termines.
+        std::vector<const Entry*> ents;
+        for (const auto& [id, en] : e.items) ents.push_back(&en);
+        std::sort(ents.begin(), ents.end(), [](const Entry* a, const Entry* b) {
+            return a->item.id > b->item.id;
+        });
+        for (const Entry* en : ents) {
+            const Item& x = en->item;
+            if (!x.active()) {
+                if (++finished > kKeepFinished) continue;
+            }
+            // Une URL porteuse de secret n'est jamais ecrite sur le disque.
+            // `redact_url` est deja la reference pour « qu'est-ce qui est
+            // sensible » : on s'en sert comme predicat plutot que de
+            // maintenir une seconde liste qui divergerait.
+            if (http::redact_url(en->rawUrl) != en->rawUrl) continue;
+            arr.push_back({{"label", x.label},
+                           {"url", en->rawUrl},
+                           {"dest", x.dest.string()},
+                           {"state", state_name(x.state)},
+                           {"total", x.total},
+                           {"error", x.error},
+                           {"queued", x.queuedUnix},
+                           {"ended", x.endedUnix}});
+        }
+    }
+
+    std::error_code ec;
+    const fs::path p = state_path();
+    fs::create_directories(p.parent_path(), ec);
+    // Temporaire + remplacement : une coupure ne doit pas laisser un JSON
+    // tronque, qui ferait perdre TOUTE la file au prochain demarrage.
+    const fs::path tmp = p.string() + ".part";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) return;
+        out << arr.dump(1);
+        if (!out) {
+            out.close();
+            fs::remove(tmp, ec);
+            return;
+        }
+    }
+    fs::rename(tmp, p, ec);
+    if (ec) {
+        fs::remove(p, ec);
+        fs::rename(tmp, p, ec);
+    }
+}
+
+} // namespace
+
+void save_state() {
+    Engine& e = eng();
+    std::lock_guard<std::mutex> lk(e.m);
+    save_locked(e);
+}
+
+void load_state() {
+    std::error_code ec;
+    const fs::path p = state_path();
+    if (!fs::is_regular_file(p, ec)) return;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return;
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    const auto arr = nlohmann::json::parse(text, nullptr, false);
+    if (arr.is_discarded() || !arr.is_array()) return;
+
+    Engine& e = eng();
+    std::vector<int> toStart;
+    {
+        std::lock_guard<std::mutex> lk(e.m);
+        if (!e.fetcher) e.fetcher = default_fetch;
+        // Ordre chronologique : l'ancien fichier est du plus recent au plus
+        // ancien, on le remet a l'endroit pour conserver l'ordre de file.
+        for (auto it = arr.rbegin(); it != arr.rend(); ++it) {
+            const auto& j = *it;
+            if (!j.is_object()) continue;
+            const std::string url = j.value("url", "");
+            const std::string dest = j.value("dest", "");
+            if (url.empty() || dest.empty()) continue;
+
+            Entry en;
+            en.rawUrl = url;
+            en.cancel = std::make_shared<std::atomic<bool>>(false);
+            en.item.id = e.nextId++;
+            en.item.label = j.value("label", "");
+            if (en.item.label.empty())
+                en.item.label = fs::path(dest).filename().string();
+            en.item.url = http::redact_url(url);
+            en.item.dest = fs::path(dest);
+            en.item.total = j.value("total", -1LL);
+            en.item.state = state_from(j.value("state", "queued"));
+            en.item.error = j.value("error", "");
+            en.item.queuedUnix = j.value("queued", 0LL);
+            en.item.endedUnix = j.value("ended", 0LL);
+
+            // Un element termine dont le fichier a disparu depuis n'a plus
+            // de sens dans l'historique.
+            if (en.item.state == State::Done) {
+                std::error_code e2;
+                if (!fs::exists(en.item.dest, e2)) continue;
+            }
+            const int id = en.item.id;
+            const bool requeue = en.item.state == State::Queued;
+            e.items.emplace(id, std::move(en));
+            if (requeue) {
+                e.queue.push_back(id);
+                toStart.push_back(id);
+            }
+        }
+        bump(e);
+        ensure_workers(e);
+    }
+    if (!toStart.empty()) e.cv.notify_all();
+}
 
 int enqueue(const std::string& label, const std::string& url,
             const fs::path& dest) {
@@ -200,6 +376,7 @@ int enqueue(const std::string& label, const std::string& url,
     e.items.emplace(id, std::move(en));
     e.queue.push_back(id);
     bump(e);
+    save_locked(e);
     ensure_workers(e);
     e.cv.notify_one();
     return id;
@@ -252,6 +429,7 @@ bool cancel(int id) {
         e.cvIdle.notify_all();
     }
     bump(e);
+    save_locked(e);
     return true;
 }
 
@@ -284,6 +462,7 @@ bool retry(int id) {
     x.queuedUnix = now_unix();
     e.queue.push_back(id);
     bump(e);
+    save_locked(e);
     ensure_workers(e);
     e.cv.notify_one();
     return true;
@@ -295,6 +474,7 @@ void clear_finished() {
     for (auto it = e.items.begin(); it != e.items.end();)
         it = it->second.item.active() ? std::next(it) : e.items.erase(it);
     bump(e);
+    save_locked(e);
 }
 
 void set_limit(int n) {

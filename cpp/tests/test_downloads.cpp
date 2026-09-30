@@ -8,6 +8,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -293,6 +295,102 @@ int main() {
             enqueue("f", "https://exemple.test/f", "/tmp/f");
         CHECK(wait_idle(10000));
         CHECK_EQ(count_active(), std::size_t{0});
+    }
+
+    // =====================================================================
+    // 11. Persistance : la file survit a un redemarrage
+    // =====================================================================
+    {
+        // Etat isole : on ne touche pas au fichier reel de la machine.
+        const auto tmp = std::filesystem::temp_directory_path() / "tl-dl-state";
+        std::error_code ec;
+        std::filesystem::remove_all(tmp, ec);
+        std::filesystem::create_directories(tmp, ec);
+#ifdef _WIN32
+        _putenv_s("TL_DATA_DIR", tmp.string().c_str());
+#else
+        setenv("TL_DATA_DIR", tmp.string().c_str(), 1);
+#endif
+        reset_for_tests();
+        std::filesystem::remove(state_path(), ec);
+
+        // Un transport qui bloque : les elements restent en cours/en file,
+        // c'est l'etat qu'on veut retrouver apres un « plantage ».
+        std::atomic<bool> hold{true};
+        set_fetcher([&](const std::string&, const std::filesystem::path&,
+                        const ProgressFn&, const std::atomic<bool>& cancel,
+                        std::string*) {
+            while (hold.load() && !cancel.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            return !cancel.load();
+        });
+        set_limit(1);
+        enqueue("mod A", "https://exemple.test/a.jar", "/tmp/a.jar");
+        enqueue("mod B", "https://exemple.test/b.jar", "/tmp/b.jar");
+        // URL PORTEUSE DE SECRET : ne doit jamais atterrir sur le disque.
+        enqueue("prive", "https://exemple.test/c.jar?token=SECRET", "/tmp/c.jar");
+        CHECK(wait_until([] { return count_active() == 3; }));
+
+        CHECK(std::filesystem::exists(state_path()));
+        {
+            std::ifstream in(state_path());
+            const std::string txt((std::istreambuf_iterator<char>(in)),
+                                  std::istreambuf_iterator<char>());
+            CHECK(txt.find("mod A") != std::string::npos);
+            CHECK(txt.find("mod B") != std::string::npos);
+            // Ni le jeton, ni meme l'entree.
+            CHECK(txt.find("SECRET") == std::string::npos);
+            CHECK(txt.find("prive") == std::string::npos);
+        }
+
+        // « Plantage » : on coupe sans vider le fichier d'etat. On garde
+        // une COPIE du fichier, car reset_for_tests repart d'un moteur
+        // vide et la prochaine ecriture l'ecraserait.
+        const auto saved = tmp / "downloads.copie.json";
+        std::filesystem::copy_file(
+            state_path(), saved,
+            std::filesystem::copy_options::overwrite_existing, ec);
+        hold = false;
+        reset_for_tests();
+        CHECK_EQ(snapshot().size(), std::size_t{0});
+        std::filesystem::copy_file(
+            saved, state_path(),
+            std::filesystem::copy_options::overwrite_existing, ec);
+
+        {
+            // Transport bloquant : les elements repris restent en cours, on
+            // peut donc observer l'etat sans course.
+            std::atomic<bool> hold2{true};
+            set_fetcher([&](const std::string&, const std::filesystem::path&,
+                            const ProgressFn&, const std::atomic<bool>& cancel,
+                            std::string*) {
+                while (hold2.load() && !cancel.load())
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                return false;
+            });
+            load_state();
+            const auto s = snapshot();
+            // Les deux elements sans secret reviennent ; celui qui portait
+            // un jeton n'a jamais ete ecrit, donc il ne revient pas.
+            CHECK_EQ(s.size(), std::size_t{2});
+            for (const auto& x : s) CHECK(x.label != "prive");
+            // Ils sont A REFAIRE : en attente ou relances, jamais « termine ».
+            CHECK_EQ(count_active(), std::size_t{2});
+            hold2 = false;
+            cancel_all();
+            wait_idle(5000);
+        }
+
+        // Un fichier d'etat illisible ne doit pas empecher le demarrage.
+        reset_for_tests();
+        {
+            std::ofstream out(state_path(), std::ios::trunc);
+            out << "{ ceci n'est pas du json";
+        }
+        load_state(); // ne doit ni planter ni lever
+        CHECK_EQ(snapshot().size(), std::size_t{0});
+
+        std::filesystem::remove_all(tmp, ec);
     }
 
     shutdown();

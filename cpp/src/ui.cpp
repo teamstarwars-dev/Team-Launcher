@@ -782,6 +782,11 @@ void init(SDL_Window*) {
     // Le reglage « telechargements simultanes » existait dans la
     // configuration mais n etait lu nulle part : la file l applique.
     downloads::set_limit(DataStore::settings.maxDownloads);
+    // File d'attente reprise apres une fermeture ou un plantage : un
+    // modpack interrompu au 80e mod ne doit pas etre a refaire a la main.
+    // Apres set_limit, sinon les elements repris partiraient tous a la
+    // fois avec la limite par defaut.
+    downloads::load_state();
 
     // Cache de metadonnees : un plafond, sinon il grossit indefiniment. Le
     // menage se fait au demarrage plutot qu'a chaque ecriture — parcourir
@@ -1032,6 +1037,10 @@ void shutdown() {
     // travailleurs. Sans cela leurs threads survivent a la sortie de main()
     // et le processus se termine anormalement (code 9 observe).
     if (dbg) std::fprintf(stderr, "SH: downloads_stop\n");
+    // Enregistrer AVANT d'annuler : shutdown() passe les elements en cours
+    // a « annule », or on veut les retrouver a reprendre au prochain
+    // demarrage, pas classes comme abandonnes par l'utilisateur.
+    downloads::save_state();
     downloads::shutdown();
     if (dbg) std::fprintf(stderr, "SH: downloads_stop done\n");
     // Auth Microsoft : annule l'attente du device code et joint le thread.
