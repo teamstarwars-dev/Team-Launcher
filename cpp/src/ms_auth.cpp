@@ -1019,6 +1019,17 @@ void logout() {
 
 bool has_session() { return get_session().has_value(); }
 
+void reload_session() {
+    // Les fichiers de session viennent d'etre remplaces sous nos pieds
+    // (bascule de compte) : le cache memoire et le drapeau « disque deja
+    // lu » pointent encore sur l'ancien compte. On les remet a zero pour
+    // que le prochain get_session() relise le disque.
+    Ctx& c = ctx();
+    std::lock_guard<std::mutex> lk(c.m);
+    c.session.reset();
+    c.diskChecked = false;
+}
+
 std::optional<AuthSession> get_session() {
     Ctx& c = ctx();
     {

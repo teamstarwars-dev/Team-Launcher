@@ -69,6 +69,11 @@ void logout();
 // Une session valide existe (cache memoire ou disque non expire).
 bool has_session();
 
+// Oublie la session en memoire et force une relecture du disque au
+// prochain appel. Necessaire apres une bascule de compte : les fichiers
+// ont change sous nos pieds.
+void reload_session();
+
 // Session courante (nullopt si aucune).
 std::optional<AuthSession> get_session();
 

@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "accounts.hpp"
+
 #include "ms_auth.hpp"
 
 namespace tl::ui {
@@ -72,7 +74,13 @@ void account_page() {
 
     // ---- Panneau de statut (C# _statusPanel) ----
     ImGui::PushStyleColor(ImGuiCol_ChildBg, kCard);
-    ImGui::BeginChild("##authstatus", ImVec2(0, isMs ? 120.0f : 92.0f),
+    // Hauteur variable : la liste des comptes enregistres s'ajoute sous les
+    // boutons. Une hauteur fixe la tronquait.
+    const float authH =
+        isMs ? 120.0f + 34.0f * static_cast<float>(accounts::list().size()) +
+                   (accounts::list().size() > 1 ? 86.0f : 0.0f)
+             : 92.0f;
+    ImGui::BeginChild("##authstatus", ImVec2(0, authH),
                       ImGuiChildFlags_Borders);
     if (!isMs) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
@@ -123,6 +131,102 @@ void account_page() {
             DataStore::save();
             notify_toast(tr("Déconnecté"),
                          tr("Jeton supprimé de ce PC. Retour en mode hors ligne."));
+        }
+
+        // ---- Comptes enregistres ----
+        // Le launcher ne gardait qu'une session : se connecter avec un
+        // autre compte ecrasait la precedente. Les sessions connues sont
+        // desormais conservees et la bascule est immediate, sans
+        // reconnexion.
+        //
+        // Des qu'une session est active, on la retient. C'est ici plutot
+        // qu'au fond de la chaine d'authentification : cette page est le
+        // seul endroit ou l'on sait qu'une connexion vient d'aboutir ET
+        // que l'interface est vivante.
+        if (session) accounts::remember_current();
+
+        const auto known = accounts::list();
+        const std::string cur = accounts::current_uuid();
+        if (known.size() > 1 || (known.size() == 1 && known.front().uuid != cur)) {
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+            ImGui::TextUnformatted(tr("Comptes enregistrés", "Saved accounts"));
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextWrapped(
+                "%s", tr("La bascule est immédiate : chaque compte garde son "
+                         "propre jeton. Ces jetons sont liés à cette session "
+                         "Windows et ne servent nulle part ailleurs.",
+                         "Switching is instant: each account keeps its own "
+                         "token. Those tokens are tied to this Windows "
+                         "session and are useless anywhere else."));
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+
+            static std::string s_forget;
+            for (const auto& a : known) {
+                ImGui::PushID(a.uuid.c_str());
+                const bool isCur = a.uuid == cur;
+                ImGui::TextUnformatted(a.name.empty() ? a.uuid.c_str()
+                                                      : a.name.c_str());
+                ImGui::SameLine(220);
+                if (isCur) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+                    ImGui::TextUnformatted(tr("actif", "active"));
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::BeginDisabled(busy);
+                    if (ImGui::SmallButton(tr("Basculer", "Switch"))) {
+                        if (accounts::switch_to(a.uuid)) {
+                            // La session en memoire pointe encore sur
+                            // l'ancien compte : on la relit depuis les
+                            // fichiers qu'on vient de remettre en place.
+                            auth::reload_session();
+                            if (auto s = auth::get_session()) {
+                                st.playerName = s->name;
+                                st.accountMode = "microsoft";
+                                std::snprintf(pseudoBuf, sizeof(pseudoBuf), "%s",
+                                              s->name.c_str());
+                                DataStore::save();
+                            }
+                            notify_toast(tr("Compte", "Account"),
+                                         tr("Compte changé.", "Account switched."));
+                        } else {
+                            notify_toast(
+                                tr("Compte", "Account"),
+                                tr("Bascule impossible : reconnecte-toi.",
+                                   "Cannot switch: please sign in again."));
+                        }
+                    }
+                    ImGui::EndDisabled();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(tr("Oublier", "Forget"))) s_forget = a.uuid;
+                if (!a.hasRefresh) {
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                    ImGui::TextUnformatted(
+                        tr("(reconnexion nécessaire)", "(sign-in needed)"));
+                    ImGui::PopStyleColor();
+                }
+                ImGui::PopID();
+            }
+
+            if (!s_forget.empty()) {
+                const bool wasCurrent = s_forget == cur;
+                accounts::forget(s_forget);
+                if (wasCurrent) {
+                    // Oublier le compte actif deconnecte : garder une
+                    // session vivante pour un compte efface serait
+                    // incoherent.
+                    auth::logout();
+                    st.accountMode = "offline";
+                    st.playerName = "Joueur";
+                    std::snprintf(pseudoBuf, sizeof(pseudoBuf), "Joueur");
+                    DataStore::save();
+                }
+                s_forget.clear();
+            }
         }
     }
     ImGui::EndChild();
