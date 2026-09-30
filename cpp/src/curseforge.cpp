@@ -1,5 +1,7 @@
 #include "curseforge.hpp"
 
+#include "netcache.hpp"
+
 #include "datastore.hpp"
 #include "http_win.hpp"
 
@@ -59,7 +61,30 @@ json parse_or_throw(const std::optional<http::Response>& r, const std::string& w
 
 json api_get(const std::string& path, const std::atomic<bool>* cancel) {
     ensure_key();
-    return parse_or_throw(http::get_response(kBase + path, headers(), cancel), path);
+    const std::string url = kBase + path;
+
+    // Cache disque, comme cote Modrinth : memes requetes repetees a chaque
+    // navigation, et CurseForge limite le debit par cle API. On ne met en
+    // cache que les 200 — figer un 401 « cle refusee » pendant un quart
+    // d'heure empecherait de voir l'effet d'une cle corrigee.
+    //
+    // Les erreurs doivent rester des erreurs PARLANTES : en cas d'echec
+    // sans cache, on refait l'appel pour que parse_or_throw produise le
+    // message exact (cle refusee, HTTP 500, corps tronque...).
+    const auto res = netcache::get(
+        url, 15 * 60, [&](const std::string& u) -> std::optional<std::string> {
+            auto r = http::get_response(u, headers(), cancel);
+            if (!r || r->status != 200) return std::nullopt;
+            return r->body;
+        });
+    if (!res.ok)
+        return parse_or_throw(http::get_response(url, headers(), cancel), path);
+    try {
+        return json::parse(res.body);
+    } catch (const json::exception&) {
+        netcache::drop(url); // entree abimee : on repart du reseau ensuite
+        throw std::runtime_error("Réponse CurseForge illisible depuis " + path + ".");
+    }
 }
 
 json api_post(const std::string& path, const json& body,

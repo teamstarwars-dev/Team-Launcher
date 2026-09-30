@@ -2,6 +2,7 @@
 
 #include "fonts.hpp"
 #include "downloads.hpp"
+#include "netcache.hpp"
 #include "icons.hpp"
 
 #include "apptasks.hpp" // tl::tasks::update/cancel (miroir lancement)
@@ -781,6 +782,12 @@ void init(SDL_Window*) {
     // Le reglage « telechargements simultanes » existait dans la
     // configuration mais n etait lu nulle part : la file l applique.
     downloads::set_limit(DataStore::settings.maxDownloads);
+
+    // Cache de metadonnees : un plafond, sinon il grossit indefiniment. Le
+    // menage se fait au demarrage plutot qu'a chaque ecriture — parcourir
+    // le dossier a chaque reponse mise en cache couterait plus cher que ce
+    // qu'on economise.
+    netcache::trim(64LL * 1024 * 1024);
 
     ImGuiStyle& style = ImGui::GetStyle();
     style.WindowRounding = 8.0f;

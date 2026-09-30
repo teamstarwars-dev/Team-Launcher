@@ -1,6 +1,7 @@
 #include "ui_internal.hpp"
 
 #include "downloads.hpp"
+#include "netcache.hpp"
 #include "fonts.hpp"
 #include "game_launcher.hpp"
 
@@ -875,6 +876,53 @@ bool maint_start(const std::string& title, const std::string& status,
 void tab_advanced() {
     auto& s = DataStore::settings;
     maint_reap();
+
+    // --- Cache des metadonnees ---
+    // La taille se lit en parcourant le dossier : trop cher a faire a
+    // chaque frame. On la relit sur demande, et apres un vidage.
+    section("Cache des métadonnées");
+    {
+        static long long cacheSz = -1;
+        static bool asked = false;
+        if (!asked) {
+            asked = true;
+            cacheSz = netcache::size_bytes();
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextWrapped(
+            "%s",
+            tr("Les fiches de mods et les résultats de recherche sont gardés "
+               "15 minutes sur le disque : les mêmes pages ne sont pas "
+               "redemandées sans arrêt, et si le réseau tombe le launcher "
+               "affiche la dernière version connue au lieu d'une page vide. "
+               "Plafonné à 64 Mo, nettoyé au démarrage.",
+               "Mod pages and search results are kept on disk for 15 "
+               "minutes: the same pages are not re-requested constantly, and "
+               "if the network drops the launcher shows the last known "
+               "version instead of an empty page. Capped at 64 MB, cleaned "
+               "at startup."));
+        ImGui::PopStyleColor();
+        // Unite adaptee : un cache de 27 Ko affiche « 0,0 Mo », ce qui donne
+        // l'impression qu'il ne fonctionne pas.
+        const long long sz = cacheSz < 0 ? 0 : cacheSz;
+        if (sz < 1024 * 1024)
+            ImGui::Text(tr("Taille actuelle : %lld Ko", "Current size: %lld KB"),
+                        (sz + 512) / 1024);
+        else
+            ImGui::Text(tr("Taille actuelle : %.1f Mo", "Current size: %.1f MB"),
+                        sz / (1024.0 * 1024.0));
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Actualiser", "Refresh")))
+            cacheSz = netcache::size_bytes();
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Vider le cache", "Clear cache"))) {
+            netcache::clear();
+            cacheSz = netcache::size_bytes();
+            notify_toast(tr("Cache"),
+                         tr("Cache des métadonnées vidé.",
+                            "Metadata cache cleared."));
+        }
+    }
 
     if (ImGui::Checkbox(tr("Compter les FPS"), &s.fpsCounterEnabled))
         DataStore::save();

@@ -1,5 +1,7 @@
 #include "modrinth.hpp"
 
+#include "netcache.hpp"
+
 #include "curseforge.hpp" // sanitize()
 #include "game_launcher.hpp" // log_line
 #include "http_win.hpp"
@@ -41,14 +43,30 @@ std::string url_encode(const std::string& s) {
 }
 
 json get_json(const std::string& url, const std::atomic<bool>* cancel) {
-    auto r = http::get_response(url, "Accept: application/json", cancel);
-    if (!r) throw std::runtime_error("Échec réseau vers api.modrinth.com.");
-    if (r->status != 200)
-        throw std::runtime_error("HTTP " + std::to_string(r->status) +
-                                 " depuis api.modrinth.com.");
+    // Metadonnees publiques : elles passent par le cache disque. Le meme
+    // catalogue et les memes fiches sont redemandes a chaque retour sur la
+    // page, et Modrinth limite le debit. 15 minutes est un compromis : assez
+    // pour une session de navigation, assez court pour qu'une nouvelle
+    // version de mod apparaisse sans avoir a vider le cache.
+    //
+    // Interet secondaire : quand le reseau tombe, `netcache::get` sert la
+    // derniere copie connue plutot que de faire echouer la page.
+    const auto res = netcache::get(
+        url, 15 * 60, [&](const std::string& u) -> std::optional<std::string> {
+            auto r = http::get_response(u, "Accept: application/json", cancel);
+            // Seul un 200 merite d'etre mis en cache : mettre un 404 ou un
+            // 503 en cache le figerait pour un quart d'heure.
+            if (!r || r->status != 200) return std::nullopt;
+            return r->body;
+        });
+    if (!res.ok)
+        throw std::runtime_error("Échec réseau vers api.modrinth.com.");
     try {
-        return json::parse(r->body);
+        return json::parse(res.body);
     } catch (const json::exception&) {
+        // Une entree de cache abimee ne doit pas condamner la page : on la
+        // jette pour que le prochain appel reparte du reseau.
+        netcache::drop(url);
         throw std::runtime_error("Réponse Modrinth illisible.");
     }
 }
