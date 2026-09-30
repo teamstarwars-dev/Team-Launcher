@@ -80,6 +80,26 @@ Amis, messages **et** vocal passent par Discord. Aucun serveur à héberger, auc
 
 **État au 30/09/2026.** La couche `social.hpp` et la page 16 sont écrites, complètes et **indépendantes du fournisseur** : liste d'amis, conversation, ajout par pseudo, blocage, signalement, et bouton d'appel vocal désactivé avec la mention « à venir ».
 
+**Le SDK est intégré** (version 1.10.19337, 1er septembre 2026), lié sur les deux plateformes, et le client rapporte son véritable état de connexion. Reste à faire : la liaison de compte (flux par code d'appareil, `Client::GetTokenFromDevice`), puis la liste d'amis réelle, puis la messagerie.
+
+L'intégration est **optionnelle à la compilation** : sans le dossier `third_party/discord_social_sdk`, tout compile et la page explique ce qui manque. Indispensable, puisque l'archive ne peut pas être récupérée automatiquement.
+
+### Coût en taille — plafond relevé à 20 Mo
+
+Décision du 30/09/2026. La bibliothèque du SDK pèse **9,4 Mo sous Windows** et **13,7 Mo sous Linux**, ce qui porte la livraison de 6 à environ **15 Mo côté Windows et 17 Mo côté Linux**. Le plafond initial de 5 Mo est donc dépassé d'un facteur trois.
+
+L'alternative examinée — charger la bibliothèque dynamiquement et ne la télécharger qu'au premier usage du social — était techniquement possible : le SDK expose bien une API C sous son en-tête C++. Mais Discord ne fournit aucun mécanisme pour cela, il aurait fallu écrire à la main la résolution des fonctions utilisées. Écartée au profit de la simplicité.
+
+Repère à garder en tête : la version C# pesait **46 Mo**. Même avec le SDK, on reste trois fois plus léger.
+
+### Plafond de débit des communications
+
+Contrainte découverte le 30/09/2026 dans la documentation, et qui conditionne toute mise en service : les messages directs sont limités à **100 envois par tranche de 2 heures, par application et non par utilisateur**. Idem pour les opérations de salon.
+
+Lever ce plafond demande de **candidater** (bouton *Comms Access*), avec des prérequis : avoir déjà intégré la liaison de compte, la Rich Presence, les invitations de jeu **et** la liste d'amis unifiée ; une intégration complète de bout en bout, cas d'erreur compris ; des justificatifs dont une capture vidéo ; et des mesures de protection des mineurs. Discord peut refuser.
+
+Conséquence sur l'ordre des travaux : la **liste d'amis et les invitations ne sont pas plafonnées**. On livre donc d'abord un social utile sans dépendre de l'approbation, et la messagerie vient ensuite.
+
 Il manque le **SDK social de Discord** : une bibliothèque native à récupérer sur le portail développeur après acceptation de leurs conditions, puis à lier au launcher. À savoir — les amis et les messages privés ne passent **pas** par le canal IPC local déjà utilisé pour la Rich Presence, qui ne sait que déclarer une activité.
 
 Tant que le SDK n'est pas là, la page affiche ce qui manque et **aucune donnée fictive** : une fausse liste d'amis ou un faux fil de discussion laisseraient croire que les messages partent. Brancher le SDK revient à implémenter les fonctions de `social.cpp` et à définir `TL_HAS_DISCORD_SOCIAL` ; l'interface, le modèle et les règles ne sont pas à refaire.

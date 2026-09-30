@@ -1,6 +1,7 @@
 #include "ui_internal.hpp"
 
 #include "presets.hpp"
+#include "social.hpp"
 
 #include "fonts.hpp"
 #include "downloads.hpp"
@@ -810,6 +811,10 @@ void init(SDL_Window*) {
     // le reglage prend effet sans redemarrer le launcher.
     backup::auto_start();
 
+    // Liaison Discord pour le social (amis, messages). Sans effet si le
+    // SDK n est pas la ou si l integration est desactivee.
+    social::start();
+
     // Cache de metadonnees : un plafond, sinon il grossit indefiniment. Le
     // menage se fait au demarrage plutot qu'a chaque ecriture — parcourir
     // le dossier a chaque reponse mise en cache couterait plus cher que ce
@@ -985,6 +990,10 @@ void frame(SDL_Window* window) {
     backup::set_game_running(g.phase == Phase::GameRunning ||
                              g.phase == Phase::Preparing);
 
+    // Le SDK social doit etre pompe une fois par frame pour delivrer ses
+    // callbacks (connexion, amis). Sans effet s'il n'est pas la.
+    social::pump();
+
     apptasks_frame();
 
     // Recherche globale : en dernier, pour passer au-dessus de tout le
@@ -1073,6 +1082,7 @@ void shutdown() {
     // demarrage, pas classes comme abandonnes par l'utilisateur.
     if (dbg) std::fprintf(stderr, "SH: backup_timer\n");
     backup::auto_stop();
+    social::stop();
     downloads::save_state();
     downloads::shutdown();
     if (dbg) std::fprintf(stderr, "SH: downloads_stop done\n");

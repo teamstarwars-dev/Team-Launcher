@@ -206,6 +206,43 @@ else()
   target_link_libraries(tl_core PUBLIC tl_headers CURL::libcurl ${SECRET_LIBRARIES})
   target_include_directories(tl_core PUBLIC ${SECRET_INCLUDE_DIRS})
 endif()
+# ---- SDK social de Discord (amis, messages, vocal) ----
+#
+# OPTIONNEL PAR CONSTRUCTION. L'archive (~780 Mo) est derriere le portail
+# developpeur, liee a l'application et soumise a l'acceptation des
+# conditions de Discord : elle ne peut pas etre recuperee par
+# fetch-deps.ps1, et un clone neuf ne l'aura pas. Sans elle, tout compile
+# et la page Amis explique simplement ce qui manque.
+#
+# Cout assume (decision du 30/09/2026) : la bibliotheque pese 9,4 Mo sous
+# Windows et 13,7 Mo sous Linux, ce qui porte la livraison de 6 a ~15 Mo.
+# Le plafond initial de 5 Mo est donc releve a 20 Mo — a comparer aux 46 Mo
+# de la version C#, qu'on divise toujours par trois.
+set(TL_DISCORD_SDK "${CMAKE_CURRENT_SOURCE_DIR}/third_party/discord_social_sdk")
+set(TL_HAS_SOCIAL OFF)
+if(EXISTS "${TL_DISCORD_SDK}/include/discordpp.h")
+  if(WIN32)
+    set(_tl_social_lib "${TL_DISCORD_SDK}/lib/release/discord_partner_sdk.lib")
+    set(_tl_social_dll "${TL_DISCORD_SDK}/bin/release/discord_partner_sdk.dll")
+  elseif(APPLE)
+    set(_tl_social_lib "${TL_DISCORD_SDK}/lib/release/libdiscord_partner_sdk.dylib")
+    set(_tl_social_dll "${_tl_social_lib}")
+  else()
+    set(_tl_social_lib "${TL_DISCORD_SDK}/lib/release/libdiscord_partner_sdk.so")
+    set(_tl_social_dll "${_tl_social_lib}")
+  endif()
+  if(EXISTS "${_tl_social_lib}")
+    set(TL_HAS_SOCIAL ON)
+    target_include_directories(tl_core PUBLIC "${TL_DISCORD_SDK}/include")
+    target_link_libraries(tl_core PUBLIC "${_tl_social_lib}")
+    target_compile_definitions(tl_core PUBLIC TL_HAS_DISCORD_SOCIAL=1)
+  else()
+    message(WARNING "SDK social : en-tete trouve mais pas la bibliotheque "
+                    "(${_tl_social_lib}) — social desactive.")
+  endif()
+endif()
+message(STATUS "SDK social Discord : ${TL_HAS_SOCIAL}")
+
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher
 target_compile_definitions(tl_core PUBLIC TL_VERSION_STRING="${PROJECT_VERSION}")
 if(MSVC)
@@ -295,6 +332,17 @@ if(TL_SDL_VENDORED)
   )
 endif()
 
+# La bibliotheque du SDK social doit etre a cote de l'executable : elle est
+# chargee au demarrage du processus, pas resolue depuis third_party.
+if(TL_HAS_SOCIAL)
+  add_custom_command(TARGET TeamLauncher POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${_tl_social_dll}"
+      $<TARGET_FILE_DIR:TeamLauncher>
+    COMMENT "Copie de la bibliotheque du SDK social"
+  )
+endif()
+
 # ---- Assets externes (jamais embarqués) ----
 add_custom_command(TARGET TeamLauncher POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -309,6 +357,9 @@ install(TARGETS TeamLauncher RUNTIME DESTINATION .)
 # configuration. Le paquet declarera une dependance a la place.
 if(TL_SDL_VENDORED)
   install(TARGETS SDL2 RUNTIME DESTINATION .)
+endif()
+if(TL_HAS_SOCIAL)
+  install(FILES "${_tl_social_dll}" DESTINATION .)
 endif()
 install(DIRECTORY assets/ DESTINATION assets)
 

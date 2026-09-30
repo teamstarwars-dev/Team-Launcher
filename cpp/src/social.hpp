@@ -74,6 +74,10 @@ bool report(const std::string& friendId, const std::string& reason,
 
 // Demarre / arrete la liaison avec le fournisseur.
 void start();
+
+// A appeler une fois par frame : le SDK exige d etre pompe regulierement
+// pour delivrer ses callbacks. Sans effet si le fournisseur est absent.
+void pump();
 void stop();
 
 } // namespace tl::social
