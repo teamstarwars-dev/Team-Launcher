@@ -108,7 +108,7 @@ LaunchResult launch_flow(const LaunchRequest& req, const LaunchUi& ui,
 
         // ---- Fichiers du jeu ----
         json info = install(version, req.loader, ui.progress, cancel,
-                            /*forceVerify=*/false);
+                            req.forceVerify);
         if (cancel.load()) {
             res.cancelled = true;
             return res;

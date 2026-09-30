@@ -441,7 +441,17 @@ void start_worker() {
 
     LaunchRequest req;
     req.version = inst->value("McVersion", "latest");
-    req.loader = inst->value("Loader", "Vanilla");
+    // « Lancer en vanilla » : on force le chargeur a Vanilla sans toucher au
+    // moindre fichier. Sans chargeur, Minecraft ignore purement et
+    // simplement le dossier mods/ — inutile de le renommer, donc aucun
+    // risque pour les donnees de l'utilisateur.
+    req.loader = g.launchVanillaOnce ? std::string("Vanilla")
+                                     : inst->value("Loader", "Vanilla");
+    req.forceVerify = g.launchRepairOnce;
+    // Consommes ici : ce sont des actions ponctuelles, elles ne doivent pas
+    // s'appliquer au lancement suivant.
+    g.launchVanillaOnce = false;
+    g.launchRepairOnce = false;
     const std::string instId = inst->value("Id", "default");
     req.gameDir = (DataStore::instancesRoot() / instId).string();
     req.instanceId = instId;
@@ -933,6 +943,11 @@ void frame(SDL_Window* window) {
 
     // ---- Tâches de fond (panneau si >= 1 tâche) ----
     apptasks_frame();
+
+    // Recherche globale : en dernier, pour passer au-dessus de tout le
+    // reste, et hors de tout enfant pour que Ctrl+K marche depuis
+    // n'importe quelle page.
+    search_frame();
 
     ImGui::End();
 

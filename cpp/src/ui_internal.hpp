@@ -132,6 +132,11 @@ struct UiState {
     char tagsBuf[256] = "";
     bool tagsRequest = false; // demande d'ouverture de la modale
     std::string tagFilter;
+    // Actions du menu contextuel qui modifient UN lancement, consommees par
+    // start_worker() puis remises a zero : elles ne doivent pas coller a
+    // l'instance ni survivre au lancement suivant.
+    bool launchVanillaOnce = false; // ignore le chargeur de mods
+    bool launchRepairOnce = false;  // revalide tous les fichiers (SHA-1)
 
     // modales instance (1 creer, 2 editer, 3 supprimer)
     int modal = 0;
@@ -236,6 +241,8 @@ void citygen_page();     // ui_citygen.cpp (page 12) : ville OpenStreetMap
 void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
 void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
 void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
+void search_frame();     // ui_search.cpp : palette de recherche (Ctrl+K)
+void search_open();
 bool onboarding_needed();  // ui_onboarding.cpp
 void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
 void explore_stop();     // ui_explore.cpp : joint le worker

@@ -419,6 +419,44 @@ void instances_page() {
                 open_in_explorer(d);
             }
             ImGui::Separator();
+            // --- Actions rapides ---
+            if (ImGui::MenuItem(tr("Lancer sans les mods", "Launch without mods"))) {
+                g.launchVanillaOnce = true;
+                g.selInstId = id;
+                g.autoActive = false;
+                g.page = 2;
+                start_worker();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "%s", tr("Lance en Vanilla. Aucun fichier n'est modifié : "
+                             "sans chargeur, Minecraft ignore le dossier mods.",
+                             "Launches as Vanilla. No file is changed: with no "
+                             "loader, Minecraft ignores the mods folder."));
+            if (ImGui::MenuItem(tr("Ouvrir le dossier mods", "Open mods folder"))) {
+                std::error_code ec;
+                const std::filesystem::path d =
+                    DataStore::instancesRoot() / id / "mods";
+                std::filesystem::create_directories(d, ec);
+                open_in_explorer(d);
+            }
+            if (ImGui::MenuItem(tr("Réparer l'installation", "Repair install"))) {
+                g.launchRepairOnce = true;
+                g.selInstId = id;
+                g.autoActive = false;
+                g.page = 2;
+                start_worker();
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(
+                    "%s",
+                    tr("Revérifie tous les fichiers du jeu au SHA-1 et "
+                       "retélécharge ceux qui ne correspondent pas, puis "
+                       "lance. Plus long qu'un lancement normal.",
+                       "Re-checks every game file against its SHA-1, "
+                       "re-downloads the mismatched ones, then launches. "
+                       "Slower than a normal launch."));
+            ImGui::Separator();
             {
                 const bool fav = e.value("Favorite", false);
                 if (ImGui::MenuItem(fav ? tr("Retirer des favoris",

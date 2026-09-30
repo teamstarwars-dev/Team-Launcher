@@ -21,6 +21,10 @@ struct LaunchRequest {
     std::string jvmArgs;   // arguments JVM supplementaires (inst.JvmArgs)
     int ramGb = 0;         // 0 = DataStore::settings.maxRamGb
     std::string joinServer; // vide = aucun --server/--port
+    // Reparation : ignore le marqueur « deja verifie » et repasse tous les
+    // fichiers au SHA-1, en retelechargeant ceux qui ne correspondent pas.
+    // Plus lent, mais c'est ce qui repare une installation abimee.
+    bool forceVerify = false;
 };
 
 struct LaunchUi {
