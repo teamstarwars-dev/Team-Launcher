@@ -39,6 +39,7 @@ struct DevState {
 
     moddev::Toolchain tc;
     bool tcChecked = false;
+    bool autoToolchain = false; // TL_AUTO_TOOLCHAIN (test)
 
     std::mutex m;
     std::deque<std::string> console;
@@ -70,7 +71,11 @@ void log_line(const std::string& s) {
 }
 
 void recheck_toolchain() {
-    D.tc = moddev::detect_toolchain(std::filesystem::path(D.dir));
+    // La version de Minecraft compte : elle decide du JDK necessaire.
+    // Sans elle, on annoncait « JDK oui » a quelqu'un qui n'a qu'un
+    // JDK 8 pour un mod 1.21.
+    D.tc = moddev::detect_toolchain(std::filesystem::path(D.dir),
+                                    current_version());
     D.tcChecked = true;
 }
 
@@ -125,6 +130,46 @@ void run_gradle(const std::string& task) {
     });
 }
 
+// Telecharge ce qui manque — Gradle, et un JDK a la bonne version. Le
+// launcher sait deja recuperer un JRE pour jouer ; il n'y avait aucune
+// raison de renvoyer l'utilisateur installer Gradle a la main, surtout
+// avec une commande qui exigeait Gradle pour s'executer.
+void install_toolchain() {
+    const std::string mc = current_version();
+    const int needed = moddev::jdk_major_for(mc);
+    const bool wantJdk = !D.tc.jdk ||
+                         (D.tc.javaMajor > 0 && D.tc.javaMajor < needed);
+    const bool wantGradle = D.tc.command.empty();
+
+    spawn("Installation de la chaîne d'outils",
+          [needed, wantJdk, wantGradle](const std::atomic<bool>& cancel) {
+              if (wantJdk) {
+                  log_line("Téléchargement du JDK " + std::to_string(needed) +
+                           " (Adoptium)...");
+                  // download_java prend une reference non const : on lui
+                  // passe un relais branche sur l'annulation de la page.
+                  static std::atomic<bool> relay{false};
+                  relay.store(cancel.load());
+                  const auto jdk = download_java(
+                      needed, /*wantJdk=*/true,
+                      [](const char* s) { if (s) log_line(s); }, relay);
+                  log_line(jdk ? "JDK installé : " + *jdk
+                               : "Échec du téléchargement du JDK.");
+              }
+              if (cancel.load()) {
+                  log_line("Annulé.");
+                  return;
+              }
+              if (wantGradle) {
+                  std::string err;
+                  const std::string g =
+                      moddev::ensure_gradle(log_line, &cancel, &err);
+                  if (g.empty()) log_line("Échec : " + err);
+              }
+              log_line("Chaîne d'outils : vérifie à nouveau ci-dessus.");
+          });
+}
+
 } // namespace
 
 void moddev_page() {
@@ -134,6 +179,10 @@ void moddev_page() {
         autoDone = true;
         if (const char* d = std::getenv("TL_AUTO_DEV"))
             std::snprintf(D.dir, sizeof(D.dir), "%s", d);
+        // TL_AUTO_TOOLCHAIN=1 : déclenche l'installation sans clic. Un
+        // bouton qui télécharge 300 Mo ne se vérifie pas autrement qu'en
+        // le déclenchant pour de vrai.
+        if (std::getenv("TL_AUTO_TOOLCHAIN")) D.autoToolchain = true;
         if (D.dir[0] == '\0') {
             const auto p = DataStore::dir() / "mods-dev" / "monmod";
             std::snprintf(D.dir, sizeof(D.dir), "%s", p.string().c_str());
@@ -267,15 +316,58 @@ void moddev_page() {
     ImGui::PushStyleColor(ImGuiCol_Text, D.tc.command.empty() || !D.tc.jdk
                                              ? kDanger
                                              : kDim);
-    ImGui::Text(tr("Chaîne d'outils : wrapper %s · gradle (PATH) %s · JDK %s",
-                   "Toolchain: wrapper %s · gradle (PATH) %s · JDK %s"),
-                D.tc.wrapper ? tr("oui", "yes") : tr("non", "no"),
-                D.tc.gradleOnPath ? tr("oui", "yes") : tr("non", "no"),
-                D.tc.jdk ? tr("oui", "yes") : tr("non", "no"));
+    {
+        // Gradle peut venir de trois endroits : le wrapper du projet, le
+        // PATH, ou l'installation gérée par le launcher. Les confondre
+        // sous « gradle : non » laissait croire qu'il manquait alors
+        // qu'il était là.
+        const char* gradleFrom =
+            D.tc.wrapper          ? tr("wrapper du projet", "project wrapper")
+            : D.tc.gradleOnPath   ? tr("PATH", "PATH")
+            : D.tc.gradleManaged  ? tr("installé par le launcher",
+                                       "installed by the launcher")
+                                  : tr("absent", "missing");
+        std::string java;
+        if (!D.tc.jdk)
+            java = D.tc.javaPresent ? tr("JRE seulement", "JRE only")
+                                    : tr("absent", "missing");
+        else
+            java = "JDK " + (D.tc.javaMajor > 0
+                                 ? std::to_string(D.tc.javaMajor)
+                                 : std::string("?"));
+        ImGui::Text(tr("Chaîne d'outils — Gradle : %s · Java : %s (il en faut %d)",
+                       "Toolchain - Gradle: %s · Java: %s (needs %d)"),
+                    gradleFrom, java.c_str(), D.tc.javaNeeded);
+    }
     ImGui::SameLine();
     if (ImGui::SmallButton(tr("Revérifier", "Re-check"))) recheck_toolchain();
     if (!D.tc.problem.empty()) ImGui::TextWrapped("%s", D.tc.problem.c_str());
     ImGui::PopStyleColor();
+    // Le bouton n'apparaît que s'il a quelque chose à faire : proposer
+    // d'installer ce qui est déjà là ferait douter de ce qu'on affiche.
+    if (!D.tc.problem.empty()) {
+        // Consommé une seule fois, et seulement quand rien ne tourne.
+        bool autoFire = false;
+        if (D.autoToolchain && !running) {
+            D.autoToolchain = false;
+            autoFire = true;
+        }
+        ImGui::BeginDisabled(running);
+        if (accent_button(tr("Installer la chaîne d'outils",
+                             "Install the toolchain"),
+                          ImVec2(260, 30)) ||
+            autoFire)
+            install_toolchain();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted(
+            tr("Gradle (~130 Mo) et le JDK sont téléchargés dans le dossier "
+               "du launcher, sans rien installer sur le système.",
+               "Gradle (~130 MB) and the JDK are downloaded into the "
+               "launcher's folder, nothing is installed system-wide."));
+        ImGui::PopStyleColor();
+    }
 
     // --- build / run ---
     ImGui::Spacing();

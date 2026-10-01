@@ -1275,3 +1275,80 @@ non des octets — couper un caractère accentué en deux aurait affiché un
 losange noir.
 
 Trouvé en préparant une capture d'écran pour le site.
+
+## Page « Mods (dev) » : un conseil impossible à suivre (01/10/2026)
+
+Signalé par l'utilisateur, capture à l'appui. La page affichait en rouge :
+
+> Ni wrapper Gradle dans le projet, ni gradle dans le PATH. Installe
+> Gradle, ou genere le wrapper une fois depuis le dossier du projet :
+> `gradle wrapper --gradle-version 8.12`
+
+**Le conseil était circulaire** : la commande proposée exige Gradle, que
+la ligne du dessus vient de déclarer absent. On renvoyait donc
+l'utilisateur vers une impasse.
+
+### Et un second défaut, plus sournois
+
+La même ligne annonçait « JDK oui ». Sur la machine en question, `javac`
+est bien dans le PATH — mais c'est un **JDK 8**, alors que Fabric 1.21.4
+réclame un **JDK 21**. La construction aurait échoué sur une erreur de
+Gradle qui ne nomme pas le coupable, après que l'interface a affirmé que
+tout allait bien.
+
+La détection cherchait d'ailleurs `java`, pas `javac` : un JRE suffisait
+à faire afficher « JDK oui ». Un JRE lance le jeu, il ne compile rien.
+
+### Ce qui a été fait
+
+Le launcher sait déjà télécharger un JRE pour jouer. Il n'y avait aucune
+raison de renvoyer l'utilisateur installer Gradle à la main :
+
+- **`moddev::ensure_gradle`** télécharge Gradle 8.12 (130 Mo) dans
+  `<runtime>/gradle/` et l'extrait. L'archive est supprimée après
+  extraction.
+- **`download_java` gagne une variante JDK** — même API Adoptium, autre
+  paquet, autre dossier de cache (`jdk-21` au lieu de `jre-21`).
+- **Un bouton « Installer la chaîne d'outils »**, visible seulement quand
+  il manque quelque chose, récupère les deux.
+- **La détection cherche `javac`** et rapporte la version réelle, avec
+  celle qui est requise : `jdk_major_for()` reprend les paliers du jeu
+  (21 depuis 1.20.5, 17 depuis 1.18, 8 avant).
+
+La ligne d'état distingue maintenant les trois provenances possibles de
+Gradle — wrapper du projet, PATH, installation gérée — au lieu de les
+confondre sous « gradle : non ».
+
+### Trois pièges rencontrés en chemin
+
+**Le message ne signalait qu'un problème à la fois.** Une chaîne de
+`else if` annonçait l'absence de Gradle, puis — une fois Gradle installé
+— l'utilisateur découvrait que son JDK ne convenait pas. On énumère
+désormais tout ce qui manque d'un coup.
+
+**Le JDK téléchargé était ignoré.** La recherche du JDK géré ne se
+faisait que si aucun JDK n'avait été trouvé ; or le JDK 8 du PATH
+satisfaisait ce test. La page réclamait donc ce qu'elle venait
+d'installer. Le JDK géré l'emporte maintenant sur un JDK du PATH trop
+ancien.
+
+**Gradle aurait quand même utilisé le mauvais Java.** Il prend celui du
+PATH par défaut. La commande porte désormais
+`-Dorg.gradle.java.home=<jdk>`, ce qui évite de bricoler l'environnement
+du processus fils.
+
+### Vérifié pour de vrai
+
+Les deux URL ont d'abord été interrogées (Gradle 130 Mo, JDK 196 Mo,
+`200` les deux), puis l'installation a été **réellement déclenchée** via
+un nouveau crochet `TL_AUTO_TOOLCHAIN=1` — un bouton qui télécharge
+300 Mo ne se vérifie pas autrement. Résultat sur le disque :
+`gradle-8.12/bin/gradle.bat` et `jdk-21.0.12.1+1/bin/javac.exe`. La page
+affiche ensuite, en gris : « Gradle : installé par le launcher · Java :
+JDK 21 (il en faut 21) », sans message d'erreur, Build et Run activés.
+
+### Corrigé au passage
+
+`download_java` ne supprimait **jamais** l'archive téléchargée : 150 à
+200 Mo laissés sur le disque à chaque JRE, en double de ce qu'ils
+contiennent. Défaut présent depuis l'origine du module.

@@ -1,13 +1,18 @@
 #include "moddev.hpp"
 
+#include "game_installer.hpp" // runtime_root
+#include "game_launcher.hpp" // download_java (JDK)
 #include "http_win.hpp"
+#include "util_zip.hpp"      // zip_extract_all
 #include "proc.hpp" // posix_spawn (POSIX) ; vide sous Windows
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <vector>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -607,8 +612,101 @@ CreateResult create_project(const ProjectSpec& spec, const Deps& deps,
 
 // --- Chaine d'outils --------------------------------------------------------
 
-Toolchain detect_toolchain(const fs::path& projectDir) {
+int jdk_major_for(const std::string& mcVersion) {
+    // Memes paliers que le jeu lui-meme : 21 depuis 1.20.5, 17 depuis
+    // 1.18, 8 avant. On prend 21 par defaut quand on ne sait pas — c'est
+    // la valeur juste pour tout ce qui se developpe aujourd'hui, et un
+    // JDK 21 compile aussi vers des cibles plus anciennes.
+    if (mcVersion.empty()) return 21;
+    int maj = 0, min = 0, pat = 0;
+    if (std::sscanf(mcVersion.c_str(), "%d.%d.%d", &maj, &min, &pat) < 2)
+        return 21;
+    if (maj != 1) return 21;
+    if (min > 20 || (min == 20 && pat >= 5)) return 21;
+    if (min >= 18) return 17;
+    return 8;
+}
+
+std::string managed_gradle_path() {
+    std::error_code ec;
+    const fs::path root = runtime_root() / "gradle";
+    if (!fs::is_directory(root, ec)) return {};
+    // On ne fige pas le numero de version ici : une installation faite
+    // par une version precedente du launcher doit rester utilisable.
+    for (const auto& e : fs::directory_iterator(root, ec)) {
+        if (ec) break;
+        if (!e.is_directory(ec)) continue;
+#ifdef _WIN32
+        const fs::path exe = e.path() / "bin" / "gradle.bat";
+#else
+        const fs::path exe = e.path() / "bin" / "gradle";
+#endif
+        if (fs::is_regular_file(exe, ec)) return exe.string();
+    }
+    return {};
+}
+
+std::string ensure_gradle(const Log& log, const std::atomic<bool>* cancel,
+                          std::string* errOut) {
+    auto say = [&](const std::string& m) {
+        if (log) log(m);
+    };
+    if (const std::string have = managed_gradle_path(); !have.empty()) {
+        say("Gradle déjà installé : " + have);
+        return have;
+    }
+
+    constexpr const char* kVersion = "8.12";
+    const fs::path root = runtime_root() / "gradle";
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    const fs::path zipPath = root / (std::string("gradle-") + kVersion + "-bin.zip");
+
+    say(std::string("Téléchargement de Gradle ") + kVersion + " (~130 Mo)...");
+    const std::string url = std::string("https://services.gradle.org/distributions/"
+                                        "gradle-") + kVersion + "-bin.zip";
+    if (!http::get_to_file(url, zipPath, nullptr, cancel)) {
+        fs::remove(zipPath, ec);
+        if (errOut) *errOut = "Téléchargement de Gradle impossible (réseau ?).";
+        return {};
+    }
+    if (cancel && cancel->load()) {
+        fs::remove(zipPath, ec);
+        if (errOut) *errOut = "Annulé.";
+        return {};
+    }
+
+    say("Extraction...");
+    if (zip_extract_all(zipPath, root) < 0) {
+        fs::remove(zipPath, ec);
+        if (errOut) *errOut = "Archive Gradle illisible.";
+        return {};
+    }
+    // L'archive pèse 130 Mo : la garder après extraction doublerait la
+    // place occupée pour rien.
+    fs::remove(zipPath, ec);
+
+    const std::string exe = managed_gradle_path();
+    if (exe.empty()) {
+        if (errOut)
+            *errOut = "Gradle extrait, mais son exécutable reste introuvable.";
+        return {};
+    }
+#ifndef _WIN32
+    // L'extraction zip ne conserve pas le bit exécutable.
+    fs::permissions(exe,
+                    fs::perms::owner_exec | fs::perms::group_exec |
+                        fs::perms::others_exec,
+                    fs::perm_options::add, ec);
+#endif
+    say("Gradle installé : " + exe);
+    return exe;
+}
+
+Toolchain detect_toolchain(const fs::path& projectDir,
+                           const std::string& mcVersion) {
     Toolchain t;
+    t.javaNeeded = jdk_major_for(mcVersion);
 #ifdef _WIN32
     const fs::path wrapper = projectDir / "gradlew.bat";
     t.wrapper = file_exists(wrapper);
@@ -617,14 +715,17 @@ Toolchain detect_toolchain(const fs::path& projectDir) {
                                                     : which(L"gradle.bat");
     t.gradleOnPath = !g.empty();
 
-    // JDK : JAVA_HOME d'abord, puis le PATH.
-    fs::path javaExe;
+    // On cherche JAVAC, pas java : un JRE lance le jeu mais ne compile
+    // rien, et annoncer « JDK oui » a quelqu'un qui n'a qu'un JRE le
+    // laisse buter sur une erreur de Gradle incomprehensible.
+    fs::path javacExe, javaExe;
     if (const char* jh = std::getenv("JAVA_HOME")) {
-        const fs::path c = fs::path(jh) / "bin" / "java.exe";
-        if (file_exists(c)) javaExe = c;
+        const fs::path c = fs::path(jh) / "bin" / "javac.exe";
+        if (file_exists(c)) javacExe = c;
     }
-    if (javaExe.empty()) javaExe = which(L"java.exe");
-    t.jdk = !javaExe.empty();
+    if (javacExe.empty()) javacExe = which(L"javac.exe");
+    javaExe = javacExe.empty() ? which(L"java.exe")
+                               : javacExe.parent_path() / "java.exe";
 #else
     const fs::path wrapper = projectDir / "gradlew";
     t.wrapper = file_exists(wrapper);
@@ -632,38 +733,108 @@ Toolchain detect_toolchain(const fs::path& projectDir) {
     const fs::path g = which("gradle");
     t.gradleOnPath = !g.empty();
 
-    // JDK : JAVA_HOME d'abord, puis le PATH.
-    fs::path javaExe;
+    fs::path javacExe, javaExe;
     if (const char* jh = std::getenv("JAVA_HOME")) {
-        const fs::path c = fs::path(jh) / "bin" / "java";
+        const fs::path c = fs::path(jh) / "bin" / "javac";
         std::error_code ecj;
         if (fs::is_regular_file(c, ecj) && ::access(c.string().c_str(), X_OK) == 0)
-            javaExe = c;
+            javacExe = c;
     }
-    if (javaExe.empty()) javaExe = which("java");
-    t.jdk = !javaExe.empty();
+    if (javacExe.empty()) javacExe = which("javac");
+    javaExe = javacExe.empty() ? which("java")
+                               : javacExe.parent_path() / "java";
 #endif
+    t.jdk = !javacExe.empty();
+    t.javaPresent = t.jdk || !javaExe.empty();
+    if (!javacExe.empty()) t.javaHome = javacExe.parent_path().parent_path().string();
+    if (!javaExe.empty()) t.javaMajor = detect_java_major(javaExe.string());
+
+    // Un JDK gere par le launcher compte comme un JDK, meme absent du
+    // PATH — et il l'emporte sur un JDK du PATH TROP ANCIEN. Sans cette
+    // seconde condition, un JDK 8 installe sur la machine masquait le
+    // JDK 21 que le launcher venait de telecharger, et la page continuait
+    // de reclamer ce qu'elle avait deja.
+    if (!t.jdk || (t.javaMajor > 0 && t.javaMajor < t.javaNeeded)) {
+        std::error_code ecm;
+        const fs::path managed =
+            runtime_root() / ("jdk-" + std::to_string(t.javaNeeded));
+#ifdef _WIN32
+        const char* javacName = "javac.exe";
+#else
+        const char* javacName = "javac";
+#endif
+        if (fs::is_directory(managed, ecm))
+            for (auto it = fs::recursive_directory_iterator(
+                     managed, fs::directory_options::skip_permission_denied, ecm);
+                 it != fs::recursive_directory_iterator(); it.increment(ecm)) {
+                if (ecm) break;
+                if (it->path().filename() != javacName) continue;
+                t.jdk = true;
+                t.javaPresent = true;
+                t.javaHome = it->path().parent_path().parent_path().string();
+                t.javaMajor = t.javaNeeded;
+                break;
+            }
+    }
+
+    // Gradle gere par le launcher : dernier recours, avant de declarer
+    // qu'il manque quelque chose.
+    const std::string managedGradle = managed_gradle_path();
+    t.gradleManaged = !managedGradle.empty();
 
     if (t.wrapper)
         t.command = "\"" + wrapper.string() + "\"";
     else if (t.gradleOnPath)
         t.command = "\"" + g.string() + "\"";
+    else if (t.gradleManaged)
+        t.command = "\"" + managedGradle + "\"";
 
+    // Dire a Gradle QUEL Java utiliser. Sans cela il prend celui du PATH :
+    // sur une machine ou traine un vieux JDK 8, la construction echoue
+    // alors que le bon JDK vient d'etre telecharge et se trouve juste a
+    // cote. `-Dorg.gradle.java.home` existe exactement pour ca, et evite
+    // d'avoir a bricoler l'environnement du processus fils.
+    if (!t.command.empty() && !t.javaHome.empty())
+        t.command += " \"-Dorg.gradle.java.home=" + t.javaHome + "\"";
+
+    // Les messages disent ce que le LAUNCHER peut faire, pas ce que
+    // l'utilisateur devrait aller installer lui-meme. L'ancien conseil —
+    // « genere le wrapper : gradle wrapper ... » — etait circulaire :
+    // il fallait deja Gradle pour l'executer.
+    //
+    // Et on ENUMERE ce qui manque au lieu de s'arreter au premier :
+    // signaler Gradle, puis — une fois Gradle installe — decouvrir que le
+    // JDK ne convient pas, fait vivre deux fois le meme echec.
+    std::vector<std::string> missing;
+    if (t.command.empty()) missing.push_back("Gradle");
     if (!t.jdk) {
-        t.problem =
-            "Aucun JDK trouve (ni JAVA_HOME, ni java dans le PATH). Installe "
-            "un JDK 21 : Gradle ne demarrera pas sans.";
-    } else if (t.command.empty()) {
-        // CORRECTIF : le C# disait « cree le projet d'abord », alors que
-        // creer le projet ne produisait aucun wrapper.
-        t.problem =
-#ifdef _WIN32
-            "Ni wrapper Gradle dans le projet (gradlew.bat), ni gradle dans le "
-#else
-            "Ni wrapper Gradle dans le projet (gradlew), ni gradle dans le "
-#endif
-            "PATH. Installe Gradle, ou genere le wrapper une fois depuis le "
-            "dossier du projet : gradle wrapper --gradle-version 8.12";
+        missing.push_back(t.javaPresent
+                              ? "un JDK " + std::to_string(t.javaNeeded) +
+                                    " (le Java présent est un JRE : il lance "
+                                    "le jeu, il ne compile pas)"
+                              : "un JDK " + std::to_string(t.javaNeeded));
+    } else if (t.javaMajor > 0 && t.javaMajor < t.javaNeeded) {
+        // Cas le plus traitre : tout semble present, et la construction
+        // echoue sur une erreur de Gradle qui ne nomme pas le coupable.
+        missing.push_back("un JDK " + std::to_string(t.javaNeeded) +
+                          " (le JDK " + std::to_string(t.javaMajor) +
+                          " installé est trop ancien pour " +
+                          (mcVersion.empty() ? std::string("cette version")
+                                             : "Minecraft " + mcVersion) +
+                          ")");
+    }
+
+    if (!missing.empty()) {
+        t.problem = "Il manque ";
+        for (size_t i = 0; i < missing.size(); ++i) {
+            if (i) t.problem += i + 1 == missing.size() ? " et " : ", ";
+            t.problem += missing[i];
+        }
+        t.problem += missing.size() > 1
+                         ? ". « Installer la chaîne d'outils » les télécharge "
+                           "tous les deux ; rien à installer à la main."
+                         : ". « Installer la chaîne d'outils » le télécharge ; "
+                           "rien à installer à la main.";
     }
     return t;
 }

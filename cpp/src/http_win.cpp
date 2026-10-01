@@ -92,7 +92,8 @@ constexpr const char* kHostAllow[] = {
     "minecraftforge.net", // files.minecraftforge.net + maven.minecraftforge.net
     "neoforged.net",      // maven.neoforged.net
     "fabricmc.net",       // meta.fabricmc.net + maven.fabricmc.net
-    "adoptium.net",       // api.adoptium.net (JRE)
+    "adoptium.net",       // api.adoptium.net (JRE et JDK)
+    "gradle.org",         // services.gradle.org (distributions Gradle)
     // GitHub (API release, raw, Pages du projet)
     "github.com",
     "githubusercontent.com",        // raw. + objects.

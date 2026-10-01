@@ -367,9 +367,16 @@ std::optional<std::string> find_java(int requiredMajor) {
 std::optional<std::string> download_java(int major,
                                          const std::function<void(const char*)>& status,
                                          std::atomic<bool>& cancel) {
+    return download_java(major, /*wantJdk=*/false, status, cancel);
+}
+
+std::optional<std::string> download_java(int major, bool wantJdk,
+                                         const std::function<void(const char*)>& status,
+                                         std::atomic<bool>& cancel) {
     try {
         const fs::path runtimeRoot = runtime_root();
-        const fs::path jreDir = runtimeRoot / ("jre-" + std::to_string(major));
+        const fs::path jreDir =
+            runtimeRoot / ((wantJdk ? "jdk-" : "jre-") + std::to_string(major));
         const fs::path marker = jreDir / ".done";
 
         if (fs::exists(marker)) {
@@ -377,14 +384,16 @@ std::optional<std::string> download_java(int major,
             if (!existing.empty()) return existing.front();
         }
 
+        const std::string flavour = wantJdk ? "jdk" : "jre";
         const std::string url =
             "https://api.adoptium.net/v3/binary/latest/" + std::to_string(major) +
 #ifdef _WIN32
-            "/ga/windows/x64/jre/hotspot/normal/eclipse";
+            "/ga/windows/x64/" + flavour + "/hotspot/normal/eclipse";
 #else
-            "/ga/linux/x64/jre/hotspot/normal/eclipse";
+            "/ga/linux/x64/" + flavour + "/hotspot/normal/eclipse";
 #endif
-        const fs::path zipPath = runtimeRoot / ("adoptium-jre-" + std::to_string(major) + ".zip");
+        const fs::path zipPath =
+            runtimeRoot / ("adoptium-" + flavour + "-" + std::to_string(major) + ".zip");
         std::error_code ec;
         fs::create_directories(runtimeRoot, ec);
 
@@ -396,6 +405,10 @@ std::optional<std::string> download_java(int major,
         if (zip_extract_all(zipPath, jreDir) < 0)
             throw std::runtime_error("extraction jre");
         { std::ofstream m(marker); m << "ok"; }
+        // L'archive ne sert plus a rien une fois extraite, et elle pese
+        // 150 a 200 Mo. Elle restait sur le disque a chaque
+        // telechargement, en double de ce qu'elle contient.
+        fs::remove(zipPath, ec);
 
         const auto found = find_javaw_in(jreDir);
         if (found.empty()) return std::nullopt;

@@ -33,9 +33,18 @@ std::optional<std::string> find_java(int requiredMajor = 8);
 // Oublie ce cache : a appeler quand on veut un balayage neuf (diagnostic,
 // ou Java installe pendant la session).
 void forget_java_scan();
+
+// Un JRE suffit pour JOUER, pas pour COMPILER : il n'a pas de javac. Le
+// developpement de mods demande donc un JDK, d'ou ce drapeau — meme API
+// Adoptium, autre variante de paquet, autre dossier de cache.
 int detect_java_major(const std::string& javawPath);
 
 // Telecharge un JRE Adoptium dans runtime/jre-<major> (marqueur .done).
+std::optional<std::string> download_java(int major, bool wantJdk,
+                                         const std::function<void(const char*)>& status,
+                                         std::atomic<bool>& cancel);
+
+// Ancienne forme : un JRE, comme avant.
 std::optional<std::string> download_java(int major,
                                          const std::function<void(const char*)>& status,
                                          std::atomic<bool>& cancel);

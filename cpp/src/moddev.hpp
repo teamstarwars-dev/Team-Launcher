@@ -112,13 +112,43 @@ CreateResult create_project(const ProjectSpec& spec, const Deps& deps,
 struct Toolchain {
     bool wrapper = false;         // gradlew.bat present dans le projet
     bool gradleOnPath = false;    // gradle(.bat) trouve dans le PATH
-    bool jdk = false;             // JAVA_HOME valide, ou java dans le PATH
+    bool gradleManaged = false;   // Gradle telecharge par le launcher
+    // Un JRE a bien un `java`, mais pas de `javac` : il ne compile rien.
+    // Distinguer les deux evite d'annoncer « JDK oui » a quelqu'un qui ne
+    // pourra pas construire son mod.
+    bool jdk = false;             // un javac a ete trouve
+    bool javaPresent = false;     // un java a ete trouve (JRE ou JDK)
+    int javaMajor = 0;            // 8, 17, 21... 0 = inconnu
+    int javaNeeded = 0;           // ce que le chargeur choisi reclame
+    std::string javaHome;         // racine du JDK retenu, "" si aucun
     std::string javaVersion;      // ce que « java -version » a repondu
     std::string command;          // ce qui sera lance ; "" si rien d'utilisable
     std::string problem;          // ce qui manque, en clair
 };
 
-Toolchain detect_toolchain(const std::filesystem::path& projectDir);
+// `mcVersion` sert a dire quel JDK est necessaire (21 depuis 1.20.5, 17
+// depuis 1.18, 8 avant). Vide = on ne se prononce pas sur la version.
+Toolchain detect_toolchain(const std::filesystem::path& projectDir,
+                           const std::string& mcVersion = {});
+
+// JDK requis par cette version de Minecraft.
+int jdk_major_for(const std::string& mcVersion);
+
+// --- Installation automatique de la chaine d'outils -------------------------
+// La page proposait « genere le wrapper : gradle wrapper ... » — un
+// conseil impossible a suivre, puisqu'il faut deja Gradle pour le lancer.
+// Le launcher sait telecharger un JRE pour jouer ; il sait desormais
+// telecharger Gradle et un JDK pour construire.
+
+// Gradle gere par le launcher (<runtime>/gradle/...). Rend le chemin de
+// l'executable, ou "" avec errOut renseigne. Ne retelecharge pas si
+// l'installation est deja la.
+std::string ensure_gradle(const Log& log, const std::atomic<bool>* cancel,
+                          std::string* errOut = nullptr);
+
+// Chemin de Gradle gere s'il est deja installe, "" sinon. Ne telecharge
+// rien : sert a la detection.
+std::string managed_gradle_path();
 
 // --- Execution --------------------------------------------------------------
 

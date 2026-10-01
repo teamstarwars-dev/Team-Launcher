@@ -13,6 +13,8 @@
 #include <string>
 
 using namespace tl::moddev;
+#include <chrono>
+
 namespace fs = std::filesystem;
 using nlohmann::json;
 
@@ -325,6 +327,73 @@ int main() {
     for (auto l : {Loader::Fabric, Loader::Forge, Loader::NeoForge,
                    Loader::Bedrock})
         CHECK(!versions_for(l).empty());
+
+    // =====================================================================
+    // 12. JDK requis selon la version de Minecraft
+    // =====================================================================
+    // Memes paliers que le jeu. Se tromper ici fait proposer le mauvais
+    // JDK au telechargement, et la construction echoue plus loin sur une
+    // erreur de Gradle qui ne nomme pas le coupable.
+    CHECK_EQ(jdk_major_for("1.21.4"), 21);
+    CHECK_EQ(jdk_major_for("1.21"), 21);
+    CHECK_EQ(jdk_major_for("1.20.5"), 21); // palier exact
+    CHECK_EQ(jdk_major_for("1.20.4"), 17); // juste en dessous
+    CHECK_EQ(jdk_major_for("1.20.1"), 17);
+    CHECK_EQ(jdk_major_for("1.18"), 17);   // palier exact
+    CHECK_EQ(jdk_major_for("1.17.1"), 8);
+    CHECK_EQ(jdk_major_for("1.12.2"), 8);
+    // Inconnu ou illisible : on vise haut. Un JDK 21 compile aussi vers
+    // des cibles plus anciennes, l'inverse est faux.
+    CHECK_EQ(jdk_major_for(""), 21);
+    CHECK_EQ(jdk_major_for("n'importe quoi"), 21);
+    CHECK_EQ(jdk_major_for("25w14a"), 21); // instantane
+
+    // =====================================================================
+    // 13. Gradle gere par le launcher : detection sans telechargement
+    // =====================================================================
+    {
+        // managed_gradle_path() ne doit RIEN telecharger : c'est la
+        // fonction qu'appelle la detection, a chaque reverification.
+        const auto before = std::chrono::steady_clock::now();
+        const std::string p = managed_gradle_path();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - before)
+                            .count();
+        CHECK(ms < 2000);
+        if (p.empty()) {
+            std::printf("INFO Gradle gere : aucun (normal sans install)\n");
+        } else {
+            // S'il y en a un, c'est un chemin reel vers un executable.
+            std::error_code ec;
+            CHECK(fs::is_regular_file(fs::path(p), ec));
+            std::printf("INFO Gradle gere : %s\n", p.c_str());
+        }
+    }
+
+    // =====================================================================
+    // 14. detect_toolchain : la version de Minecraft est prise en compte
+    // =====================================================================
+    {
+        const fs::path tmp = fs::temp_directory_path() / "tl_test_moddev_tc";
+        std::error_code ec;
+        fs::create_directories(tmp, ec);
+        const auto a = detect_toolchain(tmp, "1.21.4");
+        const auto b = detect_toolchain(tmp, "1.12.2");
+        CHECK_EQ(a.javaNeeded, 21);
+        CHECK_EQ(b.javaNeeded, 8);
+        // Dossier vide : aucun wrapper, quelle que soit la version.
+        CHECK(!a.wrapper);
+        // Quand quelque chose manque, le message doit proposer le bouton
+        // plutot qu'une commande a taper — c'est tout l'objet du
+        // correctif : l'ancien conseil exigeait Gradle pour installer
+        // Gradle.
+        if (!a.problem.empty()) {
+            CHECK(a.problem.find("chaîne d'outils") != std::string::npos);
+            CHECK(a.problem.find("gradle wrapper --gradle-version") ==
+                  std::string::npos);
+        }
+        fs::remove_all(tmp, ec);
+    }
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
