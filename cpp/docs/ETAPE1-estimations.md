@@ -1165,3 +1165,25 @@ sans clé, le vrai rapport de crash rendant `webscreen` /
 `WebDisplay2-2.0.0.jar`, le plafond de débit et la révocation à chaud.
 
 **26 suites vertes sous Linux, 25 sous Windows.**
+
+### Défaut trouvé juste avant le push (01/10/2026)
+
+En vérifiant qu'aucun secret ne partait dans le commit, un motif a
+accroché : l'identifiant de clé de `tl_diagd` était construit avec
+`"ak_" + secret.substr(0, 12)`. **L'identifiant est public par nature** —
+il apparaît dans le journal, dans le fichier de clés et sur toute capture
+d'écran de support — et il donnait donc 48 bits du secret. Les 208 bits
+restants suffisaient encore, mais c'était gratuit.
+
+Corrigé : identifiant tiré séparément. `apikeys` (côté launcher) n'avait
+pas le défaut — il appelait `new_guid()` une seconde fois.
+
+Au passage, `std::random_device` a été remplacé par le générateur du
+système nommé explicitement (`BCryptGenRandom` / `getrandom`) : la norme
+laisse sa qualité à l'implémentation, et pour fabriquer un secret mieux
+vaut nommer la source que l'espérer. L'exemple de `DIAGD.md` a été
+régénéré, l'ancien publiant un identifiant dérivé.
+
+Ce que ça dit de la méthode : la relecture anti-secrets avant un push
+sert à trouver des secrets qui fuient, et elle a trouvé un secret qui
+fuyait — pas là où on le cherchait.

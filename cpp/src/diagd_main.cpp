@@ -44,6 +44,17 @@
 
 #include <httplib.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#define NOMINMAX
+#include <Windows.h>
+#include <bcrypt.h>
+#else
+#include <sys/random.h> // getrandom
+#endif
+
 #ifndef TL_VERSION_STRING
 #define TL_VERSION_STRING "6.0.0"
 #endif
@@ -272,19 +283,54 @@ void print_usage() {
         TL_VERSION_STRING);
 }
 
+// Octets aléatoires du générateur du système. `std::random_device` aurait
+// suffi en pratique, mais sa qualité est laissée à l'implémentation par
+// la norme : pour fabriquer un secret, mieux vaut nommer explicitement la
+// source plutôt que d'espérer.
+bool random_bytes(unsigned char* out, size_t n) {
+#ifdef _WIN32
+    return BCryptGenRandom(nullptr, out, static_cast<ULONG>(n),
+                           BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0;
+#else
+    size_t done = 0;
+    while (done < n) {
+        const ssize_t r = getrandom(out + done, n - done, 0);
+        if (r <= 0) return false;
+        done += static_cast<size_t>(r);
+    }
+    return true;
+#endif
+}
+
+std::string random_hex(size_t bytes) {
+    std::vector<unsigned char> buf(bytes);
+    if (!random_bytes(buf.data(), buf.size())) return {};
+    static const char* hex = "0123456789abcdef";
+    std::string out;
+    out.reserve(bytes * 2);
+    for (unsigned char c : buf) {
+        out.push_back(hex[c >> 4]);
+        out.push_back(hex[c & 0x0F]);
+    }
+    return out;
+}
+
 // Génère une clé et imprime les deux moitiés : le secret à remettre au
 // demandeur (une seule fois) et la ligne JSON à coller dans le fichier.
 int new_key(const std::string& appName, int rate) {
-    // Aléatoire du système, sans dépendre de datastore : on lit
-    // /dev/urandom ou BCryptGenRandom via std::random_device, qui s'y
-    // adosse sur les deux plateformes pour cet usage.
-    std::string secret;
-    {
-        std::random_device rd;
-        static const char* hex = "0123456789abcdef";
-        for (int i = 0; i < 64; ++i) secret.push_back(hex[rd() & 0xF]);
+    const std::string secret = random_hex(32); // 256 bits
+    // L'identifiant est tiré SÉPARÉMENT du secret. Le dériver de ses
+    // premiers caractères — ce que faisait la première version — le
+    // faisait fuiter : l'identifiant est public, il apparaît dans le
+    // journal, dans le fichier de clés et sur toute capture d'écran de
+    // support. Quarante-huit bits donnés pour rien.
+    const std::string id = "ak_" + random_hex(6);
+    if (secret.empty() || id.size() < 5) {
+        std::fprintf(stderr,
+                     "générateur aléatoire du système indisponible : aucune "
+                     "clé générée.\n");
+        return 1;
     }
-    const std::string id = "ak_" + secret.substr(0, 12);
     json line{{"id", id},
               {"hash", tl::sha1_hex_of(secret)},
               {"appName", appName.empty() ? "Application sans nom" : appName},

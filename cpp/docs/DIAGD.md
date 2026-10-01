@@ -56,16 +56,23 @@ tl_diagd --new-key "Bot support Portaldev" --rate 30
 
 ```
 Secret à remettre au demandeur (affiché une seule fois) :
-  06995fc0…589d
+  3014c23c…2cf8
 
 Ligne à ajouter au tableau "keys" du fichier :
-  {"id":"ak_06995fc00006","hash":"1d06269e…","appName":"Bot support Portaldev",
+  {"id":"ak_0233737f0117","hash":"1bf43577…","appName":"Bot support Portaldev",
    "ratePerMin":30,"revoked":false}
 ```
 
 Collez la ligne dans le fichier, remettez le secret au demandeur. **Le
 service ne conserve que l'empreinte** : si le secret est perdu, il faut
 en générer un autre — personne ne peut le relire.
+
+L'identifiant (`id`) est tiré **indépendamment** du secret. Il est public
+par nature — il apparaît dans le journal, dans ce fichier et sur toute
+capture d'écran de support — et ne doit donc rien en révéler. Les
+secrets viennent du générateur du système (`BCryptGenRandom`,
+`getrandom`), pas de `std::random_device`, dont la norme laisse la
+qualité à l'implémentation.
 
 ### Le fichier de clés
 
@@ -99,8 +106,8 @@ L'analyse se fait en mémoire ; le journal ne reçoit que la route, le code,
 l'identifiant de clé, la **taille** et le verdict :
 
 ```
-2026-10-01T15:49:03Z /v1/diag/crash 200 key=ak_06995fc00006 bytes=14203 cause=mod_error
-2026-10-01T15:49:16Z /v1/diag/mods  200 key=ak_06995fc00006 bytes=29    errors=0
+2026-10-01T15:49:03Z /v1/diag/crash 200 key=ak_0233737f0117 bytes=14203 cause=mod_error
+2026-10-01T15:49:16Z /v1/diag/mods  200 key=ak_0233737f0117 bytes=29    errors=0
 ```
 
 Même un plantage interne ne renvoie que `{"error":"erreur interne"}` : le
