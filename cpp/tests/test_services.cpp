@@ -643,6 +643,80 @@ int main() {
         std::printf("INFO diagnostic reseau saute (TL_TEST_NET non defini)\n");
     }
 
+    // =====================================================================
+    // 7. Flux de mise a jour « version.json » (forme heritee du C#)
+    // =====================================================================
+    // L'URL par defaut pointait sur un tel fichier et reste enregistree
+    // dans la configuration des installations existantes : ne pas le
+    // comprendre revenait a leur afficher « Réponse GitHub inattendue
+    // (pas de tag) » a chaque verification.
+    {
+        const std::string ancien =
+            R"({"version":"4.2.2.0","url":"https://x/u.zip",)"
+            R"("changelog":"vieux"})";
+        std::string err = "sentinelle";
+        // Plus ancien que la version compilee : silencieux, pas une erreur.
+        CHECK(!updates::parse_release_json(ancien, &err).has_value());
+        CHECK_EQ(err, std::string("sentinelle"));
+
+        const std::string neuf =
+            R"({"version":"99.1.0","page":"https://x/p",)"
+            R"("urlWindows":"https://x/w.exe","urlLinux":"https://x/l.deb",)"
+            R"("changelog":"des notes"})";
+        auto info = updates::parse_release_json(neuf);
+        CHECK(info.has_value());
+        if (info) {
+            CHECK_EQ(info->version, std::string("99.1.0"));
+            CHECK_EQ(info->notes, std::string("des notes"));
+            CHECK_EQ(info->url, std::string("https://x/p"));
+            // Chaque plateforme recoit SON archive : servir un .exe a un
+            // utilisateur Linux est exactement ce qu'on veut eviter.
+#ifdef _WIN32
+            CHECK_EQ(info->assetUrl, std::string("https://x/w.exe"));
+#else
+            CHECK_EQ(info->assetUrl, std::string("https://x/l.deb"));
+#endif
+        }
+
+        // `url` seul : accepte, faute de mieux.
+        auto uni = updates::parse_release_json(
+            R"({"version":"99.2.0","url":"https://x/u.zip"})");
+        CHECK(uni.has_value());
+        if (uni) CHECK_EQ(uni->assetUrl, std::string("https://x/u.zip"));
+
+        // Prefixe « v » tolere, comme pour un tag.
+        auto pv = updates::parse_release_json(R"({"version":"v99.3.0"})");
+        CHECK(pv.has_value());
+        if (pv) CHECK_EQ(pv->version, std::string("99.3.0"));
+
+        // Sans numero de version : erreur explicite, pas un message GitHub.
+        std::string err2;
+        CHECK(!updates::parse_release_json(R"({"changelog":"x"})", &err2)
+                   .has_value());
+        CHECK(!err2.empty());
+        // On ne peut pas deviner lequel des deux flux l'appelant visait :
+        // le message doit nommer les DEUX, sinon celui qui heberge son
+        // propre fichier cherche un « tag » qui n'existe pas chez lui.
+        CHECK(err2.find("tag_name") != std::string::npos);
+        CHECK(err2.find("version") != std::string::npos);
+
+        // Le vrai fichier du depot doit etre compris par ce chemin.
+        const fs::path real = fs::path("..") / ".." / "version.json";
+        std::error_code rec;
+        if (fs::is_regular_file(real, rec)) {
+            std::ifstream in(real, std::ios::binary);
+            const std::string body((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+            std::string err3 = "sentinelle";
+            updates::parse_release_json(body, &err3);
+            // Qu'il annonce une mise a jour ou non, il ne doit jamais
+            // produire d'erreur : c'est ce que voient les installations
+            // existantes a chaque verification.
+            CHECK_EQ(err3, std::string("sentinelle"));
+            std::printf("INFO version.json du depot : compris sans erreur\n");
+        }
+    }
+
     DataStore::shutdown();
     fs::remove_all(tmp, ec);
 

@@ -1352,3 +1352,70 @@ JDK 21 (il en faut 21) », sans message d'erreur, Build et Run activés.
 `download_java` ne supprimait **jamais** l'archive téléchargée : 150 à
 200 Mo laissés sur le disque à chaque JRE, en double de ce qu'ils
 contiennent. Défaut présent depuis l'origine du module.
+
+## Mise à jour : le flux par défaut ne marchait pour personne (01/10/2026)
+
+Vérifié avant la mise en ligne du site, parce que c'est le genre de
+défaut qui ne se révèle qu'une fois des gens installés.
+
+`assets/default.env` posait `UPDATE_URL` vers `version.json`, et
+`feed_url()` privilégie ce réglage sur l'API GitHub. **Tout le monde
+interrogeait donc `version.json`** — un fichier resté à la forme
+Velopack du C# : `{version, url, changelog}`, sans `tag_name` ni
+`assets`. `parse_release_json`, écrit pour l'API GitHub, exige
+`tag_name` : chaque vérification répondait « Réponse GitHub inattendue
+(pas de tag) ».
+
+Le fichier annonçait par ailleurs toujours la **v4.2.2**, celle de
+l'époque C#, alors que le portage est en 6.0.0.
+
+### Corrigé en trois points
+
+1. **`parse_release_json` comprend aussi le flux simple.** Ce n'était pas
+   optionnel : l'ancienne URL est **déjà enregistrée** dans la
+   configuration des installations existantes, et changer la valeur par
+   défaut ne les rattrape pas.
+2. **`UPDATE_URL` retiré des défauts** — vide signifie « API GitHub
+   Releases », qui sait choisir l'archive de la bonne plateforme.
+   `version.json` ne porte qu'une URL : il servirait un `.exe` à un
+   utilisateur Linux. Le flux simple accepte donc aussi `urlWindows` et
+   `urlLinux`.
+3. **`version.json` remis à jour** en 6.0.0, avec les deux URL.
+
+Incohérence introduite puis rattrapée en cours de route : le repli en dur
+de `loadDefaults()` continuait de poser `UPDATE_URL`. Le comportement
+dépendait alors de la seule présence de `default.env`.
+
+### Deux assertions de test corrigées, pas contournées
+
+`test_datastore` vérifiait que `updateUrl` est **non vide** après
+chargement des défauts — il s'en servait comme témoin « les défauts sont
+appliqués ». Le vide étant désormais la valeur juste, l'assertion est
+inversée et le témoin déplacé sur `discordAppId`.
+
+Et une assertion que j'avais écrite trop strictement : j'exigeais que le
+message d'erreur ne contienne jamais « tag ». Or le bon message nomme
+**les deux** formes de flux — « ni `tag_name` (API GitHub), ni `version`
+(flux simple) » — parce qu'on ne peut pas deviner laquelle l'appelant
+visait. C'est l'assertion qui avait tort.
+
+### Vérifié sur un profil neuf
+
+Champ d'URL vide, version 6.0.0, canal stable, aucune erreur. La
+vérification de fond a bien tourné (`LastUpdateCheckUnix` écrit) et est
+restée **silencieuse** — correct, la dernière release publiée est la
+v4.2.2, antérieure. Le `version.json` du dépôt est désormais compris sans
+erreur, ce qu'un test vérifie en le lisant réellement.
+
+Confirmé au passage sur le même profil neuf : la clé CurseForge embarquée
+est bien appliquée sans que l'utilisateur ait rien saisi.
+
+## Livrables du 01/10/2026
+
+| Fichier | Taille | SHA-256 |
+|---|---|---|
+| `TeamLauncher-6.0.0-Setup.exe` | 6 552 Ko | `503f868eaca05f79274e7757a8976df18e6ff92d2c3105beb9cadbf7f305a560` |
+| `teamlauncher_6.0.0_amd64.deb` | 5 906 Ko | `fef735f0d60894f980d1782c870a1e42bc15f3d9e87ddb1a5fc091c39966edd9` |
+
+Les deux contiennent la clé CurseForge embarquée et l'installation
+automatique de la chaîne d'outils de développement de mods.

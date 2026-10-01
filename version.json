@@ -1,5 +1,8 @@
 {
-  "version": "4.2.2.0",
-  "url": "https://github.com/teamstarwars-dev/Team-Luncher-/releases/download/v4.2.2/TeamLauncher-update.zip",
-  "changelog": "v4.2.2 — Framework-dependent (20 Mo RAM au lieu de 47), auto-update Velopack, mémoire auto-ajustée"
+  "version": "6.0.0",
+  "page": "https://github.com/teamstarwars-dev/Team-Luncher-/releases/latest",
+  "urlWindows": "https://github.com/teamstarwars-dev/Team-Luncher-/releases/download/v6.0.0/TeamLauncher-6.0.0-Setup.exe",
+  "urlLinux": "https://github.com/teamstarwars-dev/Team-Luncher-/releases/download/v6.0.0/teamlauncher_6.0.0_amd64.deb",
+  "changelog": "v6.0.0 — Portage C++ complet : lancement, instances, mods, mondes, skins, serveurs, Bedrock. Analyse de compatibilité des mods, diagnostic de crash qui nomme le mod fautif, amis et vocal Discord, API locale. Sans runtime .NET.",
+  "_note": "Flux hérité, conservé pour les installations qui l'ont enregistré dans leur configuration. Les nouvelles installations interrogent l'API GitHub Releases, qui sait choisir l'archive de la bonne plateforme. urlWindows / urlLinux existent pour que ce flux-ci ne serve pas un .exe à un utilisateur Linux."
 }

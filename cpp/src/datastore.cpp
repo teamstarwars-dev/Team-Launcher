@@ -251,8 +251,10 @@ void DataStore::loadDefaults() {
         d["DISCORD_APP_ID"] = "1541468112740941844";
         d["DISCORD_ENABLED"] = "true";
         d["TELEMETRY_ENABLED"] = "true";
-        d["UPDATE_URL"] =
-            "https://raw.githubusercontent.com/teamstarwars-dev/Team-Luncher-/main/version.json";
+        // Pas d'UPDATE_URL : vide signifie « API GitHub Releases », qui
+        // sait choisir l'archive de la bonne plateforme. Le laisser ici
+        // alors que default.env ne le pose plus ferait dependre le
+        // comportement de la seule presence du fichier.
         d["LANGUAGE"] = "fr";
         d["FPS_COUNTER_ENABLED"] = "false";
     }

@@ -419,6 +419,45 @@ std::optional<Info> parse_release_json(const std::string& body, std::string* err
         if (errOut) *errOut = "Réponse GitHub inattendue (objet JSON attendu).";
         return std::nullopt;
     }
+
+    // --- Flux simple « version.json » ------------------------------------
+    // Forme heritee de la version C# : {version, url, changelog}. Elle n'a
+    // ni `tag_name` ni `assets`, et finissait donc par « Réponse GitHub
+    // inattendue (pas de tag) » — un message incomprehensible pour
+    // quelqu'un qui n'interroge pas GitHub.
+    //
+    // Elle doit rester comprise : l'URL par defaut pointait sur un tel
+    // fichier, et elle est DEJA enregistree dans la configuration des
+    // installations existantes. Changer la valeur par defaut ne les
+    // rattraperait pas.
+    //
+    // `url` seul ne distingue pas les plateformes : `urlWindows` et
+    // `urlLinux` permettent de ne pas servir un .exe a un utilisateur
+    // Linux.
+    if (!j.contains("tag_name") && j.contains("version")) {
+        Info simple;
+        simple.version = j.value("version", std::string{});
+        if (!simple.version.empty() &&
+            (simple.version[0] == 'v' || simple.version[0] == 'V'))
+            simple.version.erase(0, 1);
+        if (simple.version.empty()) {
+            if (errOut) *errOut = "Flux de mise à jour sans numéro de version.";
+            return std::nullopt;
+        }
+        if (compare_versions(simple.version, current_version()) <= 0)
+            return std::nullopt; // deja a jour
+        simple.notes = j.value("changelog", j.value("notes", std::string{}));
+        simple.url = j.value("page", std::string{});
+#ifdef _WIN32
+        simple.assetUrl = j.value("urlWindows", j.value("url", std::string{}));
+#else
+        simple.assetUrl = j.value("urlLinux", j.value("url", std::string{}));
+#endif
+        simple.assetSize = j.value("size", -1LL);
+        if (simple.url.empty()) simple.url = simple.assetUrl;
+        return simple;
+    }
+
     Info info;
     info.version = j.value("tag_name", std::string{});
     if (!info.version.empty() && (info.version[0] == 'v' || info.version[0] == 'V'))
@@ -426,7 +465,13 @@ std::optional<Info> parse_release_json(const std::string& body, std::string* err
     info.notes = j.value("body", std::string{});
     info.url = j.value("html_url", std::string{});
     if (info.version.empty()) {
-        if (errOut) *errOut = "Réponse GitHub inattendue (pas de tag).";
+        // On ne sait pas lequel des deux flux l'appelant visait : le
+        // message doit couvrir les deux, sinon celui qui heberge son
+        // propre fichier cherche un « tag » qui n'a aucun sens chez lui.
+        if (errOut)
+            *errOut =
+                "Flux de mise à jour incompréhensible : ni « tag_name » "
+                "(API GitHub), ni « version » (flux simple).";
         return std::nullopt;
     }
     if (compare_versions(info.version, current_version()) <= 0)

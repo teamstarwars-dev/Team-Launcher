@@ -52,8 +52,11 @@ int main() {
     DataStore::load();
     CHECK(DataStore::settings.playerName == "Joueur");
     CHECK(DataStore::settings.language == "fr");
-    CHECK(!DataStore::settings.updateUrl.empty());     // default.env ou fallback
-    CHECK(!DataStore::settings.discordAppId.empty());
+    // Vide = API GitHub Releases, qui choisit l'archive de la bonne
+    // plateforme. Une URL unique vers un version.json ne le sait pas :
+    // elle servirait un .exe a un utilisateur Linux.
+    CHECK(DataStore::settings.updateUrl.empty());
+    CHECK(!DataStore::settings.discordAppId.empty()); // temoin : defauts appliques
     CHECK(DataStore::settings.discordEnabled);         // defaut bool applique (1er config)
     CHECK(DataStore::settings.instancesDir == (DataStore::dir() / "instances").string());
     CHECK(fs::exists(tmp / "instances"));
@@ -83,7 +86,10 @@ int main() {
     CHECK(DataStore::settings.favoriteServers.size() == 2);
     CHECK(DataStore::settings.favoriteServers[0] == "mc.example.org");
     CHECK(DataStore::settings.onboardingDone);
-    CHECK(!DataStore::settings.updateUrl.empty()); // applyDefaults remplit les vides
+    // applyDefaults ne remplit QUE ce que les defauts fournissent : sans
+    // UPDATE_URL, le reglage reste vide, et c'est la valeur voulue.
+    CHECK(DataStore::settings.updateUrl.empty());
+    CHECK(!DataStore::settings.discordAppId.empty()); // temoin : defauts appliques
 
     // --- 4. save() debonce 500 ms ---
     DataStore::settings.playerName = "Debounced";
