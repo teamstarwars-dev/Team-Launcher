@@ -386,6 +386,12 @@ static json serialize(const AppSettings& s) {
         {"LastRunVersion", s.lastRunVersion},
         {"LastUpdateCheckUnix", s.lastUpdateCheckUnix},
         {"HelpDiscordUrl", s.helpDiscordUrl},
+        {"JvmPreload", s.jvmPreload},
+        {"LocalApiPort", s.localApiPort},
+        {"LocalApiToken", secrets::encrypt_value(s.localApiToken)},
+        {"EnabledPlugins", s.enabledPlugins},
+        {"ApiKeys", s.apiKeys},
+        {"EventHooks", s.eventHooks},
     };
 }
 
@@ -501,6 +507,18 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getS("LastRunVersion", s.lastRunVersion);
     getI64("LastUpdateCheckUnix", s.lastUpdateCheckUnix);
     getS("HelpDiscordUrl", s.helpDiscordUrl);
+    getB("JvmPreload", s.jvmPreload);
+    getI("LocalApiPort", s.localApiPort);
+    getSec("LocalApiToken", s.localApiToken);
+    getA("ApiKeys", s.apiKeys);
+    getA("EventHooks", s.eventHooks);
+    {
+        auto it = j.find("EnabledPlugins");
+        if (it != j.end() && !it->is_null()) {
+            if (!it->is_array()) throw std::runtime_error("config: array attendu");
+            s.enabledPlugins = it->get<std::vector<std::string>>();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

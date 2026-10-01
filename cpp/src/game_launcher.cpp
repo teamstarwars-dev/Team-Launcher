@@ -262,10 +262,42 @@ int detect_java_major(const std::string& javawPath) {
     return result;
 }
 
+// Cache du balayage : il parcourt plusieurs arborescences et lance un
+// `java -version` par candidat, soit plusieurs centaines de millisecondes
+// a chaque lancement de partie. La cle inclut le reglage JavaPath : s'il
+// change, l'ancien resultat n'a plus de raison d'etre.
+//
+// Pas d'expiration : un Java installe ou desinstalle pendant la session
+// est assez rare pour ne pas valoir de re-balayer a chaque fois. Le bouton
+// « Diagnostic du système » et un redemarrage repartent de zero.
+namespace {
+std::mutex& scan_cache_mutex() {
+    static std::mutex m;
+    return m;
+}
+std::map<std::string, std::optional<std::string>>& scan_cache() {
+    static std::map<std::string, std::optional<std::string>> c;
+    return c;
+}
+} // namespace
+
+void forget_java_scan() {
+    std::lock_guard<std::mutex> g(scan_cache_mutex());
+    scan_cache().clear();
+}
+
 std::optional<std::string> find_java(int requiredMajor) {
     if (const fs::path configured = fs::path(DataStore::settings.javaPath);
         !configured.empty() && fs::exists(configured))
         return configured.string();
+
+    const std::string key = std::to_string(requiredMajor) + "|" +
+                            DataStore::settings.javaPath;
+    {
+        std::lock_guard<std::mutex> g(scan_cache_mutex());
+        auto it = scan_cache().find(key);
+        if (it != scan_cache().end()) return it->second;
+    }
 
     log_line("Recherche des Java installés...");
     std::vector<std::string> candidates;
@@ -323,8 +355,13 @@ std::optional<std::string> find_java(int requiredMajor) {
     std::sort(scored.begin(), scored.end(), [requiredMajor](const Cand& a, const Cand& b) {
         return (a.major - requiredMajor) < (b.major - requiredMajor);
     });
-    if (scored.empty()) return std::nullopt;
-    return scored.front().path;
+    std::optional<std::string> result;
+    if (!scored.empty()) result = scored.front().path;
+    {
+        std::lock_guard<std::mutex> g(scan_cache_mutex());
+        scan_cache()[key] = result;
+    }
+    return result;
 }
 
 std::optional<std::string> download_java(int major,

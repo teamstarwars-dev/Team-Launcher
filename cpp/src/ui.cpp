@@ -2,6 +2,11 @@
 
 #include "presets.hpp"
 #include "social.hpp"
+#include "apievents.hpp"
+#include "apikeys.hpp"
+#include "jvmwarm.hpp"
+#include "localapi.hpp"
+#include "modcheck.hpp"
 #include "startup.hpp"
 #include "support.hpp"
 
@@ -550,7 +555,49 @@ void start_worker() {
         if (line) push_log(line);
     };
 
-    g.worker = std::thread([req, ui, tid] {
+    // Barrage de compatibilite (phase 5). Il tourne DANS le worker et non
+    // ici : ouvrir une archive par mod prend le temps qu'il faut, et le
+    // faire sur le fil de l'interface figerait la fenetre juste au moment
+    // ou l'on vient de cliquer sur Jouer.
+    //
+    // « latest » n'est pas une version de Minecraft : la comparer aux
+    // contraintes des mods les declarerait tous incompatibles. On passe
+    // alors une chaine vide, que modcheck comprend comme « ne verifie pas
+    // la version », et les autres controles (chargeur, doublons,
+    // dependances) restent actifs.
+    const std::string mcForCheck =
+        (req.version == "latest" || req.version == "release" ||
+         req.version == "snapshot")
+            ? std::string{}
+            : req.version;
+    // Lancement en vanilla force : le dossier mods/ ne sera pas lu, il n'y
+    // a donc rien a verifier.
+    const bool checkMods = !g.autoActive && req.loader != "Vanilla" &&
+                           g.compatSkipId != instId;
+    const std::string checkLoader = req.loader;
+    const std::string checkId = instId;
+
+    g.worker = std::thread([req, ui, tid, checkMods, checkLoader, mcForCheck,
+                            checkId] {
+        if (checkMods) {
+            auto rep = modcheck::scan(
+                std::filesystem::path(req.gameDir) / "mods", checkLoader,
+                mcForCheck);
+            if (rep.errors > 0) {
+                apptasks_end(tid, "Conflit de mods détecté.");
+                LaunchResult stop;
+                stop.started = false;
+                stop.error = "Conflit de mods : " +
+                             std::to_string(rep.errors) +
+                             " problème(s) bloquant(s).";
+                std::lock_guard<std::mutex> lk(g.m);
+                g.compatGate = std::move(rep);
+                g.compatGateReady = true;
+                g.result = std::move(stop);
+                g.resultReady = true;
+                return;
+            }
+        }
         LaunchResult res = launch_flow(req, ui, g.cancel);
         // Annulation (bouton Jouer ou panneau) : l'entree reste « Annulee ».
         if (res.cancelled || g.cancel.load()) (void)tl::tasks::cancel(tid);
@@ -617,6 +664,38 @@ void poll_state(SDL_Window* window) {
             std::lock_guard<std::mutex> lk(g.m);
             g.status = tr("Échec du lancement.");
         }
+        // Refus pour conflit de mods : on ouvre le detail plutot que de
+        // laisser « Échec du lancement » sans explication.
+        bool gate = false;
+        modcheck::Report rep;
+        {
+            std::lock_guard<std::mutex> lk(g.m);
+            gate = g.compatGateReady;
+            if (gate) {
+                rep = std::move(g.compatGate);
+                g.compatGate = modcheck::Report{};
+                g.compatGateReady = false;
+            }
+        }
+        if (gate) {
+            const nlohmann::json* inst = selected_instance();
+            modcheck_open_gate(inst ? inst->value("Id", "") : std::string{},
+                               rep);
+        }
+    }
+
+    // --- Événement : la partie démarre -------------------------------
+    // Émis ici et non dans start_worker : à ce point seulement le
+    // processus du jeu tourne réellement. L'annoncer plus tôt mentirait
+    // sur un lancement qui peut encore échouer à l'installation.
+    if (startGame) {
+        nlohmann::json ev;
+        if (const auto* e = selected_instance())
+            ev["instance"] = {{"id", e->value("Id", "")},
+                              {"name", e->value("Name", "")},
+                              {"loader", e->value("Loader", "")},
+                              {"mcVersion", e->value("McVersion", "")}};
+        events::emit(events::kGameStart, ev);
     }
 
     if (startGame && DataStore::settings.minimizeOnLaunch) {
@@ -656,22 +735,67 @@ void poll_state(SDL_Window* window) {
                 log_line("Le jeu s'est arrêté anormalement (code " +
                          std::to_string(exitCode) + ").");
 
-                // Analyse de crash (C# : boite d'alerte ; ici un toast + journal)
-                std::optional<std::string> advice;
-                if (!gameDir.empty()) advice = crash::analyze_instance(gameDir);
-                if (advice) {
-                    std::string oneLine = *advice;
+                // Analyse de crash (C# : boite d'alerte ; ici un toast + journal).
+                // Le rapport structuré permet de servir deux publics d'un
+                // coup : la bulle reçoit la phrase qui tient en 84 pixels,
+                // le journal reçoit tout — mod en cause, fichier d'origine
+                // et la ligne de pile qui l'accuse, pour qu'on puisse
+                // vérifier plutôt que croire.
+                const crash::Report rep =
+                    gameDir.empty() ? crash::Report{}
+                                    : crash::analyze_instance_report(gameDir);
+                if (rep.found) {
+                    std::string oneLine = rep.summary;
                     for (auto& ch : oneLine)
                         if (ch == '\n') ch = ' ';
                     log_line("Analyse de crash : " + oneLine);
-                    push_log(oneLine);
-                    notify_toast(tr("Minecraft s'est arrêté anormalement"), *advice);
+                    push_log(rep.summary);
+                    std::string toast = rep.title;
+                    if (!rep.suspects.empty()) {
+                        const auto& s = rep.suspects[0];
+                        toast += "\n";
+                        toast += s.source.empty() ? s.modId
+                                                  : s.modId + " — " + s.source;
+                    } else if (!rep.action.empty()) {
+                        toast += "\n" + rep.action;
+                    }
+                    notify_toast(tr("Minecraft s'est arrêté anormalement"), toast);
                 } else {
                     notify_toast(tr("Minecraft s'est arrêté"),
                                  tr("Code de sortie ", "Exit code ") +
                                      std::to_string(exitCode) +
                                      tr(". Voir le dossier de l'instance.",
                                         ". See the instance folder."));
+                }
+
+                // --- Événement sortant : le crash DÉJÀ ANALYSÉ -------------
+                // C'est tout l'intérêt de la chose : le destinataire n'a
+                // pas à savoir lire un rapport de crash, il reçoit le
+                // verdict. Émis même sans diagnostic — un crash que nous
+                // n'avons pas su reconnaître est précisément celui qu'on
+                // veut voir passer. Sans abonné, emit() ne fait rien, pas
+                // même créer un fil.
+                {
+                    nlohmann::json ev{{"exitCode", exitCode}};
+                    if (const auto* e = find_instance(instId))
+                        ev["instance"] = {
+                            {"id", instId},
+                            {"name", e->value("Name", "")},
+                            {"loader", e->value("Loader", "")},
+                            {"mcVersion", e->value("McVersion", "")}};
+                    nlohmann::json diag{{"found", rep.found},
+                                        {"cause", crash::cause_key(rep.cause)},
+                                        {"title", rep.title},
+                                        {"action", rep.action},
+                                        {"summary", rep.summary}};
+                    diag["suspects"] = nlohmann::json::array();
+                    for (const auto& s : rep.suspects)
+                        diag["suspects"].push_back({{"modId", s.modId},
+                                                    {"version", s.version},
+                                                    {"source", s.source},
+                                                    {"score", s.score}});
+                    ev["diagnosis"] = std::move(diag);
+                    events::emit(events::kCrash, ev);
                 }
 
                 // Telemetrie (non bloquante, silencieuse sans webhook configure)
@@ -682,6 +806,25 @@ void poll_state(SDL_Window* window) {
                             : crash::tail_lines(gameDir / "game-log.txt", 30);
                     telemetry::report_crash(*e, exitCode, tail);
                 }
+            }
+
+            // --- Événement : fin normale de partie ------------------
+            // Le cas anormal est déjà parti plus haut, avec son
+            // diagnostic : émettre les deux ferait deux messages pour un
+            // seul plantage.
+            if (exitCode == 0) {
+                nlohmann::json ev{{"exitCode", exitCode}};
+                if (const auto* e = find_instance(instId))
+                    ev["instance"] = {{"id", instId},
+                                      {"name", e->value("Name", "")},
+                                      {"loader", e->value("Loader", "")},
+                                      {"mcVersion", e->value("McVersion", "")}};
+                if (g.statActive)
+                    ev["playSeconds"] =
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::steady_clock::now() - g.statStart)
+                            .count();
+                events::emit(events::kGameStop, ev);
             }
 
             // Sauvegarde automatique des mondes apres la partie (C#).
@@ -851,6 +994,21 @@ void init(SDL_Window*) {
     apply_startup_selection();
     autoupdate_init();
 
+    // API HTTP locale : seulement si un port a été posé. Un échec (port
+    // déjà pris) n'empêche pas le launcher de démarrer — la page
+    // Paramètres affichera la raison.
+    // Abonnements aux événements : les hôtes doivent être joignables dès
+    // le premier crash, sans attendre qu'on rouvre les réglages.
+    events::start();
+
+    if (DataStore::settings.localApiPort > 0 &&
+        !DataStore::settings.localApiToken.empty()) {
+        std::string err;
+        if (!localapi::start(DataStore::settings.localApiPort,
+                             DataStore::settings.localApiToken, &err))
+            push_log("API locale : " + err);
+    }
+
     // Le reglage « telechargements simultanes » existait dans la
     // configuration mais n etait lu nulle part : la file l applique.
     downloads::set_limit(DataStore::settings.maxDownloads);
@@ -891,6 +1049,90 @@ void init(SDL_Window*) {
     theme_apply_style();
 }
 
+// Phase 8, une fois par frame : préchauffage de l'instance sélectionnée,
+// publication de l'instantané lu par l'API locale, et exécution des
+// demandes qu'elle a déposées.
+//
+// Tout passe par ici parce que c'est le seul fil autorisé à toucher à
+// l'état : le serveur HTTP vit sur le sien, et lire `settings.instances`
+// pendant que l'interface le modifie serait un comportement indéfini.
+namespace {
+
+void phase8_pump(SDL_Window* window) {
+    (void)window;
+    const nlohmann::json* inst = selected_instance();
+
+    // --- Préchauffage, sur changement de sélection seulement ---
+    if (DataStore::settings.jvmPreload && inst && g.phase == Phase::Idle)
+        jvmwarm::request(*inst);
+
+    // --- Instantané pour l'API locale ---
+    // Reconstruit au plus une fois par seconde : le sérialiser à 60 Hz
+    // pour un client qui interroge toutes les cinq secondes serait du pur
+    // gaspillage.
+    if (localapi::running()) {
+        static Uint32 lastPublish = 0;
+        const Uint32 now = SDL_GetTicks();
+        if (now - lastPublish > 1000) {
+            lastPublish = now;
+            const char* phase = g.phase == Phase::GameRunning ? "running"
+                                : g.phase == Phase::Preparing ? "preparing"
+                                : g.phase == Phase::Error     ? "error"
+                                                              : "idle";
+            nlohmann::json st{
+                {"version", TL_VERSION_STRING},
+                {"state", phase},
+                {"selectedInstance", inst ? inst->value("Id", "") : ""},
+                {"playerName", DataStore::settings.playerName},
+            };
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& e : inst_array()) {
+                if (!e.is_object()) continue;
+                // On ne publie QUE ces champs. Recopier l'instance entière
+                // exposerait tout ce qu'on y ajoutera plus tard sans y
+                // repenser, jetons compris.
+                arr.push_back({
+                    {"id", e.value("Id", "")},
+                    {"name", e.value("Name", "")},
+                    {"loader", e.value("Loader", "")},
+                    {"mcVersion", e.value("McVersion", "")},
+                    {"launches", e.value("Launches", 0)},
+                    {"playSeconds", e.value("PlaySeconds", 0)},
+                    {"lastPlayed", e.value("LastPlayed", "")},
+                });
+            }
+            localapi::publish(st.dump(), arr.dump());
+        }
+
+        // --- Demandes de lancement déposées par l'API ---
+        // Ces traces vont AUSSI dans launcher.log, et pas seulement dans
+        // le panneau : une action déclenchée depuis l'extérieur doit
+        // laisser quelque chose à relire. Personne ne regarde un panneau
+        // au moment où un script agit.
+        auto trace = [](const std::string& m) {
+            push_log(m);
+            log_line(m);
+        };
+        for (const auto& id : localapi::take_launch_requests()) {
+            if (g.phase != Phase::Idle) {
+                trace("API locale : lancement de " + id +
+                      " ignoré (une partie est déjà en cours).");
+                continue;
+            }
+            if (!find_instance(id)) {
+                trace("API locale : instance inconnue (" + id + ").");
+                continue;
+            }
+            trace("API locale : lancement de " + id + ".");
+            g.selInstId = id;
+            start_worker();
+            break; // une seule par frame
+        }
+    }
+}
+
+} // namespace
+
 void frame(SDL_Window* window) {
     poll_state(window);
 
@@ -922,6 +1164,25 @@ void frame(SDL_Window* window) {
         }
         if (const char* p = std::getenv("TL_AUTO_PAGE")) g.page = std::atoi(p);
         if (std::getenv("TL_AUTO_CTX")) g.ctxAuto = true;
+        // TL_AUTO_COMPARE=1 : ouvre le comparateur sur la premiere
+        // instance (capture de validation).
+        if (std::getenv("TL_AUTO_COMPARE")) {
+            for (const auto& e : inst_array())
+                if (e.is_object() && !e.value("Id", "").empty()) {
+                    compare_open(e.value("Id", ""));
+                    break;
+                }
+        }
+        // TL_AUTO_DETAIL=<onglet> : ouvre la page detail de la premiere
+        // instance sur cet onglet (0 Infos, 1 Mods, 2 Mondes, 3 Journaux).
+        // Sert aux captures de validation, comme les autres crochets.
+        if (const char* dt = std::getenv("TL_AUTO_DETAIL")) {
+            for (const auto& e : inst_array())
+                if (e.is_object() && !e.value("Id", "").empty()) {
+                    open_instance_detail(e.value("Id", ""), std::atoi(dt));
+                    break;
+                }
+        }
         // Auth Microsoft : ouvre la modale de connexion sans clic (test).
         if (std::getenv("TL_AUTO_LOGIN")) auth::login_start(/*force=*/true);
         if (const char* m = std::getenv("TL_AUTO_MODAL")) {
@@ -1045,6 +1306,10 @@ void frame(SDL_Window* window) {
     // ---- Notes de version (une seule fois apres une mise a jour) ----
     whatsnew_modal();
 
+    // ---- Barrage de compatibilite des mods (phase 5) ----
+    modcheck_gate_modal();
+    compare_modal();
+
     // ---- Tâches de fond (panneau si >= 1 tâche) ----
     // Le minuteur de sauvegarde s'abstient tant qu'une partie tourne. On
     // derive l'etat de la phase courante a chaque frame plutot que de le
@@ -1056,6 +1321,9 @@ void frame(SDL_Window* window) {
     // Le SDK social doit etre pompe une fois par frame pour delivrer ses
     // callbacks (connexion, amis). Sans effet s'il n'est pas la.
     social::pump();
+
+    // ---- Phase 8 : préchauffage et pont de l'API locale ----
+    phase8_pump(window);
 
     apptasks_frame();
 
@@ -1161,6 +1429,21 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: explore_stop\n");
     explore_stop();
     if (dbg) std::fprintf(stderr, "SH: explore_stop done\n");
+    // Analyse de compatibilite des mods : joint le worker.
+    if (dbg) std::fprintf(stderr, "SH: modcheck_stop\n");
+    modcheck_stop();
+    modupdate_stop();
+    compare_stop();
+    // Préchauffage et API locale : annuler, joindre, fermer la socket.
+    if (dbg) std::fprintf(stderr, "SH: jvmwarm_stop\n");
+    jvmwarm::stop();
+    if (dbg) std::fprintf(stderr, "SH: localapi_stop\n");
+    localapi::stop();
+    // Compteurs d'usage des clés : écrits une fois, pas à chaque appel.
+    apikeys::flush();
+    // Événements sortants : vider la file et joindre le fil.
+    if (dbg) std::fprintf(stderr, "SH: events_stop\n");
+    events::stop();
     // Page Aide : export de journaux et verification de mise a jour.
     if (dbg) std::fprintf(stderr, "SH: help_stop\n");
     help_stop();

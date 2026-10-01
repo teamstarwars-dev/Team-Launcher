@@ -743,3 +743,425 @@ Demande du 30/09/2026 : le titre de la fenêtre (`"Team Launcher v6.0.0"` → `"
 `tests/test_support.cpp` (`TLTestSupport`) : reconnaissance des clés sensibles **et absence de faux positifs** (`PlayerName`, `MaxRamGb`, `NewsUrl` doivent rester lisibles, sinon le rapport ne sert plus à rien), expurgation récursive, choix de release sur une liste volontairement désordonnée, rapport sans secret, archive contenant bien ses trois pièces et dossier de travail effacé. L'écriture réelle de l'entrée de démarrage est derrière `TL_TEST_AUTOSTART=1` — elle sort du bac à sable du test — et remet l'utilisateur dans l'état où elle l'a trouvé.
 
 **22 suites vertes sous Linux, 21 sous Windows** (`TLTestGamePort.exe` reste en « suppression en attente » sur cette machine, indépendamment du code).
+
+## Phase 5 — Mods et découverte (30/09/2026)
+
+La seule phase à laquelle rien n'avait été fait. Elle reposait sur une brique qui manquait entièrement : **le launcher ne savait pas lire un mod**. Il listait des fichiers `.jar` et c'est tout. Or le nom de fichier ne dit rien — « Sodium 0.5.8 pour 1.20.1 » peut s'appeler `sodium.jar` et avoir été téléchargé pour une autre version.
+
+### `modmeta` — lire ce qu'un mod déclare
+
+Cinq formats de manifeste coexistent selon le chargeur : `fabric.mod.json`, `quilt.mod.json`, `META-INF/mods.toml` (Forge), `META-INF/neoforge.mods.toml` (NeoForge depuis 1.20.5) et `mcmod.info` (≤ 1.12). Tous sont lus. Les analyseurs sont **purs** — ils prennent du texte, pas un chemin — donc testables sans fabriquer d'archive.
+
+Beaucoup de mods multi-chargeurs embarquent **plusieurs** manifestes dans le même jar. L'ordre d'essai n'est donc pas arbitraire : NeoForge avant Forge, Quilt avant Fabric, parce que le plus récent décrit mieux ce que le jar sait faire.
+
+L'analyseur TOML est volontairement minimal : ces fichiers sont écrits à la main par les moddeurs et n'emploient qu'une poignée de constructions. Embarquer une bibliothèque TOML complète aurait coûté plus qu'elle n'aurait rapporté. Ce qui n'est pas compris est ignoré, jamais deviné.
+
+**Comparaison de versions.** Elle devait couvrir les intervalles Maven de Forge (`[1.20,1.21)`), les prédicats semver de Fabric (`>=1.20 <1.21`, `~1.20.1`, `^1.20`), les alternatives (`||`), les jokers (`1.20.x`) et les versions nues (que Fabric lit comme une égalité). Trois pièges :
+
+- `1.9` vs `1.10` : comparaison **numérique**, jamais textuelle.
+- `1.0` est plus récent que `1.0-beta1` — un suffixe marque une préversion, pas un incrément.
+- La virgule d'un intervalle Maven **n'est pas** un séparateur de contraintes. Couper sur toutes les virgules casserait `[1.20,1.21)` en deux.
+
+Une contrainte sans aucun chiffre (`latest`, une syntaxe d'un chargeur qu'on ne connaît pas) est **acceptée** : bloquer un lancement sur une chaîne qu'on n'a pas comprise serait pire que se taire. Le test l'exigeait, le code ne le faisait pas — c'est le code qui avait tort.
+
+### `modcheck` — le conflit dit avant, pas après
+
+Sept contrôles : mauvais chargeur, version de Minecraft hors plage, dépendance obligatoire absente, dépendance présente mais dans la mauvaise version, **même modId dans deux jars**, archive illisible, et le cas « aucun chargeur sur l'instance ».
+
+Nuances qui évitent les faux positifs, et qui comptent plus que les contrôles eux-mêmes :
+
+- **Quilt charge les mods Fabric.** Ce n'est donc pas un conflit.
+- **Forge et NeoForge** ont divergé mais restent souvent compatibles : avertissement, pas blocage.
+- `minecraft`, `java`, `fabricloader`, `forge`… sont fournis par la plateforme. Les chercher dans le dossier mods produirait une dépendance manquante à chaque ligne.
+- Instance sans chargeur : **un** message, pas quarante. Minecraft n'ouvrira même pas le dossier mods/.
+- Une dépendance **facultative** absente n'est pas un problème : c'est une suggestion. C'est de là que viennent les « compléments possibles », tirés de ce que les mods déclarent — pas d'un catalogue inventé.
+
+Le barrage tourne **dans le worker de lancement**, pas sur le fil de l'interface : ouvrir une archive par mod prend le temps qu'il faut, et figer la fenêtre juste après un clic sur Jouer serait inacceptable. En cas de refus, la modale montre tout, propose « Corriger les mods », « Annuler » et — volontairement à droite, sans accent — « Lancer quand même ». Notre analyse peut se tromper, et l'utilisateur garde la main sur sa machine.
+
+`latest` n'est pas une version de Minecraft : la comparer aux contraintes des mods les déclarerait tous incompatibles. On passe alors une chaîne vide, et les autres contrôles restent actifs.
+
+### `modupdate` — la mise à jour, et son changelog
+
+Chemin prévu par Modrinth : SHA-1 de chaque jar → projet → versions compatibles avec le chargeur et la version du jeu. Un mod téléchargé à la main, hors du launcher, est donc reconnu comme les autres.
+
+Trois décisions :
+
+1. **Rien ne part tout seul.** Une requête par projet : déclencher la vérification à l'ouverture de l'onglet enverrait des dizaines d'appels à Modrinth chaque fois qu'on vient juste regarder sa liste de mods.
+2. **Le changelog est montré avant le bouton.** Mettre un mod à jour au milieu d'une partie casse des mondes ; le texte de l'auteur est ce qui permet de décider.
+3. **« Non reconnu » n'est pas « à jour ».** CurseForge exige une clé et un autre protocole d'empreinte (murmur2) ; ces mods ressortent en inconnus. Les compter comme à jour serait mentir.
+
+`apply()` télécharge sous un nom temporaire, **puis** retire l'ancien : une coupure réseau ne doit pas laisser l'instance sans le mod. L'ordre est le seul garde-fou quand l'ancien et le nouveau portent le même nom, ce qui arrive avec les auteurs qui ne versionnent pas leurs fichiers.
+
+### Comparateur et flux de recommandations
+
+Le comparateur répond à « pourquoi ça marche sur mon autre instance ? ». Il compare par **modId déclaré**, pas par nom de fichier, et trie les différences en tête.
+
+**Défaut trouvé à l'écran, pas par les tests** : ma table indexée par modId écrasait silencieusement les doublons et affichait la mauvaise version (0.5.3 là où le jar principal était en 0.5.8). Les versions sont maintenant accolées — « 0.5.8 + 0.5.3 » — et le doublon se voit.
+
+Le flux de recommandations filtre sur le chargeur et la version de l'instance (facettes Modrinth) et trie par popularité. Un palmarès générique n'aide personne : le mod le plus téléchargé du moment ne sert à rien s'il ne tourne pas sur la version qu'on joue. CurseForge n'offre pas l'équivalent : le bouton est grisé sur cette source, avec la raison écrite.
+
+### Second défaut trouvé à l'écran
+
+Le détail des conflits, déplié par défaut, faisait plusieurs écrans de haut et repoussait hors de vue **tout ce qui suivait dans l'onglet** — les mises à jour, puis la liste des mods elle-même. Il est désormais replié, avec le nombre dans le libellé. Le résumé suffit à savoir s'il faut ouvrir, et le barrage avant lancement déroule tout au moment où cela compte.
+
+### Tests
+
+`tests/test_modcheck.cpp` (`TLTestModCheck`) : comparaison de versions, 25 formes de contraintes, les cinq analyseurs, chaque conflit isolément, les non-conflits (Quilt/Fabric), l'ordre de présentation, et une **vraie archive** fabriquée sur place pour vérifier la lecture de zip et la priorité des manifestes.
+
+Piège rencontré en l'écrivant : `versionRange="[47,)"` contient la séquence qui **termine une chaîne brute C++**. D'où les délimiteurs `R"TOML(` et `R"J(`.
+
+## Phase 6 — reste livré (30/09/2026)
+
+Elle était faite, sauf l'aperçu du contenu d'une sauvegarde. `zip_top_level_dirs` ajouté à `util_zip` : la liste des mondes contenus dans l'archive s'affiche sous chaque ligne, avec un cache indexé sur la date de modification — sans lui, dix archives faisaient dix ouvertures de zip par frame.
+
+La capture d'écran du monde (`icon.png`) n'est pas montrée : elle demanderait de téléverser une texture OpenGL par archive. Les noms des mondes répondent déjà à la question « laquelle restaurer ? ».
+
+## SDK social dans les installeurs (30/09/2026)
+
+- **Windows** : une ligne dans `TeamLauncher.iss`, en `skipifsourcedoesntexist` — un build sans le SDK doit rester empaquetable. Installeur vérifié : **6 464 Ko**, la DLL y est.
+- **Linux** : `make-deb.sh` et `install.sh` copient `libdiscord_partner_sdk.so` dans `lib/`, sous le même `rpath $ORIGIN/lib` que la SDL. Le paquet passe de 1,8 à **5,7 Mo**. Vérifié en extrayant le .deb : `ldd` résout les **deux** bibliothèques depuis `$ORIGIN/lib`, et non depuis le système.
+
+**23 suites vertes sous Linux, 22 sous Windows** (`TLTestGamePort.exe` reste en « suppression en attente » sur cette machine, indépendamment du code).
+
+### Crochets de validation ajoutés
+
+`TL_AUTO_DETAIL=<onglet>` et `TL_AUTO_COMPARE=1`, au même titre que `TL_AUTO_PAGE` ou `TL_AUTO_MODAL` : sans eux, le panneau de compatibilité et le comparateur n'étaient atteignables qu'à la souris, donc invérifiables par capture. Les deux défauts ci-dessus ont été trouvés grâce à eux.
+
+## Phase 8 — Architecture et performance (01/10/2026)
+
+Trois chantiers sans rapport entre eux, d'où trois modules indépendants.
+
+### Plugins : des processus, pas des bibliothèques
+
+**La décision structurante du module.** Un plugin n'est pas une bibliothèque native chargée dans le launcher, c'est un dossier avec un `plugin.json` qui déclare des commandes, exécutées comme des **processus séparés**.
+
+Charger du code natif aurait posé trois problèmes dont aucun n'a de bonne réponse : un plugin mal compilé fait planter tout le launcher ; l'ABI C++ interdit de mélanger des binaires construits avec d'autres compilateurs ou d'autres versions, donc chaque mise à jour du launcher casserait tous les plugins ; et surtout un plugin aurait eu accès à la mémoire du processus, donc au jeton de session Microsoft. Un processus séparé répond aux trois d'un coup.
+
+Il n'y a **aucun bac à sable**, et le module ne prétend pas le contraire — un plugin lance des programmes avec les droits de l'utilisateur. Les garde-fous sont donc procéduraux :
+
+- **Rien ne s'active tout seul.** Déposer un dossier dans `plugins/` le rend visible, pas actif.
+- **La commande exacte est affichée à côté de la case**, pas derrière un bouton « détails ». On n'autorise pas un nom, on autorise une ligne qu'on a lue.
+- **Pas de shell.** Programme et arguments sont passés séparément au système (`CreateProcessW` avec échappement `CommandLineToArgvW`, `posix_spawn` ailleurs). Un `&&` ou un `|` dans un argument reste du texte. Et un `run` qui contient un séparateur de commandes est **refusé à l'analyse** : c'est quelqu'un qui espère un shell.
+- **L'autorisation porte sur l'empreinte du manifeste**, donc sur un contenu et non sur un nom. Modifier `plugin.json` la révoque.
+
+Nuance qui a demandé réflexion, et que le test a forcée : **retrouver exactement le manifeste approuvé le réautorise.** J'avais d'abord écrit l'inverse dans le test. En y regardant, ce sont les octets que l'utilisateur a lus et acceptés ; lui redemander son accord pour les mêmes serait du bruit, pas de la sécurité. Retirer l'autorisation, en revanche, efface **toutes** les empreintes du plugin, et aucun retour en arrière ne la ressuscite.
+
+### API HTTP locale
+
+`cpp-httplib` était déjà dans `third_party/` sans être utilisé (la couche sortante passe par WinHTTP/libcurl). Il sert enfin, et il est inclus dans **une seule** unité de compilation — c'est un en-tête énorme.
+
+Quatre règles, toutes nécessaires :
+
+1. **127.0.0.1 uniquement**, jamais `0.0.0.0`.
+2. **Un jeton sur chaque requête**, lecture comprise. Sur une machine partagée, « localhost » n'est pas une frontière : tout autre programme de la session peut s'y connecter. La comparaison du jeton est à **durée constante** — un `==` s'arrête au premier octet différent, ce qui laisse le retrouver caractère par caractère sur une boucle locale.
+3. **Rien n'est servi depuis l'état vivant.** Le serveur a son fil ; lire `settings.instances` pendant que l'interface le modifie serait un comportement indéfini. L'interface publie un instantané JSON une fois par seconde, le serveur sert cet instantané. L'instantané ne contient **que sept champs choisis** : recopier l'instance entière exposerait tout ce qu'on y ajoutera plus tard sans y repenser.
+4. **Aucune action n'est exécutée par le fil du serveur.** `POST /api/launch` dépose l'identifiant dans une file plafonnée, que la boucle vide à la frame suivante.
+
+Piège de `cpp-httplib` : `wait_until_ready()` revient **aussi quand l'écoute a échoué** (elle attend « plus en train de démarrer »). Sans le `is_running()` qui suit, un port déjà pris serait passé pour un démarrage réussi.
+
+### Préchauffage : ce qui est possible et ce qui ne l'est pas
+
+« Précharger la JVM » ne peut pas vouloir dire garder une machine virtuelle allumée : un processus JVM déjà démarré ne peut pas être redirigé vers Minecraft — il faudrait l'avoir lancé avec le bon classpath et les bons arguments, c'est-à-dire connaître déjà l'instance choisie. Le dire dans l'interface plutôt que de laisser croire autre chose.
+
+Ce qui coûte réellement cher, en revanche, se mesure : **`find_java` prend 680 à 910 ms** sur cette machine (plusieurs arborescences parcourues, un `java -version` lancé par candidat), et il n'était **pas** mis en cache — ce coût était payé à chaque partie. Un cache y a été ajouté, indexé sur la version requise et sur le réglage `JavaPath`. Mesuré par le test : **911 ms au premier appel, 2 µs au second.**
+
+Le préchauffage fait donc deux choses pendant qu'on choisit son instance : il appelle `find_java` (qui remplit ce cache), et il lit le début des plus gros `.jar` pour amener leurs pages dans le cache du système. Plafonné à 120 fichiers et 192 Mo — inonder le cache avec des fichiers inutiles en évincerait d'utiles. Annulable entre chaque fichier, et le lancement ne l'attend jamais.
+
+### Défaut trouvé à l'écran
+
+Un plugin au manifeste illisible affichait son erreur **sans son nom** : `parse_manifest` rendait la main avant d'avoir posé le moindre nom. Exactement le cas où le nom est le plus nécessaire. Le repli est désormais posé avant toute analyse.
+
+### Tests
+
+`tests/test_phase8.cpp` (`TLTestPhase8`) : manifestes acceptés et refusés, substitution (y compris le cas où une clé absente **laisse le substituable en clair** — le vider transformerait `{instanceDir}/mods` en `/mods`, qui désigne un dossier bien réel), cycle d'autorisation complet, et l'API locale en **vraies requêtes HTTP** : 401 sans jeton et avec un mauvais jeton, 200 avec le bon, 404 sur un chemin inconnu, 400 sur un corps sans `id`, file consommée une seule fois, et un `POST` sans jeton qui ne dépose rien.
+
+Vérifié aussi contre le launcher en marche, ce que le test unitaire ne couvre pas : le pont publication/consommation. `GET /api/status` et `/api/instances` rendent les vraies données, et un lancement d'une instance inconnue est refusé.
+
+**Trace manquante corrigée au passage** : les messages de l'API passaient par `push_log`, qui n'écrit que dans le panneau de l'application, pas dans `launcher.log`. Une action déclenchée de l'extérieur doit laisser quelque chose à relire — personne ne regarde un panneau au moment où un script agit.
+
+### Crochet ajouté
+
+`TL_WINDOW_SIZE=<largeur>x<hauteur>` : les trois panneaux de cette phase tiennent sur plus d'un écran de 620 pixels, et il n'y avait aucun moyen de les capturer en entier.
+
+**24 suites vertes sous Linux, 23 sous Windows** (`TLTestGamePort.exe` reste en « suppression en attente » sur cette machine, indépendamment du code).
+
+## Diagnostic de crash v2 — nommer le mod coupable (01/10/2026)
+
+Premier jalon de l'API de diagnostic. Décision prise après inventaire : parmi tout ce que le launcher sait faire, l'analyse de crash et l'analyse de mods sont les seules capacités **sans état, à petite charge et sans donnée personnelle**. Ce sont donc les seules réellement exposables, et plus tard hébergeables à coût négligeable. Le monde et la génération de ville, eux, resteront locaux.
+
+### Deux défauts de la v1, dont un grave
+
+**1. « OpenGL » déclenchait le diagnostic « pilote graphique ».** La règle cherchait le mot nu, or la section *System Details* de **tout** rapport de crash le contient (version du pilote, capacités GL). Vérifié sur un rapport réel de cette machine : un plantage dont la vraie cause était un mod était diagnostiqué comme un problème de carte graphique. Et comme la règle passait avant celle des conflits de mods, elle gagnait.
+
+Corrigé en deux temps : les motifs n'acceptent plus que des formulations qui ne peuvent venir que d'un vrai échec graphique (`Pixel format not accelerated`, `GLFW error`, `No OpenGL context`…), et la règle est passée **en dernier** — ses motifs restent les plus susceptibles d'apparaître par accident, une cause plus précise doit gagner.
+
+**2. Le coupable n'était jamais nommé.** « Conflit entre mods » ne sert à rien à quelqu'un qui en a quarante.
+
+### Comment on nomme le mod sans rien savoir de la machine
+
+**Le rapport de crash porte lui-même la liste des mods chargés**, avec identifiant, version et fichier d'origine. On croise cette liste avec les paquets Java cités dans la trace de pile.
+
+Sur le rapport réel qui a servi de référence :
+
+```
+	at fr.webscreen.registry.ModItems.registerItems(ModItems.java:35)
+	| LCH | webscreen | 2.0.0 | WebDisplay2-2.0.0.jar | None |
+```
+
+L'intersection désigne `webscreen`. À noter : **le nom du fichier, « WebDisplay2 », ne contient pas une lettre de « webscreen »** — une correspondance par nom de jar aurait échoué. Seul le croisement identifiant ↔ paquet pouvait trouver.
+
+Conséquence qui compte pour la suite : l'analyse ne lit **aucun fichier** et ne touche pas au réseau. Un log collé depuis n'importe où suffit. C'est ce qui la rend exposable telle quelle par une API.
+
+Trois formats de liste reconnus : la table 1.12 (`| LCH | id | version | source |`), Forge et NeoForge modernes (`Mod List:` puis colonnes séparées par des barres), et Fabric (`Fabric Mods:` puis `id: Nom version`).
+
+### Trois erreurs faites en écrivant, et ce qu'elles ont appris
+
+**Noter en mots plutôt qu'en cadres.** La première version comptait la position du mod en nombre de mots depuis le début. Or les premiers cadres d'une trace sont presque toujours du code de bibliothèque ou de Forge, et chacun pèse une dizaine de mots : `webscreen`, pourtant au **troisième cadre**, arrivait au 29ᵉ mot et récoltait un score de 42. On compte désormais en cadres : 100 au premier, −8 par cadre, plancher à 20.
+
+**Un plancher de 4 caractères sur les identifiants.** Il écartait `jei` — l'un des mods les plus installés au monde — ainsi que `rei`, `ars`, `ic2`. Le plancher est à trois ; ce qui écarte les coïncidences, ce n'est pas la longueur mais le fait que l'identifiant doive figurer dans la liste des mods **de ce rapport précis**.
+
+**« Suspected Mods: » ignoré quand le mod n'était pas dans la pile.** Forge moderne désigne parfois lui-même un coupable, y compris pour une erreur de chargement survenue avant toute pile. Sa parole vaut mieux que notre déduction : on crée maintenant le suspect même sans trace.
+
+### Le garde-fou qui compte le plus
+
+Le troisième rapport réel de la machine est le cas le plus instructif. L'exception visible est un `NoClassDefFoundError` sur une classe d'OptiFine ; trente lignes plus bas se trouve `Caused by: java.lang.OutOfMemoryError: GC overhead limit exceeded`. La classe n'a pas pu être chargée **faute de mémoire**.
+
+Accuser OptiFine aurait envoyé l'utilisateur désinstaller un mod innocent et ne rien régler. D'où la règle : quand la cause est environnementale — mémoire, tas trop grand, session, réseau, pilote, fichier verrouillé — les suspects sont **écartés du verdict**. Le mod cité dans la pile est une victime, pas un coupable.
+
+### Résultat sur les rapports réels
+
+Trois rapports de cette machine, passés par `TL_CRASH_DIR` :
+
+| Rapport | Verdict |
+|---|---|
+| `crash-...17.44.59` | `mod_error` → **webscreen** (WebDisplay2-2.0.0.jar) |
+| `crash-...17.47.57` | `mod_error` → **webscreen** |
+| `crash-...18.40.23` | `out_of_memory`, aucun suspect (correct : `Caused by: OutOfMemoryError`) |
+
+Avant cette version, les trois répondaient « problème de pilote graphique ».
+
+### Interface
+
+Le rapport structuré sert deux publics d'un coup : la bulle reçoit la phrase qui tient en 84 pixels (titre + mod en cause), le journal reçoit tout — mod, fichier d'origine et la ligne de pile qui l'accuse, pour qu'on puisse **vérifier plutôt que croire**.
+
+### Tests
+
+`tests/test_crash.cpp` (`TLTestCrash`) : les trois formats de liste, les quatre scénarios (Forge 1.12, Forge moderne avec `Suspected Mods`, Fabric, cascade mémoire), la non-accusation des mods présents mais absents de la pile, les identifiants de cause stables (contrat d'API), et la robustesse sur entrée vide ou tronquée. `TL_CRASH_DIR=<dossier>` passe en plus tous les rapports d'un dossier réel en affichant le verdict.
+
+**25 suites vertes sous Linux, 24 sous Windows.**
+
+### Reste à faire pour l'API de diagnostic
+
+- `POST /v1/crash/analyze` et `POST /v1/mods/check` : exposer les deux cerveaux (le travail d'analyse est fait, il manque le transport et le modèle de clés).
+- Événements sortants : que le launcher pousse le crash déjà analysé vers une URL, sans que le joueur ait à faire quoi que ce soit.
+
+## API de diagnostic — clés d'application et événements sortants (01/10/2026)
+
+Suite directe du diagnostic v2. L'analyse était faite ; il manquait de quoi la distribuer.
+
+### Pourquoi un jeton unique ne suffisait plus
+
+Celui de la phase 8 convient à un script qu'on écrit soi-même. Dès qu'on **distribue** l'accès, il montre trois limites : on ne peut pas révoquer une application sans couper toutes les autres, on ne sait pas laquelle appelle, et un simple widget d'affichage reçoit le pouvoir de lancer une partie.
+
+D'où `apikeys` — une clé par application, avec trois décisions :
+
+- **Le secret n'est jamais conservé.** On range son empreinte SHA-1. Lire `config.json` ne permet donc pas de s'authentifier, et le secret n'est montré qu'une fois, à la création. Le perdre oblige à en régénérer un : c'est voulu.
+- **Des portées, pas un interrupteur.** `diag` analyse sans rien lire de la machine, `read` expose les instances, `control` lance une partie.
+- **Chaque appel laisse une trace** (compteur, date de dernier usage). Sans cela, on ne sait pas quelle clé révoquer.
+
+`sha1_hex_of()` a été ajouté à `util_hash` : la primitive SHA-1 existait, mais seulement derrière une lecture de fichier.
+
+Détail qui compte : la vérification de clé **compare à durée constante**. Un `==` s'arrête au premier octet différent, ce qui laisse mesurer combien de caractères sont bons — assez, sur une boucle locale, pour retrouver une clé octet par octet.
+
+Le jeton du propriétaire, lui, garde tous les droits : c'est l'outil de l'utilisateur sur sa propre machine, pas une clé distribuée.
+
+### Les deux capacités exposées
+
+```
+POST /v1/diag/crash   log brut ou {"log":"..."} → cause, action, mod en faute
+POST /v1/diag/mods    {loader, mcVersion, mods:[...]} → conflits, manques, doublons
+GET  /v1              auto-description : ce que la clé présentée permet
+```
+
+Elles ne lisent **aucun fichier**, ne touchent pas au réseau et ne voient aucune donnée de l'utilisateur : tout arrive dans le corps de la requête. C'est précisément ce qui les rend distribuables, et un jour hébergeables, contrairement au monde ou à la génération de ville.
+
+Deux choix d'ergonomie d'API :
+
+- `/v1/diag/crash` accepte le **log brut** autant que du JSON. Imposer un échappement JSON sur 400 Ko de texte pour rien aurait été une barrière gratuite.
+- `/v1/diag/mods` accepte des **manifestes bruts** autant que des descripteurs déjà analysés. Lire les cinq formats est justement ce que l'appelant vient chercher ; le lui faire réimplémenter aurait vidé l'API de son intérêt.
+
+Un refus de portée rend **403 et non 401** : l'appelant doit savoir qu'il ne s'agit pas de se réauthentifier mais de demander un droit qu'on ne lui a pas accordé.
+
+Les anciens chemins `/api/*` restent servis. Rien de ce qui marchait hier ne cesse de marcher.
+
+### Les événements sortants
+
+C'est le point qui change la nature du support. Aujourd'hui, un joueur qui plante doit penser à chercher son log, le coller quelque part et attendre. Avec un abonnement, le destinataire reçoit le crash **et sa cause déjà analysée** — le mod en faute nommé dans le message — à la seconde où il arrive. Le joueur n'a rien fait, et le destinataire n'a rien à savoir des rapports de crash.
+
+Et cela vaut **même si personne n'écrit de client** : recevoir un POST, c'est dix lignes.
+
+Trois règles de sûreté :
+
+- **HTTPS obligatoire**, sauf vers une adresse de bouclage (on développe souvent son récepteur en local). Le corps porte le nom de l'instance et la version du jeu, le secret voyage en en-tête : en clair sur le réseau, les deux seraient lisibles.
+- **L'hôte est ajouté à l'allowlist sortante** à l'enregistrement, jamais implicitement. Le refus par défaut de la couche HTTP (barrière S2) reste la règle.
+- **Jamais sur le fil de l'interface.** Une URL qui ne répond pas gèlerait la fenêtre pendant le délai d'expiration — juste après un crash, le pire moment.
+
+Deux garde-fous de fonctionnement : la file est plafonnée à 64 (un jeu qui planterait en boucle ne doit pas la faire enfler), et un abonnement qui échoue **dix fois d'affilée se désactive** plutôt que de retenter à chaque crash. L'utilisateur le réactive quand il a corrigé l'adresse.
+
+L'URL est affichée **expurgée** dans les réglages : beaucoup d'adresses de réception portent un secret dans leur chemin (Discord, Slack), et une capture d'écran de support le donnerait à tout le monde.
+
+### Tests
+
+`TLTestPhase8` couvre désormais, en plus des plugins et de l'API locale :
+
+- **Clés** : la portée accordée passe et les autres non ; un secret inconnu n'est ni authentifié ni « portée refusée » (deux cas distincts) ; révoquer une clé n'affecte pas les autres ; le secret **n'apparaît nulle part** dans la configuration sérialisée ; aller-retour JSON.
+- **Diagnostic par HTTP** : un vrai log envoyé en texte brut ressort avec `webscreen` et son jar ; une clé `read` reçoit 403 sur `/v1/diag/crash` et une clé `diag` reçoit 403 sur `/v1/status` ; corps illisible → 400 et non 500 ; clé révoquée refusée **sans redémarrage** ; le jeton du propriétaire garde tout ; `/api/status` répond toujours.
+- **Événements** : un vrai récepteur HTTP est lancé dans le test, et on vérifie que le message d'essai **puis** le crash analysé arrivent, que le secret est bien dans l'en-tête et **pas dans le corps**, et qu'un type sans abonné n'envoie rien du tout.
+
+**25 suites vertes sous Linux, 24 sous Windows.**
+
+### Ce qui reste pour en faire un produit
+
+- Le **formulaire** de délivrance et le processus de validation (hors launcher).
+- Décider entre clés locales et service hébergé. Le découpage naturel reste celui du 01/10 : `diag` est hébergeable (petites charges, aucune donnée personnelle), le monde et la ville non.
+- Une documentation publique des deux points d'accès.
+
+### Documentation publique (01/10/2026)
+
+`cpp/docs/API.md` — la référence à joindre au formulaire de délivrance.
+
+Elle a été **vérifiée en l'exécutant** contre le launcher en marche, et
+non relue : chaque exemple de réponse vient d'un appel réel. Deux
+corrections en ont découlé, trouvées en rédigeant :
+
+1. **`severity` était rendu en français** (« Bloquant »). Un appelant
+   aurait dû comparer des chaînes traduisibles. L'API rend désormais une
+   clé stable (`error` / `warning` / `info`) et le libellé lisible à côté,
+   sous `severityLabel`.
+2. **`game_start` et `game_stop` étaient proposés dans l'interface mais
+   jamais émis.** Une case à cocher pour un événement qui ne part pas est
+   un défaut, pas une fonctionnalité à venir. Les deux sont maintenant
+   émis — `game_start` seulement quand le processus du jeu tourne
+   vraiment (pas au clic sur Jouer, qui peut encore échouer), et
+   `game_stop` uniquement pour les fins normales, un arrêt anormal partant
+   en `crash` avec son diagnostic. Jamais les deux pour un même plantage.
+
+Une troisième correction est venue du même exercice : `/v1/diag/mods`
+sans champ `loader` répondait « aucun chargeur sur cette instance ».
+Diagnostic juste pour le launcher, trompeur pour un appelant qui a
+simplement oublié le champ — c'est maintenant un 400 qui le dit.
+
+Le score de l'exemple documenté a aussi été corrigé : 60 sur le rapport
+réel complet, là où la version abrégée du test donnait 84.
+
+## `tl_diagd` — service de diagnostic hébergeable (01/10/2026)
+
+Décision prise après inventaire : de tout ce que le launcher sait faire,
+seules l'analyse de crash et l'analyse de mods sont **sans état, à petite
+charge et sans donnée personnelle**. Ce sont donc les seules hébergeables.
+Le monde et la génération de ville restent locaux : ils demandent de
+transférer des gigaoctets et de tenir un monde en mémoire.
+
+Le constat qui a rendu la chose évidente, vérifié avant d'écrire une
+ligne :
+
+```
+crash_analyzer.cpp → std uniquement
+modcheck.cpp       → std uniquement
+modmeta.cpp        → std + nlohmann + miniz
+```
+
+Aucune dépendance au launcher. Pas de SDL, pas de SDK Discord, pas de
+`DataStore`, pas de curl. Le service pèse **506 Ko sous Windows, 563 Ko
+sous Linux**, et ne lie délibérément **pas** `tl_core` : le faire aurait
+traîné la SDL, le SDK Discord, libcurl et le stockage de configuration
+pour rien, avec une surface d'attaque sans rapport avec ce qu'il fait.
+
+### Le module partagé, écrit en premier
+
+`diagapi` — « un corps de requête entre, un corps de réponse sort », sans
+HTTP ni clé. Les gestionnaires de `localapi` ont été réécrits pour
+l'appeler.
+
+C'est la seule décision structurante du lot : deux copies de ces
+gestionnaires auraient fini par rendre **deux réponses différentes à la
+même question**, et c'est le genre de divergence qu'on ne remarque que le
+jour où un appelant s'en plaint. `tests/test_diagapi.cpp` vaut donc pour
+les deux programmes à la fois.
+
+### Ce que le service fait, et ne fait pas
+
+Deux routes d'analyse, l'auto-description, et `/healthz` **sans clé** —
+une sonde de supervision ne doit pas en réclamer une, et cette route ne
+révèle rien.
+
+**Pas de TLS.** Le service s'installe derrière un reverse proxy qui le
+termine. Embarquer OpenSSL aurait ajouté une grosse dépendance pour
+refaire moins bien ce qu'un proxy fait déjà, et pour devoir en suivre les
+mises à jour de sécurité nous-mêmes.
+
+**Pas de base de données.** Un fichier JSON de clés, rechargé quand sa
+date de modification change : ajouter ou révoquer ne demande pas de
+redémarrage. Vérifié en révoquant une clé en cours de service — la
+requête suivante a reçu un 401.
+
+Garde-fou qui compte : **un fichier de clés devenu illisible ne révoque
+personne.** Les clés en mémoire sont conservées et l'erreur part au
+journal. Couper l'accès à tout le monde parce qu'une virgule manque
+serait le pire comportement possible.
+
+### La discipline, vérifiée plutôt qu'affirmée
+
+**Le corps des requêtes n'est jamais écrit sur disque.** Un rapport de
+crash contient le nom de compte Windows dans les chemins de fichiers,
+parfois des noms de serveurs, parfois des dossiers personnels.
+
+Ce n'est pas une intention : après avoir fait analyser le vrai rapport de
+la machine, le journal a été fouillé pour `webscreen`,
+`NullPointerException`, `WebDisplay2`, `fr.webscreen`, `darkm` et
+`SecurityCraft`. **Aucun présent.** Il ne contient que la route, le code,
+l'identifiant de clé, la taille et la clé de verdict :
+
+```
+/v1/diag/crash 200 key=ak_06995fc00006 bytes=14203 cause=mod_error
+```
+
+Même un plantage interne ne renvoie que `{"error":"erreur interne"}` : le
+détail d'une exception pourrait porter un fragment du corps.
+
+### Plafond de débit
+
+`ratePerMin` par clé, compté par minute civile, `429` + `Retry-After`
+au-delà. Mesuré : avec `ratePerMin: 30`, 35 appels dans la même minute
+donnent 29 × `200` et 6 × `429`.
+
+### Délivrance des clés
+
+`tl_diagd --new-key "Nom"` imprime le secret (une seule fois) et la ligne
+JSON à coller. Le service ne range que l'empreinte SHA-1 ; un secret
+perdu se remplace, il ne se retrouve pas.
+
+Volontairement rudimentaire : il y aura cinq clés, pas cinq mille. Un
+système de comptes coûterait plus qu'il ne rapporterait, et la délivrance
+à la main laisse le droit de dire non sans avoir à coder une politique.
+
+### Documentation
+
+`cpp/docs/DIAGD.md` — exploitation : lancement, proxy, unité systemd
+durcie (`ProtectSystem=strict`, `ReadOnlyPaths`), délivrance de clés et
+vérification d'installation.
+
+### Tests
+
+`tests/test_diagapi.cpp` (`TLTestDiagApi`) : log brut et enveloppe JSON,
+un log qui **commence par une accolade sans être du JSON**, corps vide
+rendu en `200 found=false` (rien à analyser n'est pas une faute de
+l'appelant), les cinq formats de manifeste devinés, descripteurs déjà
+analysés, et surtout : **toute réponse est du JSON, même en erreur** — un
+appelant ne doit jamais avoir à lire du HTML.
+
+Vérifié en plus à la main contre le service en marche : `/healthz`, `401`
+sans clé, le vrai rapport de crash rendant `webscreen` /
+`WebDisplay2-2.0.0.jar`, le plafond de débit et la révocation à chaud.
+
+**26 suites vertes sous Linux, 25 sous Windows.**

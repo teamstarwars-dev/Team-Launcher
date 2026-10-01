@@ -179,6 +179,15 @@ set(TL_CORE_SOURCES
   src/netcache.cpp
   src/accounts.cpp
   src/presets.cpp
+  src/modmeta.cpp
+  src/modcheck.cpp
+  src/modupdate.cpp
+  src/jvmwarm.cpp
+  src/plugins.cpp
+  src/apikeys.cpp
+  src/apievents.cpp
+  src/diagapi.cpp
+  src/localapi.cpp
   src/startup.cpp
   src/support.cpp
   src/social.cpp
@@ -197,7 +206,9 @@ target_include_directories(tl_core PUBLIC
 # encore requis par datastore.cpp (BCryptGenRandom). A remplacer par
 # getrandom() cote POSIX quand la couche plateforme arrivera.
 if(WIN32)
-  target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid)
+  # ws2_32 : sockets Winsock, pour le serveur de l'API locale (localapi).
+  # Les appels sortants passent, eux, par winhttp.
+  target_link_libraries(tl_core PUBLIC tl_headers winhttp bcrypt crypt32 shell32 ole32 uuid ws2_32)
 else()
   # POSIX (etape 5) : WinHTTP -> libcurl, DPAPI -> libsecret. Les sources
   # Windows-only (http_win.cpp, secrets.cpp...) ne compilent pas encore sous
@@ -256,11 +267,57 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 tl_release_flags(tl_core)
 
+# ---- Service de diagnostic autonome (tl_diagd) ----
+# Volontairement SANS tl_core : le service n'a besoin que des analyses
+# pures. Les lier a tl_core trainerait la SDL, le SDK Discord, libcurl,
+# le stockage de configuration et le reste — pour rien, et avec une
+# surface d'attaque sans rapport avec ce qu'il fait.
+option(TL_BUILD_DIAGD "Build the standalone diagnostic service" ON)
+if(TL_BUILD_DIAGD)
+  add_executable(tl_diagd
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/diagd_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/diagapi.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/crash_analyzer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/modcheck.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/modmeta.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util_zip.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util_hash.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz/miniz.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz/miniz_tdef.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz/miniz_tinfl.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz/miniz_zip.c
+  )
+  target_include_directories(tl_diagd PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/cpp-httplib
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/single_include
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz
+  )
+  target_compile_definitions(tl_diagd PRIVATE
+    TL_VERSION_STRING="${PROJECT_VERSION}")
+  if(MSVC)
+    target_compile_options(tl_diagd PRIVATE /EHsc)
+    target_compile_definitions(tl_diagd PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_definitions(tl_diagd PRIVATE _CRT_USE_BUILTIN_OFFSETOF)
+  endif()
+  if(WIN32)
+    target_link_libraries(tl_diagd PRIVATE ws2_32)
+  else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(tl_diagd PRIVATE Threads::Threads)
+  endif()
+  tl_release_flags(tl_diagd)
+endif()
+
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets startup support social)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate jvmwarm plugins apikeys apievents diagapi localapi startup support social)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
+# diagd_main.cpp a son propre `main` : il n'a rien a faire dans le launcher.
+list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/diagd_main.cpp)
 # Ressources Win32 (icone + bloc de version). Le .rc n'existe que sous
 # Windows : la cible Linux prendra un .desktop a la place.
 if(WIN32)
@@ -391,6 +448,10 @@ if(TL_BUILD_TESTS)
     "tests/test_netcache.cpp|TLTestNetCache"
     "tests/test_presets.cpp|TLTestPresets"
     "tests/test_support.cpp|TLTestSupport"
+    "tests/test_modcheck.cpp|TLTestModCheck"
+    "tests/test_phase8.cpp|TLTestPhase8"
+    "tests/test_crash.cpp|TLTestCrash"
+    "tests/test_diagapi.cpp|TLTestDiagApi"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

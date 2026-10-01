@@ -34,6 +34,15 @@ SDL_REAL="$(ls "$SRC/build-linux/third_party/SDL"/libSDL2-2.0.so.0.*.* 2>/dev/nu
 cp "$SDL_REAL" "$ROOT/lib/"
 ln -sf "$(basename "$SDL_REAL")" "$ROOT/lib/libSDL2-2.0.so.0"
 ln -sf libSDL2-2.0.so.0 "$ROOT/lib/libSDL2-2.0.so"
+# SDK social Discord (amis, messages, vocal), a cote de la SDL sous le meme
+# rpath $ORIGIN/lib. Facultatif : sans lui tout fonctionne, la page Amis
+# expliquant ce qui manque — on avertit plutot que d'echouer.
+SOCIAL_SO="$SRC/third_party/discord_social_sdk/lib/release/libdiscord_partner_sdk.so"
+if [ -f "$SOCIAL_SO" ]; then
+    cp "$SOCIAL_SO" "$ROOT/lib/"
+else
+    echo "ATTENTION : SDK social absent — installation sans amis/vocal"
+fi
 ln -sf "$ROOT/TeamLauncher" "$BIN_DIR/teamlauncher"
 sed "s|@PREFIX@|$PREFIX|" "$(dirname "$(readlink -f "$0")")/teamlauncher.desktop.in" > "$APPS_DIR/teamlauncher.desktop"
 cp "$SRC/assets/teamlauncher.png" "$ICON_DIR/teamlauncher.png"

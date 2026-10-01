@@ -9,6 +9,7 @@
 #include "lang.hpp"
 #include "apptasks.hpp"
 #include "launch_flow.hpp"
+#include "modcheck.hpp"
 
 #include <imgui.h>
 
@@ -142,6 +143,17 @@ struct UiState {
     // l'instance ni survivre au lancement suivant.
     bool launchVanillaOnce = false; // ignore le chargeur de mods
     bool launchRepairOnce = false;  // revalide tous les fichiers (SHA-1)
+    // Instance pour laquelle l'utilisateur a choisi « Lancer quand même »
+    // malgre un conflit de mods bloquant. Retenu jusqu'au prochain
+    // demarrage du launcher : redemander a chaque lancement apres qu'il a
+    // dit oui serait du harcelement, et il peut toujours relire le detail
+    // dans l'onglet Mods.
+    std::string compatSkipId;
+    // Rapport depose par le worker quand il refuse de lancer. Lu et remis
+    // a zero par poll_state, qui ouvre alors la modale : le worker ne
+    // touche jamais a l'interface lui-meme.
+    modcheck::Report compatGate;
+    bool compatGateReady = false;
 
     // modales instance (1 creer, 2 editer, 3 supprimer)
     int modal = 0;
@@ -250,6 +262,31 @@ void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
 void social_page();      // ui_social.cpp (page 16) : amis et messages
 void help_page();        // ui_help.cpp (page 17) : aide et assistance
 void help_stop();        // ui_help.cpp : joint le worker d'export
+
+// Phase 5 — compatibilite des mods (ui_modcheck.cpp)
+void modcheck_panel(const nlohmann::json& inst); // onglet Mods
+void modcheck_invalidate();  // un mod a ete active, desactive ou supprime
+void modcheck_gate_modal();  // barrage avant lancement (1x/frame)
+void modcheck_open_gate(const std::string& instId,
+                        const modcheck::Report& rep);
+void modcheck_stop();        // joint le worker d'analyse
+// Mises a jour des mods et leur changelog (ui_modupdate.cpp).
+void modupdate_panel(const nlohmann::json& inst);
+void modupdate_stop();
+
+// Phase 8 (ui_plugins.cpp) : panneaux de la page Paramètres > Avancé.
+void plugins_panel();
+void localapi_panel();
+void apikeys_panel();
+void events_panel();
+void jvmwarm_panel();
+// Lance une recherche sur la page Exploration (ui_explore.cpp).
+void explore_search(const std::string& term);
+
+// Comparateur de modpacks (ui_compare.cpp) : deux instances cote a cote.
+void compare_open(const std::string& leftInstanceId);
+void compare_modal();  // 1x/frame
+void compare_stop();   // joint le worker
 // Phase 7 (ui_help.cpp), appeles depuis ui::init / ui::frame :
 void whatsnew_init();    // decide si les notes de version sont a montrer
 void autoupdate_init();  // verification periodique (UpdateCheckHours)

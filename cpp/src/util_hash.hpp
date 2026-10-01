@@ -16,6 +16,11 @@ namespace tl {
 // Hexa minuscule ; nullopt si lecture/hash impossible.
 std::optional<std::string> sha1_hex(const std::filesystem::path& file);
 
+// SHA-1 d'une donnee en memoire, hexa minuscule. Sert aux empreintes de
+// secrets : on range l'empreinte plutot que le secret, pour qu'une lecture
+// du fichier de configuration ne suffise pas a s'authentifier.
+std::string sha1_hex_of(std::string_view data);
+
 // MD5 brut (16 octets) d'une donnee en memoire ; nullopt si echec.
 std::optional<std::array<unsigned char, 16>> md5_digest(std::string_view data);
 

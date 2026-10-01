@@ -25,7 +25,14 @@ struct McSession {
 McSession offline_session(const std::string& name);
 
 // Recherche du meilleur javaw.exe >= requiredMajor (cache inclus).
+// Le resultat du balayage est MIS EN CACHE (par version requise et par
+// reglage JavaPath) : il coute plusieurs centaines de millisecondes, et le
+// prechauffage s'en sert pour les retirer du chemin de lancement.
 std::optional<std::string> find_java(int requiredMajor = 8);
+
+// Oublie ce cache : a appeler quand on veut un balayage neuf (diagnostic,
+// ou Java installe pendant la session).
+void forget_java_scan();
 int detect_java_major(const std::string& javawPath);
 
 // Telecharge un JRE Adoptium dans runtime/jre-<major> (marqueur .done).

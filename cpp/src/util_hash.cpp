@@ -234,6 +234,20 @@ std::optional<std::string> sha1_hex(const fs::path& file) {
     return out;
 }
 
+std::string sha1_hex_of(std::string_view data) {
+    Sha1 s;
+    s.update(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
+    std::uint8_t digest[20];
+    s.finish(digest);
+    std::string out;
+    out.reserve(40);
+    for (unsigned char c : digest) {
+        out.push_back(kHex[c >> 4]);
+        out.push_back(kHex[c & 0x0F]);
+    }
+    return out;
+}
+
 std::optional<std::array<unsigned char, 16>> md5_digest(std::string_view data) {
     Md5 m;
     m.update(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());

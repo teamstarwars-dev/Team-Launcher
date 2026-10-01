@@ -21,6 +21,16 @@ command -v dpkg-deb >/dev/null || { echo "ERREUR : dpkg-deb introuvable"; exit 1
 SDL_REAL="$(ls "$BUILD/third_party/SDL"/libSDL2-2.0.so.0.*.* 2>/dev/null | head -1)"
 [ -n "$SDL_REAL" ] || { echo "ERREUR : libSDL2 introuvable dans $BUILD/third_party/SDL"; exit 1; }
 
+# SDK social Discord (amis, messages, vocal) : meme traitement que la SDL,
+# rpath $ORIGIN/lib. Facultatif — un build sans third_party/discord_social_sdk
+# compile et fonctionne, la page Amis expliquant ce qui manque. On avertit
+# plutot que d'echouer, pour pouvoir empaqueter une version sans social.
+SOCIAL_SO="$CPP/third_party/discord_social_sdk/lib/release/libdiscord_partner_sdk.so"
+if [ ! -f "$SOCIAL_SO" ]; then
+    echo "ATTENTION : SDK social absent ($SOCIAL_SO) — paquet sans amis/vocal"
+    SOCIAL_SO=""
+fi
+
 PKG=/tmp/teamlauncher-deb
 rm -rf "$PKG"
 mkdir -p "$PKG/opt/teamlauncher/assets" "$PKG/opt/teamlauncher/lib" \
@@ -33,6 +43,7 @@ cp "$CPP/assets/default.env" "$CPP/assets/README.txt" "$PKG/opt/teamlauncher/ass
 cp "$SDL_REAL" "$PKG/opt/teamlauncher/lib/"
 ln -s "$(basename "$SDL_REAL")" "$PKG/opt/teamlauncher/lib/libSDL2-2.0.so.0"
 ln -s libSDL2-2.0.so.0 "$PKG/opt/teamlauncher/lib/libSDL2-2.0.so"
+[ -n "$SOCIAL_SO" ] && cp "$SOCIAL_SO" "$PKG/opt/teamlauncher/lib/"
 ln -s /opt/teamlauncher/TeamLauncher "$PKG/usr/bin/teamlauncher"
 sed "s|@PREFIX@|/usr|" "$HERE/teamlauncher.desktop.in" > "$PKG/usr/share/applications/teamlauncher.desktop"
 cp "$CPP/assets/teamlauncher.png" "$PKG/usr/share/icons/hicolor/256x256/apps/teamlauncher.png"

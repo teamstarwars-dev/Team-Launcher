@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace tl {
 
@@ -33,6 +34,12 @@ int zip_extract_prefix(const std::filesystem::path& zip, const std::string& pref
 // Garde-fou ".." (zip-slip). -1 = archive illisible, sinon nb d'entrees ecrites.
 int zip_extract_all(const std::filesystem::path& zip,
                     const std::filesystem::path& destDir);
+
+// Noms des dossiers de premier niveau d'une archive, tries et
+// dedoublonnes. Sert a l'apercu d'une sauvegarde de mondes : on choisit
+// l'archive a restaurer sur ce qu'elle contient, pas sur sa seule date.
+// Archive illisible = liste vide.
+std::vector<std::string> zip_top_level_dirs(const std::filesystem::path& zipPath);
 
 // Compresse recursivement dir vers zipPath (export d'instance, C# ZipFile).
 // false = echec ou dossier vide.

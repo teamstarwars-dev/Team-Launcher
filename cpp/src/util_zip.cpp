@@ -2,9 +2,11 @@
 
 #include "miniz.h"
 
+#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -174,6 +176,30 @@ bool zip_create_from_dir(const fs::path& dir, const fs::path& zipPath) {
         return false;
     }
     return true;
+}
+
+
+// Noms des premiers niveaux de dossier d une archive, dedoublonnes et
+// tries. Sert a l apercu des sauvegardes : une archive de mondes se
+// choisit sur ce qu elle contient, pas seulement sur sa date.
+std::vector<std::string> zip_top_level_dirs(const std::filesystem::path& zipPath) {
+    std::vector<std::string> out;
+    mz_zip_archive zip{};
+    if (!mz_zip_reader_init_file(&zip, zipPath.string().c_str(), 0)) return out;
+    const int count = static_cast<int>(mz_zip_reader_get_num_files(&zip));
+    for (int i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat st{};
+        if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
+        const std::string name = st.m_filename;
+        const size_t slash = name.find_first_of("/\\\\");
+        if (slash == std::string::npos || slash == 0) continue;
+        std::string top = name.substr(0, slash);
+        if (std::find(out.begin(), out.end(), top) == out.end())
+            out.push_back(std::move(top));
+    }
+    mz_zip_reader_end(&zip);
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 } // namespace tl

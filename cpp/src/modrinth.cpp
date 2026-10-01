@@ -73,12 +73,54 @@ json get_json(const std::string& url, const std::atomic<bool>* cancel) {
 
 } // namespace
 
+namespace {
+
+// Corps commun aux deux recherches : `facets` est deja le JSON complet.
+std::vector<Hit> search_raw(const std::string& query,
+                            const std::string& facets,
+                            const std::string& sortIndex,
+                            const std::atomic<bool>* cancel);
+
+} // namespace
+
 std::vector<Hit> search(const std::string& query, const std::string& projectType,
                         const std::atomic<bool>* cancel) {
-    // facets=[["project_type:<type>"]] — encode comme le C#.
-    const std::string url =
-        "https://api.modrinth.com/v2/search?limit=25&query=" + url_encode(query) +
-        "&facets=%5B%5B%22project_type%3A" + url_encode(projectType) + "%22%5D%5D";
+    return search_raw(query, "[[\"project_type:" + projectType + "\"]]", {},
+                      cancel);
+}
+
+std::vector<Hit> search_filtered(const std::string& query,
+                                 const std::string& projectType,
+                                 const std::string& loader,
+                                 const std::string& mcVersion,
+                                 const std::string& sortIndex,
+                                 const std::atomic<bool>* cancel) {
+    // Chaque groupe de facettes est un ET entre groupes, un OU dedans.
+    // Un groupe par critere donne donc bien « ce type ET ce chargeur ET
+    // cette version ».
+    std::string f = "[[\"project_type:" + projectType + "\"]";
+    if (!loader.empty()) {
+        std::string l;
+        for (char c : loader)
+            l.push_back(static_cast<char>(std::tolower(
+                static_cast<unsigned char>(c))));
+        // Modrinth range les chargeurs parmi les categories.
+        if (l != "vanilla") f += ",[\"categories:" + l + "\"]";
+    }
+    if (!mcVersion.empty()) f += ",[\"versions:" + mcVersion + "\"]";
+    f += "]";
+    return search_raw(query, f, sortIndex, cancel);
+}
+
+namespace {
+
+std::vector<Hit> search_raw(const std::string& query,
+                            const std::string& facets,
+                            const std::string& sortIndex,
+                            const std::atomic<bool>* cancel) {
+    std::string url = "https://api.modrinth.com/v2/search?limit=25&query=" +
+                      url_encode(query) + "&facets=" + url_encode(facets);
+    if (!sortIndex.empty()) url += "&index=" + url_encode(sortIndex);
 
     const json root = get_json(url, cancel);
     std::vector<Hit> out;
@@ -92,6 +134,8 @@ std::vector<Hit> search(const std::string& query, const std::string& projectType
         e.type = h.value("project_type", std::string{});
         e.downloads = h.value("downloads", 0LL);
         e.description = h.value("description", std::string{});
+        if (auto ic = h.find("icon_url"); ic != h.end() && ic->is_string())
+            e.iconUrl = ic->get<std::string>();
         if (auto cats = h.find("categories"); cats != h.end() && cats->is_array())
             for (const auto& c : *cats) {
                 if (!c.is_string()) continue;
@@ -107,12 +151,15 @@ std::vector<Hit> search(const std::string& query, const std::string& projectType
     return out;
 }
 
+} // namespace
+
 namespace {
 
 // Extrait projet + fichier principal d'un objet « version » Modrinth.
 FileMatch parse_version(const json& v) {
     FileMatch m;
     m.projectId = v.value("project_id", std::string{});
+    m.versionNumber = v.value("version_number", std::string{});
     auto files = v.find("files");
     if (files != v.end() && files->is_array() && !files->empty()) {
         const json* chosen = nullptr;
@@ -201,6 +248,62 @@ std::map<std::string, FileMatch> version_files(const std::vector<std::string>& s
         } catch (const json::exception&) {
             // reponse inattendue : on ignore cette empreinte
         }
+    }
+    return out;
+}
+
+std::vector<Version> project_versions(const std::string& slug,
+                                      const std::string& loader,
+                                      const std::string& mcVersion,
+                                      const std::atomic<bool>* cancel) {
+    std::vector<Version> out;
+    std::string url =
+        "https://api.modrinth.com/v2/project/" + url_encode(slug) + "/version";
+    std::string q;
+    if (!loader.empty()) q += "loaders=" + url_encode("[\"" + loader + "\"]");
+    if (!mcVersion.empty()) {
+        if (!q.empty()) q += "&";
+        q += "game_versions=" + url_encode("[\"" + mcVersion + "\"]");
+    }
+    if (!q.empty()) url += "?" + q;
+
+    // Contrairement a download_project_file, on ne leve pas : cette
+    // fonction est appelee en boucle sur des dizaines de mods, et un
+    // projet introuvable ne doit pas interrompre l'examen des autres.
+    json versions;
+    try {
+        versions = get_json(url, cancel);
+    } catch (const std::exception&) {
+        return out;
+    }
+    if (!versions.is_array()) return out;
+
+    for (const auto& v : versions) {
+        if (!v.is_object()) continue;
+        Version x;
+        x.id = v.value("id", std::string{});
+        x.projectId = v.value("project_id", std::string{});
+        x.name = v.value("name", std::string{});
+        x.number = v.value("version_number", std::string{});
+        // `changelog` peut etre explicitement null, et non absent : la
+        // lecture directe en chaine lancerait.
+        if (auto c = v.find("changelog"); c != v.end() && c->is_string())
+            x.changelog = c->get<std::string>();
+        x.datePublished = v.value("date_published", std::string{});
+        auto files = v.find("files");
+        if (files != v.end() && files->is_array() && !files->empty()) {
+            const json* chosen = nullptr;
+            for (const auto& f : *files)
+                if (f.value("primary", false)) {
+                    chosen = &f;
+                    break;
+                }
+            if (!chosen) chosen = &files->front();
+            x.url = chosen->value("url", std::string{});
+            x.filename = chosen->value("filename", std::string{});
+        }
+        if (x.number.empty() && x.name.empty()) continue;
+        out.push_back(std::move(x));
     }
     return out;
 }

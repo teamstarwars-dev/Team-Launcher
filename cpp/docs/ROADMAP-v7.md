@@ -2,6 +2,24 @@
 
 Liste fournie par l'utilisateur le 29/09/2026, à livrer **sur Windows et Linux**.
 
+## État au 01/10/2026 — les huit phases sont livrées
+
+| Phase | État |
+|---|---|
+| 0 — Terminer Linux | Faite (29/09) — build, installeur `.deb` + `install.sh`, premier run graphique |
+| 1 — Réglages et socle | Faite |
+| 2 — Thèmes et accessibilité | Faite |
+| 3 — Instances et navigation | Faite |
+| 4 — Téléchargements et fiabilité | Faite |
+| 5 — Mods et découverte | Faite (30/09) |
+| 6 — Sauvegardes, comptes, profils | Faite (constatée 30/09, complétée le même jour) |
+| 7 — Démarrage, aide, mises à jour | Faite (30/09) |
+| 8 — Architecture et performance | Faite (01/10) |
+| Chantier social | Amis, messages privés et vocal 1:1 livrés ; SDK embarqué dans les deux installeurs |
+
+Ce qui reste hors feuille de route : la **signature** des binaires (écartée par l'utilisateur, SmartScreen avertira), la **candidature *Comms Access*** chez Discord pour lever le plafond de 100 messages / 2 h, et la **rotation des secrets** (webhook Discord, jeton GitHub) gardée pour la fin.
+
+
 ## Ordre de travail : Linux d'abord
 
 Le portage Linux est en cours et inachevé. Écrire les ~60 fonctionnalités maintenant, puis les porter, reviendrait à faire deux fois le travail : chaque page d'interface, chaque appel système et chaque test seraient à reprendre. **On termine donc la cible Linux avant d'ouvrir la phase 1**, ensuite chaque fonctionnalité est écrite une fois pour les deux plateformes.
@@ -54,11 +72,19 @@ Favoris épinglés en tête, tags et catégories, menu contextuel enrichi (lance
 ### Phase 4 — Téléchargements et fiabilité
 Page dédiée à deux onglets (En cours / Terminés) avec compteurs, tout sélectionner, recherche et tri, état vide soigné. File d'attente **persistante** reprenant après un crash. Cache disque des métadonnées CurseForge/Modrinth. Vérification d'intégrité avec réparation. Mode hors-ligne renforcé. Chargement paresseux des vignettes.
 
-### Phase 5 — Mods et découverte
+### Phase 5 — Mods et découverte — **FAITE le 30/09/2026**
 Détection de conflits avant lancement (versions incompatibles, dépendances manquantes), suggestions de mods complémentaires, changelog rapide sur mise à jour d'un mod, flux de recommandations, comparateur de modpacks.
 
-### Phase 6 — Sauvegardes, comptes, profils
+Les cinq points sont livrés. Brique de base qui manquait : `modmeta`, la lecture des manifestes de mods (Fabric, Quilt, Forge, NeoForge, mcmod.info) et la comparaison de versions (intervalles Maven, prédicats semver). Puis `modcheck` (sept contrôles, barrage avant lancement), `modupdate` (SHA-1 → Modrinth → changelog avant le bouton), le comparateur `ui_compare` et le flux de recommandations filtré sur le chargeur et la version de l'instance.
+
+Non couvert, et dit dans l'interface : **CurseForge**. Son API exige une clé et un autre protocole d'empreinte (murmur2) ; les mods qui n'en viennent ressortent en « non reconnu », jamais en « à jour ».
+
+### Phase 6 — Sauvegardes, comptes, profils — **FAITE** (constaté le 30/09/2026)
 Sauvegarde programmée toutes les X heures avec rotation sur N, restauration en un clic avec aperçu, presets de lancement, gestion de plusieurs comptes Microsoft avec bascule rapide.
+
+Livrée au fil des phases précédentes, sans que la feuille de route soit remise à jour : `backup::auto_start` / `is_due` / `rotate` (rotation sur N **et** quota en Mo, jamais pendant une partie), `backup::restore` branchée dans la page détail d'instance, `presets.hpp` (RAM, arguments JVM, jeu de mods désactivés) et `accounts.hpp` (bascule entre comptes Microsoft, chiffré déplacé tel quel, jamais de clair).
+
+Complétée le 30/09/2026 : l'aperçu d'une sauvegarde liste désormais les **mondes qu'elle contient**, en plus de la date et de la taille. La capture d'écran du monde n'est pas montrée — elle demanderait de téléverser une texture OpenGL par archive, et les noms répondent déjà à « laquelle restaurer ? ».
 
 ### Phase 7 — Démarrage, aide, mises à jour — **FAITE le 30/09/2026**
 Fermer vs réduire, lancement au démarrage du système, jeu affiché au lancement, menu d'aide (centre d'aide, Discord, ticket, export zip des journaux, suggestion, « Quoi de neuf »), canal stable/bêta, notes de version après mise à jour, mode diagnostic complet.
@@ -67,8 +93,14 @@ Livré : `startup.cpp` (entrée de session, `--autostart`), `support.cpp` (rappo
 
 Non livré, et pourquoi : l'icône de **zone de notification**. SDL2 n'en propose pas (SDL3 oui) ; le mode « réduire » laisse donc la fenêtre dans la barre des tâches, et la sortie explicite vit dans la page Aide.
 
-### Phase 8 — Architecture et performance
+### Phase 8 — Architecture et performance — **FAITE le 01/10/2026**
 Système de plugins internes, API HTTP locale, préchargement de la JVM pendant la sélection d'instance.
+
+- **Plugins** (`plugins.cpp`) : un dossier + `plugin.json` déclarant des commandes, exécutées comme des **processus séparés** — jamais du code natif chargé dans le launcher. Aucun bac à sable, et c'est dit : l'autorisation est nominative, porte sur l'empreinte du manifeste, et la commande exacte est affichée avant d'autoriser.
+- **API HTTP locale** (`localapi.cpp`) : 127.0.0.1 seulement, jeton obligatoire sur chaque requête, instantané publié par l'interface (le serveur ne lit jamais l'état vivant), actions déposées dans une file vidée par la boucle. Désactivée par défaut.
+- **Préchauffage** (`jvmwarm.cpp`) : garder une JVM allumée est **impossible** et l'interface le dit. Ce qui est fait et qui se mesure : `find_java` passe de ~900 ms à 2 µs grâce à un cache qui manquait, et les plus gros jars sont amenés dans le cache disque du système.
+
+Détail et pièges dans `ETAPE1-estimations.md`.
 
 ### Chantier séparé — Social
 
@@ -87,6 +119,8 @@ Amis, messages **et** vocal passent par Discord. Aucun serveur à héberger, auc
 **Le SDK est intégré** (version 1.10.19337, 1er septembre 2026), lié sur les deux plateformes, et le client rapporte son véritable état de connexion. Reste à faire : la liaison de compte (flux par code d'appareil, `Client::GetTokenFromDevice`), puis la liste d'amis réelle, puis la messagerie.
 
 L'intégration est **optionnelle à la compilation** : sans le dossier `third_party/discord_social_sdk`, tout compile et la page explique ce qui manque. Indispensable, puisque l'archive ne peut pas être récupérée automatiquement.
+
+**Embarquée dans les deux installeurs le 30/09/2026.** Windows : `TeamLauncher.iss`, en `skipifsourcedoesntexist` (installeur à 6 464 Ko). Linux : `make-deb.sh` et `install.sh` la posent dans `lib/` sous le même `rpath $ORIGIN/lib` que la SDL, paquet à 5,7 Mo — vérifié en extrayant le .deb, `ldd` résout bien les deux bibliothèques depuis `$ORIGIN/lib`.
 
 ### Coût en taille — plafond relevé à 20 Mo
 

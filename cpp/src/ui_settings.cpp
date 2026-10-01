@@ -1129,6 +1129,11 @@ void tab_advanced() {
     if (ImGui::Checkbox(tr("Minimiser le launcher au lancement"), &s.minimizeOnLaunch))
         DataStore::save();
 
+    // ---- Phase 8 : plugins, API locale, préchauffage ----
+    jvmwarm_panel();
+    localapi_panel();
+    plugins_panel();
+
     section("Maintenance");
     if (ImGui::Button(tr("Ouvrir le dossier de données"), ImVec2(260, 34)))
         open_in_explorer(DataStore::dir());

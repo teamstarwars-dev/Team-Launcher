@@ -94,10 +94,23 @@ int main(int argc, char** argv) {
     // Titre sans numero de version : la barre de titre sert a reconnaitre
     // la fenetre, pas a afficher un bulletin de build. La version reste
     // lisible dans Paramètres > Intégrations et dans la page Aide.
+    // TL_WINDOW_SIZE=<largeur>x<hauteur> : taille de depart imposee.
+    // Sert aux captures de validation, qui doivent pouvoir cadrer une
+    // page entiere sans faire defiler. Valeurs bornees : une fenetre de
+    // 20 pixels ou de 40 000 n'est pas une demande sensee.
+    int winW = 960, winH = 620;
+    if (const char* ws = std::getenv("TL_WINDOW_SIZE")) {
+        int w = 0, h = 0;
+        if (std::sscanf(ws, "%dx%d", &w, &h) == 2) {
+            if (w >= 640 && w <= 7680) winW = w;
+            if (h >= 480 && h <= 4320) winH = h;
+        }
+    }
+
     SDL_Window* window = SDL_CreateWindow(
         "Team Launcher",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        960, 620,
+        winW, winH,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!window) {

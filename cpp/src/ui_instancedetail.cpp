@@ -20,8 +20,11 @@
 #include "presets.hpp"
 
 #include "backup.hpp"
+#include "util_zip.hpp" // zip_top_level_dirs : apercu d'une sauvegarde
 
 #include <ctime>
+#include <map>
+#include <utility>
 
 #include <fstream>
 #endif
@@ -408,6 +411,12 @@ void instance_detail_modal() {
                 ImGui::Spacing();
             }
 
+            // ---- Compatibilite (phase 5) ----
+            // Avant la liste, pas apres : ce qui empeche de jouer se lit
+            // en premier, sans avoir a derouler quarante lignes.
+            if (e) modcheck_panel(*e);
+            if (e) modupdate_panel(*e);
+
             // ---- onglet Mods (C# LoadMods) ----
             const std::vector<std::string> mods =
                 list_mod_files(instDir / "mods");
@@ -444,12 +453,17 @@ void instance_detail_modal() {
                     else
                         fs::rename(p, fs::path(p.string() + ".disabled"), ec2);
                     refresh_counts(id);
+                    // La liste des mods actifs vient de changer : le
+                    // rapport de compatibilite affiche juste au-dessus ne
+                    // vaut plus rien.
+                    modcheck_invalidate();
                 }
                 ImGui::SameLine();
                 if (ImGui::SmallButton("X")) {
                     std::error_code ec2;
                     fs::remove(p, ec2);
                     refresh_counts(id);
+                    modcheck_invalidate();
                 }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s", tr("Supprimer"));
@@ -579,6 +593,46 @@ void instance_detail_modal() {
                 ImGui::SameLine();
                 if (ImGui::SmallButton(tr("Supprimer", "Delete")))
                     backup::remove(b.file);
+                // Mondes contenus dans l'archive. Lire le sommaire d'un zip
+                // coute une ouverture de fichier : on le retient, sinon ce
+                // serait dix ouvertures par frame pour dix archives. La
+                // date de modification sert de cle de fraicheur.
+                {
+                    static std::map<std::string, std::pair<long long,
+                                                           std::vector<std::string>>>
+                        s_contents;
+                    const std::string k = b.file.string();
+                    auto it = s_contents.find(k);
+                    if (it == s_contents.end() || it->second.first != b.mtime)
+                        it = s_contents
+                                 .insert_or_assign(
+                                     k, std::make_pair(b.mtime,
+                                                       zip_top_level_dirs(b.file)))
+                                 .first;
+                    const auto& worldNames = it->second.second;
+                    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                    if (worldNames.empty()) {
+                        ImGui::TextUnformatted(
+                            tr("  (contenu illisible)", "  (unreadable)"));
+                    } else {
+                        std::string line = "  ";
+                        for (size_t wi = 0; wi < worldNames.size(); ++wi) {
+                            if (wi) line += ", ";
+                            // Au-dela de quatre noms la ligne deborde : on
+                            // compte le reste plutot que de la tronquer au
+                            // milieu d'un nom.
+                            if (wi == 4) {
+                                line += tr("et ") +
+                                        std::to_string(worldNames.size() - 4) +
+                                        tr(" autre(s)", " more");
+                                break;
+                            }
+                            line += worldNames[wi];
+                        }
+                        ImGui::TextWrapped("%s", line.c_str());
+                    }
+                    ImGui::PopStyleColor();
+                }
                 ImGui::PopID();
             }
 

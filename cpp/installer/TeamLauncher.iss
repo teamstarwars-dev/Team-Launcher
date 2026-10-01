@@ -92,6 +92,12 @@ Name: "startmenuicon"; Description: "Créer un raccourci dans le menu Démarrer"
 [Files]
 Source: "{#BuildDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\SDL2.dll"; DestDir: "{app}"; Flags: ignoreversion
+; SDK social Discord (amis, messages, vocal). CMake la depose a cote de
+; l'executable quand third_party/discord_social_sdk est present ; elle est
+; absente d'un build sans le SDK, ou tout compile et la page Amis explique
+; ce qui manque. D'ou skipifsourcedoesntexist : on n'empeche pas
+; d'empaqueter une version sans social.
+Source: "{#BuildDir}\discord_partner_sdk.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; default.env porte les reglages par defaut (URLs de services). Il est
 ; volontairement EXTERNE et jamais embarque dans le binaire, pour rester
 ; modifiable sans recompiler. Absent du depot public : on ne bloque pas

@@ -98,6 +98,52 @@ bool start_job(const std::string& title, const std::string& status,
     return true;
 }
 
+// Flux de recommandations : meme machinerie que la recherche, mais avec
+// les facettes de l'instance et un tri par popularite, et sans terme —
+// c'est une decouverte, pas une recherche.
+void start_recommend(const std::string& loader, const std::string& mcVersion) {
+    const content::Category cat = category_of(E.type);
+    {
+        std::lock_guard<std::mutex> lk(E.m);
+        E.rows.clear();
+        E.status = tr("Recherche...", "Searching...");
+        E.searched = true;
+    }
+    start_job(tr("Recommandations", "Recommendations"),
+              tr("Recherche...", "Searching..."),
+              [loader, mcVersion, cat](int tid) {
+                  std::vector<Row> rows;
+                  std::string status, error;
+                  try {
+                      for (const auto& h : mr::search_filtered(
+                               "", content::category_key(cat), loader,
+                               mcVersion, "downloads", &E.cancel)) {
+                          Row r;
+                          r.key = h.slug;
+                          r.title = h.title;
+                          r.downloads = h.downloads;
+                          r.description = h.description;
+                          r.loaders = h.loaders;
+                          rows.push_back(std::move(r));
+                      }
+                      status = rows.empty()
+                                   ? std::string(tr(
+                                         "Rien de compatible trouvé.",
+                                         "Nothing compatible found."))
+                                   : std::to_string(rows.size()) +
+                                         std::string(tr(" suggestion(s).",
+                                                        " suggestion(s)."));
+                  } catch (const std::exception& ex) {
+                      error = ex.what();
+                      status = std::string(tr("Échec : ", "Failed: ")) + error;
+                  }
+                  apptasks_end(tid, error);
+                  std::lock_guard<std::mutex> lk(E.m);
+                  E.rows = std::move(rows);
+                  E.status = status;
+              });
+}
+
 void start_search() {
     const std::string q = trimmed(E.query);
     const bool cf_ = E.source == 1;
@@ -343,6 +389,42 @@ void explore_page() {
     ImGui::EndDisabled();
     if ((go || enter) && !busy) start_search();
 
+    // ---- Flux de recommandations (phase 5) ----
+    // Un palmares generique n'aide personne : le mod le plus telecharge du
+    // moment ne sert a rien s'il ne tourne pas sur la version qu'on joue.
+    // On filtre donc sur le chargeur et la version de l'instance
+    // selectionnee, et on trie par popularite. Sans instance, le bouton
+    // n'a rien sur quoi s'appuyer : on le grise plutot que de proposer un
+    // classement au hasard.
+    {
+        const nlohmann::json* inst = selected_instance();
+        const std::string ldr = inst ? inst->value("Loader", "") : std::string{};
+        std::string mc = inst ? inst->value("McVersion", "") : std::string{};
+        if (mc == "latest" || mc == "release" || mc == "snapshot") mc.clear();
+        const bool usable = inst && E.source == 0; // facettes : Modrinth seul
+        ImGui::BeginDisabled(busy || !usable);
+        if (ImGui::Button(tr("Recommandés pour mon instance",
+                             "Recommended for my instance"),
+                          ImVec2(260, 30)))
+            start_recommend(ldr, mc);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        if (!inst)
+            ImGui::TextUnformatted(tr("Choisissez d'abord une instance.",
+                                      "Pick an instance first."));
+        else if (E.source != 0)
+            ImGui::TextUnformatted(
+                tr("Disponible sur Modrinth uniquement.",
+                   "Available on Modrinth only."));
+        else
+            ImGui::Text(tr("Les plus installés compatibles %s%s%s.",
+                           "Most installed, compatible with %s%s%s."),
+                        ldr.empty() ? "?" : ldr.c_str(),
+                        mc.empty() ? "" : " - ", mc.c_str());
+        ImGui::PopStyleColor();
+    }
+
     // CurseForge sans cle : on le dit avant que l'utilisateur cherche.
     if (E.source == 1 && !cf::has_key()) {
         ImGui::Spacing();
@@ -423,6 +505,16 @@ void explore_stop() {
         th = std::move(E.th);
     }
     if (th.joinable()) th.join();
+}
+
+
+// Recherche pilotee depuis une autre page (suggestions de compatibilite,
+// page 5 : « complements possibles »). On force le type « Mods » : une
+// suggestion issue des dependances est toujours un mod, jamais un modpack.
+void explore_search(const std::string& term) {
+    std::snprintf(E.query, sizeof(E.query), "%s", term.c_str());
+    E.type = 1;
+    start_search();
 }
 
 } // namespace tl::ui

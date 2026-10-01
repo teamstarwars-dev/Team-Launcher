@@ -97,6 +97,25 @@ struct AppSettings {
     // Salon d'entraide. Vide par defaut : mieux vaut un bouton desactive
     // qu'un lien d'invitation invente, qui ne menerait nulle part.
     std::string helpDiscordUrl;
+    // Prechauffage avant lancement (phase 8) : reperage de Java et mise en
+    // cache disque pendant qu'on choisit son instance. Lit des fichiers et
+    // lance un `java -version` par candidat, d'ou le reglage — rien ne
+    // doit s'activer en fond sans qu'on puisse l'arreter.
+    bool jvmPreload = true;
+    // API HTTP locale (phase 8) : 0 = desactivee. Jamais exposee hors de
+    // 127.0.0.1, et toujours protegee par un jeton.
+    int localApiPort = 0;
+    std::string localApiToken;
+    // Plugins : seuls ceux listes ici s'executent. Un plugin lance des
+    // programmes ; il ne peut donc jamais etre actif par defaut du seul
+    // fait d'avoir ete depose dans le dossier.
+    std::vector<std::string> enabledPlugins;
+    // Clés d'application de l'API (apikeys.hpp). On n'y range que des
+    // EMPREINTES de secrets, jamais les secrets : lire ce fichier ne doit
+    // pas permettre de s'authentifier.
+    nlohmann::json apiKeys = nlohmann::json::array();
+    // Abonnements aux événements sortants (apievents.hpp).
+    nlohmann::json eventHooks = nlohmann::json::array();
 };
 
 // Identifiant d'instance : 32 hexa (Guid .NET « N »), BCryptGenRandom / getrandom().
