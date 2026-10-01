@@ -28,7 +28,9 @@ ICON_DIR=$([ $SYSTEM -eq 1 ] && echo "/usr/share/icons/hicolor/256x256/apps" || 
 
 mkdir -p "$ROOT/assets" "$ROOT/lib" "$BIN_DIR" "$APPS_DIR" "$ICON_DIR"
 cp "$SRC/build-linux/TeamLauncher" "$ROOT/"
-cp "$SRC/assets/default.env" "$SRC/assets/README.txt" "$ROOT/assets/"
+cp "$SRC/assets/README.txt" "$ROOT/assets/"
+# Facultatif : voir make-deb.sh.
+[ -f "$SRC/assets/default.env" ] && cp "$SRC/assets/default.env" "$ROOT/assets/"
 SDL_REAL="$(ls "$SRC/build-linux/third_party/SDL"/libSDL2-2.0.so.0.*.* 2>/dev/null | head -1)"
 [ -n "$SDL_REAL" ] || { echo "ERREUR : libSDL2 introuvable"; exit 1; }
 cp "$SDL_REAL" "$ROOT/lib/"

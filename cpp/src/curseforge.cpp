@@ -148,8 +148,16 @@ std::string api_key() {
 bool has_key() { return !api_key().empty(); }
 
 const char* missing_key_message() {
-    return "Clé API CurseForge manquante.\n\n"
-           "1. Crée un compte développeur sur console.curseforge.com\n"
+    // Ce message ne s'adresse PLUS a l'utilisateur ordinaire : les builds
+    // officiels embarquent une cle. Le voir signifie qu'on utilise une
+    // compilation faite sans — un clone du depot, par exemple. Le texte
+    // dit donc d'abord ce qui marche quand meme, avant de demander quoi
+    // que ce soit.
+    return "Cette version a été compilée sans clé API CurseForge.\n\n"
+           "Modrinth reste entièrement accessible : la majorité des mods "
+           "et modpacks s'y trouvent aussi.\n\n"
+           "Pour activer CurseForge :\n"
+           "1. Crée un compte sur console.curseforge.com\n"
            "2. Génère une clé API (gratuite, immédiate)\n"
            "3. Colle-la dans Paramètres > Intégrations > Clé API CurseForge";
 }

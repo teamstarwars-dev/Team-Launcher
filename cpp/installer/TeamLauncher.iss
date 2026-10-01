@@ -100,8 +100,13 @@ Source: "{#BuildDir}\SDL2.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\discord_partner_sdk.dll"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 ; default.env porte les reglages par defaut (URLs de services). Il est
 ; volontairement EXTERNE et jamais embarque dans le binaire, pour rester
-; modifiable sans recompiler. Absent du depot public : on ne bloque pas
+; modifiable sans recompiler. Il peut etre absent : on ne bloque pas
 ; l'installation s'il manque.
+;
+; Ce qu'il ne porte PAS : la cle API CurseForge. Elle est injectee a la
+; compilation et embarquee obfusquee (voir CMakeLists). La poser ici en
+; clair la rendrait lisible d'un simple double-clic dans le dossier
+; d'installation.
 Source: "..\assets\default.env"; DestDir: "{app}\assets"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]

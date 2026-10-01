@@ -256,6 +256,42 @@ if(EXISTS "${TL_DISCORD_SDK}/include/discordpp.h")
 endif()
 message(STATUS "SDK social Discord : ${TL_HAS_SOCIAL}")
 
+# ---- Cle API CurseForge, injectee a la COMPILATION --------------------
+# CurseForge exige une cle pour toute requete. Sans elle, l'utilisateur
+# voit « cle API manquante » et la moitie du catalogue lui est fermee —
+# ce qui, pour une application distribuee, revient a livrer quelque chose
+# de casse.
+#
+# La cle ne peut donc PAS etre un reglage que chacun remplit. Mais elle ne
+# peut pas non plus vivre dans le depot : il est public. Elle est donc lue
+# dans l'environnement au moment de configurer, et embarquee obfusquee
+# (TL_OBF) dans le binaire.
+#
+#   build-secrets.env (non suivi, a cote de ce fichier) ou variable
+#   d'environnement TL_CURSEFORGE_KEY.
+#
+# Sans elle, tout compile : le launcher se comporte comme aujourd'hui et
+# invite a coller sa propre cle. C'est ce que verra quiconque reconstruit
+# le projet depuis un clone, et c'est voulu — une cle distribuee engage
+# celui qui l'a obtenue.
+set(TL_CF_KEY "")
+if(DEFINED ENV{TL_CURSEFORGE_KEY})
+  set(TL_CF_KEY "$ENV{TL_CURSEFORGE_KEY}")
+elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env")
+  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env" _tl_secret_lines)
+  foreach(_line IN LISTS _tl_secret_lines)
+    if(_line MATCHES "^[ \t]*TL_CURSEFORGE_KEY[ \t]*=[ \t]*(.+)$")
+      set(TL_CF_KEY "${CMAKE_MATCH_1}")
+    endif()
+  endforeach()
+endif()
+if(TL_CF_KEY STREQUAL "")
+  message(STATUS "Cle CurseForge : absente (build sans acces CurseForge)")
+else()
+  message(STATUS "Cle CurseForge : presente (embarquee obfusquee)")
+  target_compile_definitions(tl_core PRIVATE TL_CURSEFORGE_KEY="${TL_CF_KEY}")
+endif()
+
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher
 target_compile_definitions(tl_core PUBLIC TL_VERSION_STRING="${PROJECT_VERSION}")
 if(MSVC)

@@ -227,7 +227,36 @@ void home_page() {
                         initial);
         }
         ImGui::SetCursorScreenPos(ImVec2(p.x + 52, p.y + 10));
-        ImGui::TextUnformatted(nm.c_str());
+        {
+            // Le nom s'arrête AVANT le bouton de lecture. Sans cela il
+            // passait dessous : « Create : Above and Beyond » devenait
+            // « Create : Above and Beyon[bouton] », illisible et qui donne
+            // l'impression d'une fenêtre mal dimensionnée.
+            const float nameMax = rcW - 52.0f - 48.0f - 6.0f;
+            std::string shown = nm;
+            if (ImGui::CalcTextSize(shown.c_str()).x > nameMax) {
+                // Retirer un OCTET couperait un caractère accentué en deux
+                // et afficherait un losange noir : on retire des points de
+                // code entiers (les octets de continuation UTF-8 valent
+                // 10xxxxxx).
+                auto pop_cp = [](std::string& s) {
+                    if (s.empty()) return;
+                    s.pop_back();
+                    while (!s.empty() &&
+                           (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80)
+                        s.pop_back();
+                };
+                while (!shown.empty() &&
+                       ImGui::CalcTextSize((shown + "...").c_str()).x > nameMax)
+                    pop_cp(shown);
+                shown += "...";
+            }
+            ImGui::TextUnformatted(shown.c_str());
+            // Le nom complet reste accessible, sinon tronquer reviendrait
+            // à cacher l'information.
+            if (shown != nm && ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", nm.c_str());
+        }
         if (fSmall) ImGui::PushFont(fSmall);
         ImGui::SetCursorScreenPos(ImVec2(p.x + 52, p.y + 34));
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);

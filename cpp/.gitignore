@@ -17,3 +17,7 @@ teamlauncher_*.deb
 third_party/*
 !third_party/.gitkeep
 !third_party/stb/
+
+# Cle API CurseForge pour les builds officiels (injectee a la compilation,
+# voir CMakeLists). Jamais dans le depot : il est public.
+build-secrets.env

@@ -39,7 +39,11 @@ mkdir -p "$PKG/opt/teamlauncher/assets" "$PKG/opt/teamlauncher/lib" \
          "$PKG/usr/share/doc/teamlauncher" "$PKG/DEBIAN"
 
 cp "$BIN" "$PKG/opt/teamlauncher/TeamLauncher"
-cp "$CPP/assets/default.env" "$CPP/assets/README.txt" "$PKG/opt/teamlauncher/assets/"
+cp "$CPP/assets/README.txt" "$PKG/opt/teamlauncher/assets/"
+# default.env est facultatif : il peut etre absent d'un clone, et la cle
+# CurseForge est desormais embarquee a la compilation. Un `cp` sec faisait
+# echouer l'empaquetage pour un fichier dont on sait se passer.
+[ -f "$CPP/assets/default.env" ] && cp "$CPP/assets/default.env" "$PKG/opt/teamlauncher/assets/"
 cp "$SDL_REAL" "$PKG/opt/teamlauncher/lib/"
 ln -s "$(basename "$SDL_REAL")" "$PKG/opt/teamlauncher/lib/libSDL2-2.0.so.0"
 ln -s libSDL2-2.0.so.0 "$PKG/opt/teamlauncher/lib/libSDL2-2.0.so"

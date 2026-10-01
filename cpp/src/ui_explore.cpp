@@ -428,11 +428,20 @@ void explore_page() {
     // CurseForge sans cle : on le dit avant que l'utilisateur cherche.
     if (E.source == 1 && !cf::has_key()) {
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
-        ImGui::TextWrapped("%s", tr("Clé API CurseForge manquante : renseigne-la "
-                                    "dans Paramètres > Intégrations.",
-                                    "CurseForge API key missing: set it in "
-                                    "Settings > Integrations."));
+        // Orange et non rouge : ce n'est pas une panne, c'est une source
+        // indisponible parmi deux. Et on dit ce qui marche avant ce qui
+        // manque — l'utilisateur veut chercher un mod, pas lire un
+        // diagnostic.
+        ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+        ImGui::TextWrapped(
+            "%s",
+            tr("CurseForge indisponible dans cette version : bascule sur "
+               "Modrinth, qui ne demande aucune clé. Pour activer "
+               "CurseForge, colle une clé API dans Paramètres > "
+               "Intégrations.",
+               "CurseForge unavailable in this build: switch to Modrinth, "
+               "which needs no key. To enable CurseForge, paste an API key "
+               "in Settings > Integrations."));
         ImGui::PopStyleColor();
     }
 

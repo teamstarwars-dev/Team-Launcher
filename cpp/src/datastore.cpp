@@ -257,6 +257,21 @@ void DataStore::loadDefaults() {
         d["FPS_COUNTER_ENABLED"] = "false";
     }
 
+    // Cle API CurseForge : injectee a la compilation (voir CMakeLists) et
+    // obfusquee, jamais en clair sur le disque ni dans le depot. Elle ne
+    // s'applique que si default.env n'en donne pas une : un integrateur
+    // qui repaquete le launcher avec SA cle doit pouvoir la poser sans
+    // recompiler.
+    //
+    // A savoir, et dit sans detour : une cle embarquee dans un logiciel
+    // distribue est extractible. Celle-ci n'ouvre qu'un catalogue public
+    // en lecture, et doit etre une cle dediee a la distribution — pas
+    // celle qui sert par ailleurs — pour pouvoir etre revoquee seule.
+#ifdef TL_CURSEFORGE_KEY
+    if (d.find("CURSEFORGE_API_KEY") == d.end())
+        d["CURSEFORGE_API_KEY"] = TL_OBF(TL_CURSEFORGE_KEY);
+#endif
+
     // Webhook Discord (S3) : retire de default.env (jamais en clair sur
     // disque) et obfusque ici. Les deux cas sont couverts — fichier absent
     // (bloc ci-dessus) ou fichier present sans la ligne — pour conserver le

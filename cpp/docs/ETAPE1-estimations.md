@@ -1187,3 +1187,91 @@ régénéré, l'ancien publiant un identifiant dérivé.
 Ce que ça dit de la méthode : la relecture anti-secrets avant un push
 sert à trouver des secrets qui fuient, et elle a trouvé un secret qui
 fuyait — pas là où on le cherchait.
+
+## Clé CurseForge : tous les utilisateurs voyaient « clé manquante » (01/10/2026)
+
+Signalé par l'utilisateur, et c'est un défaut de livraison, pas de code :
+CurseForge exige une clé pour **toute** requête, la clé était un réglage
+vide par défaut, donc chaque personne installant le launcher se voyait
+refuser la moitié du catalogue avec un message lui demandant de créer un
+compte développeur. Livrer cela revient à livrer quelque chose de cassé.
+
+### Ce qui existait déjà
+
+Le mécanisme était **entièrement câblé** : `datastore.cpp:293` lit
+`CURSEFORGE_API_KEY` depuis `assets/default.env`, et les deux installeurs
+embarquent ce fichier. La ligne y figurait même — commentée. Il ne
+manquait que la valeur.
+
+### Le piège qu'il fallait voir avant d'agir
+
+`cpp/assets/default.env` est **suivi par git**, et le dépôt est public.
+Le commentaire du script Inno affirmait pourtant « Absent du depot
+public » : c'était faux. Décommenter la ligne et y coller la clé l'aurait
+poussée en ligne au commit suivant.
+
+### La solution retenue : injection à la compilation
+
+La clé est lue **au moment de configurer** — variable d'environnement
+`TL_CURSEFORGE_KEY`, ou fichier `cpp/build-secrets.env` (non suivi) — et
+embarquée **obfusquée** (`TL_OBF`) dans le binaire.
+
+Pourquoi pas dans `default.env` livré à côté de l'exécutable : le fichier
+est lisible d'un double-clic dans le dossier d'installation. Pourquoi pas
+en dur dans `datastore.cpp` comme le webhook Discord : ce précédent est
+précisément l'un des secrets qu'il faudra faire tourner, on ne le répète
+pas.
+
+Trois niveaux, du plus général au plus particulier : clé embarquée →
+`default.env` (un intégrateur qui repaquete avec sa clé n'a pas à
+recompiler) → réglage utilisateur.
+
+**Sans clé, tout compile.** C'est ce que voit quiconque reconstruit depuis
+un clone, et c'est voulu : une clé distribuée engage celui qui l'a
+obtenue.
+
+### Vérifié, pas supposé
+
+- CMake annonce « Cle CurseForge : presente (embarquee obfusquee) ».
+- `strings` sur le binaire ne trouve **aucun** fragment de la clé, ni même
+  le préfixe `$2a$10$`.
+- **Profil neuf, aucune clé saisie** : une recherche CurseForge rend de
+  vrais résultats (Just Enough Items et ses dérivés). Plus aucun message
+  d'erreur.
+- Sans `build-secrets.env`, CMake annonce « absente » et la compilation
+  aboutit.
+
+### Corrigé au passage
+
+- `make-deb.sh` et `install.sh` copiaient `default.env` sans condition :
+  l'empaquetage échouait si le fichier manquait. Il est désormais
+  facultatif, comme il l'est déjà côté Inno Setup.
+- Le message d'absence de clé ne s'adresse plus à l'utilisateur ordinaire
+  — il ne le verra plus — mais à qui reconstruit le projet. Il dit
+  d'abord **ce qui marche quand même** (Modrinth, tout le catalogue) avant
+  de demander quoi que ce soit, et la bannière passe de rouge à orange :
+  ce n'est pas une panne, c'est une source sur deux.
+
+### Ce que ça coûte, dit sans détour
+
+Une clé embarquée dans un logiciel distribué est **extractible**. Celle-ci
+n'ouvre qu'un catalogue public en lecture, mais elle doit être une clé
+**dédiée à la distribution** — pas celle qui sert par ailleurs — pour
+pouvoir être révoquée seule si elle est abusée. C'est écrit dans
+`build-secrets.env.example`.
+
+La seule façon de la garder réellement secrète serait de relayer les
+requêtes par un serveur. Cela veut dire héberger le trafic CurseForge de
+tous les utilisateurs : un coût permanent et un point de panne unique,
+pour une clé en lecture seule. Écarté.
+
+## Défaut d'affichage corrigé (01/10/2026)
+
+Sur les cartes de la page d'accueil, un nom d'instance long passait
+**sous** le bouton de lecture : « Create : Above and Beyond » devenait
+illisible. Le nom est maintenant tronqué avant le bouton, avec le nom
+complet en infobulle. La troncature retire des points de code entiers et
+non des octets — couper un caractère accentué en deux aurait affiché un
+losange noir.
+
+Trouvé en préparant une capture d'écran pour le site.
