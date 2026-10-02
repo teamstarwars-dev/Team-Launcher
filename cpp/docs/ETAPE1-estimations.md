@@ -1548,3 +1548,76 @@ l'orange ne garde que ce qui reste vraiment perdu — l'analyse de crash
 de cette partie et la sauvegarde automatique des mondes.
 
 **27 suites vertes sous Linux comme sous Windows.**
+
+## Secrets de build et publication v6.0.0 (02/10/2026)
+
+### Un webhook en clair dans un dépôt public
+
+Trouvé en préparant la publication : l'URL complète du webhook Discord
+de télémétrie, jeton compris, vivait à **deux** endroits suivis par git,
+sur un dépôt public.
+
+Le premier était connu : `src/TeamLauncher/default.env`, vestige du C#.
+Le second l'était moins, et c'est le plus instructif — un **littéral
+dans `cpp/src/datastore.cpp`**, enveloppé dans `TL_OBF`. Le commentaire
+d'origine disait « retiré de default.env (jamais en clair sur disque) et
+obfusqué ici », ce qui décrit bien ce qui avait été fait et manque
+complètement le problème : `TL_OBF` est un XOR appliqué à la
+compilation. Il empêche de trouver la chaîne dans le binaire. Il
+n'empêche rien du tout quand **la source est publique**.
+
+> Règle à retenir : un `TL_OBF(...)` protège contre quelqu'un qui lit le
+> binaire, jamais contre quelqu'un qui lit le dépôt.
+
+### Correctif
+
+Même mécanisme que la clé CurseForge : lecture à la configuration depuis
+`build-secrets.env` (non suivi) ou la variable d'environnement, puis
+`target_compile_definitions`. La lecture est désormais factorisée dans
+`tl_read_build_secret(name outvar)`, puisqu'il y a deux secrets et qu'il
+y en aura d'autres.
+
+Sans valeur, tout compile et la télémétrie se tait — `telemetry.cpp`
+vérifiait déjà que le webhook est non vide avant d'envoyer. La
+configuration l'annonce : `Webhook telemetrie : absent (telemetrie
+desactivee)`.
+
+**L'historique n'est pas réécrit.** Sur un dépôt public déjà cloné, une
+réécriture casse les clones existants et n'annule pas la fuite. La seule
+chose qui compte est la révocation côté Discord, qui a été faite.
+
+### L'effet de bord qu'il ne fallait pas rater
+
+Révoquer l'ancien webhook a **cassé la télémétrie des binaires déjà
+publiés**. Les installeurs mis en ligne à 09h44 et 09h47 avaient été
+compilés avant le correctif de 10h17 : ils embarquaient l'ancien
+webhook, devenu un 404. Rien ne l'aurait signalé — la télémétrie échoue
+en silence, par construction.
+
+Reconstruits, republiés, empreintes recalculées partout : `SHA256SUMS.txt`,
+notes de version, pièces jointes de la release.
+
+> Leçon : une rotation de secret n'est pas finie quand le code est
+> corrigé. Elle est finie quand tout ce qui est **déjà distribué** porte
+> la nouvelle valeur.
+
+### Vérifications
+
+- Ni l'ancien ni le nouvel identifiant de webhook n'apparaissent en clair
+  dans les binaires Windows et Linux.
+- `git grep` sur les motifs de secrets (webhook Discord complet, clé
+  CurseForge, `ghp_`, `github_pat_`, jetons Slack) : aucun résultat dans
+  les fichiers suivis.
+- Le PAT GitHub a été sorti de l'URL du remote dans `.git/config` au
+  profit de `gh auth setup-git`. Lecture et écriture distantes vérifiées
+  sans jeton en clair.
+
+### Publication
+
+Release GitHub `v6.0.0` sur le commit `15a179c`, marquée *latest*, avec
+les deux installeurs et `SHA256SUMS.txt`. Le flux de mise à jour
+automatique résout enfin ses URL, qui pointaient dans le vide depuis
+l'écriture de `version.json`.
+
+**27 suites vertes sous Linux comme sous Windows**, avant et après la
+rotation.
