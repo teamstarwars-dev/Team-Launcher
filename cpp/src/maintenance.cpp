@@ -187,11 +187,11 @@ namespace tl::updates {
 namespace {
 
 constexpr const char* kLatestApi =
-    "https://api.github.com/repos/teamstarwars-dev/Team-Luncher-/releases/latest";
+    "https://api.github.com/repos/teamstarwars-dev/Team-Launcher/releases/latest";
 // Canal beta : /releases/latest ne renvoie JAMAIS de preversion, quoi
 // qu'on lui demande. Il faut la liste complete, et y choisir soi-meme.
 constexpr const char* kListApi =
-    "https://api.github.com/repos/teamstarwars-dev/Team-Luncher-/releases?per_page=20";
+    "https://api.github.com/repos/teamstarwars-dev/Team-Launcher/releases?per_page=20";
 constexpr const char* kMarkerName = "pending.json";
 #ifdef _WIN32
 constexpr const char* kScriptName = "apply-update.bat";

@@ -12,7 +12,7 @@ public static class UpdateService
     private static UpdateManager GetUpdateManager()
     {
         return _updateManager ??= new UpdateManager(
-            "https://github.com/teamstarwars-dev/Team-Luncher-/releases"
+            "https://github.com/teamstarwars-dev/Team-Launcher/releases"
         );
     }
 

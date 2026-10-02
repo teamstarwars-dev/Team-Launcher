@@ -6,7 +6,7 @@
  * Format : [{ "title": "...", "date": "...", "tag": "...", "text": "..." }]
  */
 
-const NEWS_URL = "https://raw.githubusercontent.com/teamstarwars-dev/Team-Luncher-/master/site/maquette/news.json";
+const NEWS_URL = "https://raw.githubusercontent.com/teamstarwars-dev/Team-Launcher/master/site/maquette/news.json";
 const MAX_ITEMS = 5;
 
 const TAG_COLORS = {

@@ -28,7 +28,7 @@
 
 #define MyAppName "Team Launcher"
 #define MyAppPublisher "Team Launcher"
-#define MyAppURL "https://github.com/teamstarwars-dev/Team-Luncher-"
+#define MyAppURL "https://github.com/teamstarwars-dev/Team-Launcher"
 #define MyAppExeName "TeamLauncher.exe"
 ; Meme AppId que le launcher C# : une installation existante est donc mise a
 ; jour et non dupliquee dans « Applications installees ».

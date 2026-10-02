@@ -33,7 +33,7 @@ namespace tl::support {
 
 namespace {
 
-constexpr const char* kRepo = "https://github.com/teamstarwars-dev/Team-Luncher-";
+constexpr const char* kRepo = "https://github.com/teamstarwars-dev/Team-Launcher";
 
 std::string lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

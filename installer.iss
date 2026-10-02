@@ -4,7 +4,7 @@
 #define MyAppName "Team Launcher"
 #define MyAppVersion "4.2.2"
 #define MyAppPublisher "Team Launcher"
-#define MyAppURL "https://github.com/teamstarwars-dev/Team-Luncher-"
+#define MyAppURL "https://github.com/teamstarwars-dev/Team-Launcher"
 #define MyAppExeName "TeamLauncher.exe"
 #define MyAppId "{{B5E3A8D2-7F4A-4E9C-A1D3-6B2E8F0C9D5A}"
 

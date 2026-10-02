@@ -144,7 +144,7 @@ public static class PresenceService
                 },
                 Buttons = new[]
                 {
-                    new DiscordRPC.Button { Label = "🌐 Visiter le site", Url = "https://teamstarwars-dev.github.io/Team-Luncher-/" }
+                    new DiscordRPC.Button { Label = "🌐 Visiter le site", Url = "https://teamstarwars-dev.github.io/Team-Launcher/" }
                 }
             });
         }
@@ -173,7 +173,7 @@ public static class PresenceService
                 },
                 Buttons = new[]
                 {
-                    new DiscordRPC.Button { Label = "🌐 Visiter le site", Url = "https://teamstarwars-dev.github.io/Team-Luncher-/" }
+                    new DiscordRPC.Button { Label = "🌐 Visiter le site", Url = "https://teamstarwars-dev.github.io/Team-Launcher/" }
                 }
             });
         }
