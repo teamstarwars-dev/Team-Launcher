@@ -1455,6 +1455,11 @@ des mondes** et la **présence Discord**. L'avertissement n'apparaît que
 lorsque « quitter » est choisi, et il est en orange — ce n'est pas une
 erreur, c'est un arbitrage.
 
+> Révisé le jour même : le temps de jeu n'est plus perdu, il est
+> rattrapé au démarrage suivant (section ci-dessous). L'avertissement a
+> été réécrit en conséquence — il ne liste plus que ce qui reste
+> réellement perdu.
+
 Un détail qui aurait fait tache : `LastPlayed` n'est écrit qu'à la fin
 de la partie. En quittant, l'instance serait restée affichée « jamais
 lancée » alors qu'on venait d'y jouer. La date est donc enregistrée au
@@ -1478,3 +1483,68 @@ sur l'ancien, une valeur inconnue qui retombe sur le défaut, et
 l'aller-retour d'écriture.
 
 **26 suites vertes sous Linux comme sous Windows.**
+
+## Rattrapage du temps de jeu (02/10/2026)
+
+Question posée après coup : le temps de jeu perdu quand le launcher ne
+voit pas la fin de la partie, « on peut pas la régler ça ? ». Oui, et le
+problème dépassait le réglage de la veille — **quiconque fermait le
+launcher en cours de partie perdait déjà sa session**, bien avant que
+« quitter au lancement » existe. Plantage du launcher, extinction du PC,
+même effet.
+
+### Un marqueur, pas une mesure
+
+Le launcher écrit `session.json` dans son dossier de données chaque fois
+qu'il perd de vue une partie en cours : identifiant d'instance, PID,
+heure de début. Au démarrage suivant, `reconcile()` le relit.
+
+La durée n'est donc pas mesurée, elle est **estimée** d'après les
+fichiers que Minecraft a écrits : `logs/latest.log` en premier, puis
+`game-log.txt`, les `level.dat` et `session.lock` de chaque monde, et
+les rapports de crash — qui datent de la fin par construction. La plus
+récente de ces dates fait la fin de session. Précision annoncée à
+l'utilisateur : **la minute près**.
+
+### Ce qu'il refuse de faire, qui est l'essentiel
+
+Un module qui ajoute du temps sans l'avoir mesuré ne risque pas de ne
+rien compter : il risque de compter **n'importe quoi**. D'où quatre
+refus, tous testés :
+
+- **PID réutilisé.** Vérifier l'existence du PID ne suffit pas — les
+  numéros sont recyclés, et créditer le temps d'un processus sans
+  rapport serait pire que de ne rien créditer. On compare donc aussi sa
+  **date de création** à celle notée dans le marqueur, à deux minutes
+  près. Sous Windows via `GetProcessTimes`, sous Linux via la date du
+  dossier `/proc/<pid>`.
+- **Partie encore en cours.** Si le processus répond toujours, on ne
+  touche à rien et le marqueur reste : on réessaiera plus tard.
+- **Aucun fichier exploitable.** Pas d'estimation possible, donc aucune
+  estimation inventée. Le marqueur part quand même, sinon il traînerait
+  indéfiniment.
+- **Durée invraisemblable.** Plafond à 24 h : une « session » de trois
+  jours, c'est un PC resté allumé, pas quelqu'un qui a joué. Et une fin
+  antérieure au début (horloge reculée) donne zéro, jamais un négatif.
+
+Le marqueur est effacé **avant** que le crédit soit appliqué, pour que
+le démarrage d'après ne recompte pas la même session. Testé aussi dans
+l'autre sens : un second `reconcile()` n'ajoute rien.
+
+### Défaut trouvé par le test, propre à Windows
+
+`current()` appelait `clear()` **alors que le flux de lecture était
+encore ouvert**. Sous Windows, supprimer un fichier dont on tient une
+poignée échoue en silence : un marqueur corrompu aurait donc été relu,
+et re-raté, à chaque démarrage, indéfiniment. Le contenu est désormais
+lu dans une chaîne et le flux refermé avant toute suppression.
+
+### Interface
+
+Au démarrage, une notification discrète si du temps a été rattrapé :
+« Temps de jeu rattrapé : 34 min — Ma partie ». Et dans les paramètres,
+l'avertissement orange a été scindé : ce qui est rattrapé passe en gris,
+l'orange ne garde que ce qui reste vraiment perdu — l'analyse de crash
+de cette partie et la sauvegarde automatique des mondes.
+
+**27 suites vertes sous Linux comme sous Windows.**

@@ -1147,21 +1147,27 @@ void tab_advanced() {
             // temps de jeu n'augmente plus. Le launcher ne verra pas la
             // fin de la partie : tout ce qui se fait à ce moment-là est
             // perdu, et ce n'est pas rattrapable.
-            ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
             ImGui::TextWrapped(
                 "%s",
                 tr("Minecraft continue de tourner — le launcher ne le tue "
-                   "pas. Mais il ne verra pas la fin de la partie : le "
-                   "temps de jeu ne sera pas compté, il n'y aura ni "
-                   "analyse de crash, ni sauvegarde automatique des "
-                   "mondes, et la présence Discord s'arrêtera. Seules la "
-                   "date et le nombre de lancements sont enregistrés.",
+                   "pas. Le temps de jeu est rattrapé au prochain "
+                   "démarrage, estimé d'après les fichiers écrits par le "
+                   "jeu : comptez une minute près.",
                    "Minecraft keeps running - the launcher does not kill "
-                   "it. But it will not see the session end: playtime will "
-                   "not be counted, there will be no crash analysis, no "
-                   "automatic world backup, and Discord presence will "
-                   "stop. Only the date and the launch count are "
-                   "recorded."));
+                   "it. Playtime is recovered on the next start, estimated "
+                   "from the files the game wrote: expect about a minute's "
+                   "accuracy."));
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+            ImGui::TextWrapped(
+                "%s",
+                tr("Restent perdues, elles : l'analyse de crash de cette "
+                   "partie et la sauvegarde automatique des mondes après "
+                   "y avoir joué. La présence Discord s'arrête aussi.",
+                   "Still lost: the crash analysis for that session and "
+                   "the automatic world backup afterwards. Discord "
+                   "presence also stops."));
             ImGui::PopStyleColor();
         }
     }

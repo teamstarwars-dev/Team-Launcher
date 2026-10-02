@@ -182,6 +182,7 @@ set(TL_CORE_SOURCES
   src/modmeta.cpp
   src/modcheck.cpp
   src/modupdate.cpp
+  src/gamesession.cpp
   src/jvmwarm.cpp
   src/plugins.cpp
   src/apikeys.cpp
@@ -350,7 +351,7 @@ endif()
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate jvmwarm plugins apikeys apievents diagapi localapi startup support social)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins apikeys apievents diagapi localapi startup support social)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 # diagd_main.cpp a son propre `main` : il n'a rien a faire dans le launcher.
@@ -489,6 +490,7 @@ if(TL_BUILD_TESTS)
     "tests/test_phase8.cpp|TLTestPhase8"
     "tests/test_crash.cpp|TLTestCrash"
     "tests/test_diagapi.cpp|TLTestDiagApi"
+    "tests/test_gamesession.cpp|TLTestGameSession"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

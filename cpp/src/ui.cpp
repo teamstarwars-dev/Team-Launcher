@@ -4,6 +4,7 @@
 #include "social.hpp"
 #include "apievents.hpp"
 #include "apikeys.hpp"
+#include "gamesession.hpp"
 #include "jvmwarm.hpp"
 #include "localapi.hpp"
 #include "modcheck.hpp"
@@ -726,8 +727,17 @@ void poll_state(SDL_Window* window) {
                 (*e)["LastPlayed"] = buf;
                 DataStore::saveNow();
             }
-            g.statActive = false; // rien a compter : on ne verra pas la fin
-            push_log("Partie lancée : fermeture du launcher (réglage).");
+            // Marqueur de session : le launcher ne verra pas la fin,
+            // mais le PROCHAIN démarrage la rattrapera. C'est ce qui
+            // rend l'option acceptable — sans lui, le temps de jeu
+            // serait simplement perdu.
+            gamesession::begin({g.statInstId.empty() ? g.selInstId
+                                                     : g.statInstId,
+                               g.game.pid,
+                               static_cast<long long>(std::time(nullptr))});
+            g.statActive = false; // la durée sera rattrapée, pas comptée ici
+            push_log("Partie lancée : fermeture du launcher. Le temps de jeu "
+                     "sera rattrapé au prochain démarrage.");
             request_quit();
         }
     }
@@ -861,6 +871,11 @@ void poll_state(SDL_Window* window) {
                 const std::string bk = backup::create(instId);
                 if (!bk.empty()) log_line("Sauvegarde des mondes : " + bk);
             }
+            // La fin de partie a été vue : le marqueur n'a plus lieu
+            // d'être, sinon le prochain démarrage recompterait la même
+            // session.
+            gamesession::clear();
+
             // C# Play() : PlaySeconds += duree, LastPlayed = Now, Save
             if (g.statActive) {
                 g.statActive = false;
@@ -1019,6 +1034,16 @@ void init(SDL_Window*) {
 
     // Phase 7 : notes de version (si la version a change depuis la derniere
     // execution) et instance preselectionnee au demarrage.
+    // Une partie dont on n'a pas vu la fin — launcher fermé pendant le
+    // jeu, plantage, extinction du PC, ou réglage « quitter au
+    // lancement ». Rattrapé avant toute autre chose, pour que la page
+    // d'accueil affiche des compteurs justes dès la première frame.
+    if (const auto rec = gamesession::reconcile(); rec.applied)
+        notify_toast(tr("Session précédente", "Previous session"),
+                     tr("Temps de jeu rattrapé : ", "Playtime recovered: ") +
+                         std::to_string(rec.seconds / 60) + " min — " +
+                         rec.instanceName);
+
     whatsnew_init();
     apply_startup_selection();
     autoupdate_init();
@@ -1408,6 +1433,18 @@ void shutdown() {
     if (g.worker.joinable()) g.worker.join();
     if (dbg) std::fprintf(stderr, "SH: ui.join done\n");
     if (g.gameActive) {
+        // Le launcher s'arrête alors qu'une partie tourne encore : on
+        // pose le marqueur, faute de quoi cette session serait perdue —
+        // c'était déjà le cas avant le réglage « quitter au lancement »,
+        // pour quiconque fermait le launcher en cours de jeu.
+        if (g.statActive && !g.statInstId.empty())
+            gamesession::begin(
+                {g.statInstId, g.game.pid,
+                 static_cast<long long>(
+                     std::time(nullptr) -
+                     std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now() - g.statStart)
+                         .count())});
         if (dbg) std::fprintf(stderr, "SH: ui.close_game\n");
         close_game(g.game);
         g.gameActive = false;
