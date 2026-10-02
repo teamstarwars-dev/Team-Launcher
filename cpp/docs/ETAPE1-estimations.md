@@ -1419,3 +1419,62 @@ est bien appliquée sans que l'utilisateur ait rien saisi.
 
 Les deux contiennent la clé CurseForge embarquée et l'installation
 automatique de la chaîne d'outils de développement de mods.
+
+## Fermeture au lancement du jeu (02/10/2026)
+
+Parité avec Prism Launcher, qui propose la même chose. Le réglage
+booléen `minimizeOnLaunch` devient un choix à trois valeurs,
+`onGameLaunch` : ne rien faire, réduire la fenêtre, quitter.
+
+### Ce qu'il fallait vérifier avant d'offrir l'option
+
+Quitter pendant qu'une partie tourne pose une question qui n'admet pas
+d'approximation : **est-ce que ça tue Minecraft ?** Si oui, l'option
+détruit la session de l'utilisateur — le pire défaut possible pour un
+launcher.
+
+Deux conditions, toutes deux vérifiées par un test plutôt que déduites :
+
+1. `close_game()`, ce que fait l'arrêt, ne doit **pas** terminer
+   l'enfant. Lecture du code : il ne fait que relâcher des poignées.
+2. L'enfant ne doit appartenir à **aucun objet de travail**, sinon
+   Windows le tuerait à la mort du launcher quoi qu'on fasse.
+   `IsProcessInJob` le confirme.
+
+Le test n'a pas besoin de Minecraft : `start_game` lance l'exécutable
+qu'on lui donne, et un processus qui dort suffit à établir la propriété.
+Il lance donc `ping -n 60` (ou `sleep 60`), vérifie l'absence d'objet de
+travail, appelle `close_game`, et contrôle que le processus **vit
+toujours**.
+
+### Le prix, dit dans l'interface
+
+Le launcher ne verra pas la fin de la partie. Sont donc perdus : le
+**temps de jeu**, l'**analyse de crash**, la **sauvegarde automatique
+des mondes** et la **présence Discord**. L'avertissement n'apparaît que
+lorsque « quitter » est choisi, et il est en orange — ce n'est pas une
+erreur, c'est un arbitrage.
+
+Un détail qui aurait fait tache : `LastPlayed` n'est écrit qu'à la fin
+de la partie. En quittant, l'instance serait restée affichée « jamais
+lancée » alors qu'on venait d'y jouer. La date est donc enregistrée au
+lancement dans ce mode précis. Le compteur de lancements, lui, était
+déjà incrémenté avant le départ.
+
+### Migration
+
+Une configuration écrite avant ce réglage n'a que le booléen. On en
+**dérive** la valeur plutôt que d'imposer le défaut : sans cela,
+quelqu'un qui avait décoché « minimiser » aurait vu le launcher se
+minimiser de nouveau sans l'avoir demandé.
+
+`MinimizeOnLaunch` continue d'être écrit, en miroir dérivé : la v5
+Avalonia partage ce fichier de configuration et ne connaît que le
+booléen. « Quitter » n'ayant pas d'équivalent chez elle, il s'écrit
+« ne pas minimiser », le comportement le moins surprenant de son côté.
+
+Testé : les deux sens de la migration, la priorité du nouveau réglage
+sur l'ancien, une valeur inconnue qui retombe sur le défaut, et
+l'aller-retour d'écriture.
+
+**26 suites vertes sous Linux comme sous Windows.**

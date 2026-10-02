@@ -191,6 +191,45 @@ int main() {
     }
 #endif
 
+    // --- Migration de MinimizeOnLaunch vers OnGameLaunch ---------------
+    // Une configuration ecrite avant l'ajout du reglage n'a que le
+    // booleen. En deriver la valeur evite qu'un utilisateur ayant decoche
+    // « minimiser » voie le launcher se minimiser de nouveau.
+    {
+        const auto cfg = DataStore::configPath();
+        auto reload = [&](const char* json) {
+            { std::ofstream o(cfg, std::ios::trunc); o << json; }
+            DataStore::settings = tl::AppSettings{};
+            DataStore::load();
+        };
+
+        reload(R"({"MinimizeOnLaunch":false})");
+        CHECK(DataStore::settings.onGameLaunch == "nothing");
+        CHECK(!DataStore::settings.minimizeOnLaunch);
+
+        reload(R"({"MinimizeOnLaunch":true})");
+        CHECK(DataStore::settings.onGameLaunch == "minimize");
+
+        // Le nouveau reglage l'emporte sur l'ancien booleen.
+        reload(R"({"MinimizeOnLaunch":true,"OnGameLaunch":"quit"})");
+        CHECK(DataStore::settings.onGameLaunch == "quit");
+        // Et le miroir ecrit pour la v5 Avalonia suit : « quitter » n'a
+        // pas d'equivalent chez elle, on l'ecrit « ne pas minimiser ».
+        CHECK(!DataStore::settings.minimizeOnLaunch);
+
+        // Valeur inconnue : on retombe sur le defaut plutot que de la
+        // garder, sinon le launcher ne ferait rien du tout en silence.
+        reload(R"({"OnGameLaunch":"n'importe quoi"})");
+        CHECK(DataStore::settings.onGameLaunch == "minimize");
+
+        // Aller-retour : ce qui est ecrit doit se relire a l'identique.
+        DataStore::settings.onGameLaunch = "quit";
+        DataStore::saveNow();
+        DataStore::settings = tl::AppSettings{};
+        DataStore::load();
+        CHECK(DataStore::settings.onGameLaunch == "quit");
+    }
+
     DataStore::shutdown();
     fs::remove_all(tmp, ec);
 

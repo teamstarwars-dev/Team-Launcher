@@ -1126,8 +1126,45 @@ void tab_advanced() {
 
     if (ImGui::Checkbox(tr("Compter les FPS"), &s.fpsCounterEnabled))
         DataStore::save();
-    if (ImGui::Checkbox(tr("Minimiser le launcher au lancement"), &s.minimizeOnLaunch))
-        DataStore::save();
+    field_label("Quand la partie démarre");
+    {
+        const char* const kModes[] = {"nothing", "minimize", "quit"};
+        const char* names[] = {tr("Ne rien faire", "Do nothing"),
+                               tr("Réduire la fenêtre", "Minimise the window"),
+                               tr("Quitter le launcher", "Quit the launcher")};
+        int idx = 1;
+        for (int i = 0; i < 3; ++i)
+            if (s.onGameLaunch == kModes[i]) idx = i;
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::Combo("##ongamelaunch", &idx, names, 3)) {
+            s.onGameLaunch = kModes[idx];
+            // Miroir pour la v5 Avalonia, qui partage ce fichier.
+            s.minimizeOnLaunch = s.onGameLaunch == "minimize";
+            DataStore::save();
+        }
+        if (s.onGameLaunch == "quit") {
+            // Dire le prix AVANT que l'utilisateur s'aperçoive que son
+            // temps de jeu n'augmente plus. Le launcher ne verra pas la
+            // fin de la partie : tout ce qui se fait à ce moment-là est
+            // perdu, et ce n'est pas rattrapable.
+            ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+            ImGui::TextWrapped(
+                "%s",
+                tr("Minecraft continue de tourner — le launcher ne le tue "
+                   "pas. Mais il ne verra pas la fin de la partie : le "
+                   "temps de jeu ne sera pas compté, il n'y aura ni "
+                   "analyse de crash, ni sauvegarde automatique des "
+                   "mondes, et la présence Discord s'arrêtera. Seules la "
+                   "date et le nombre de lancements sont enregistrés.",
+                   "Minecraft keeps running - the launcher does not kill "
+                   "it. But it will not see the session end: playtime will "
+                   "not be counted, there will be no crash analysis, no "
+                   "automatic world backup, and Discord presence will "
+                   "stop. Only the date and the launch count are "
+                   "recorded."));
+            ImGui::PopStyleColor();
+        }
+    }
 
     // ---- Phase 8 : plugins, API locale, préchauffage ----
     jvmwarm_panel();

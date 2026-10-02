@@ -698,9 +698,38 @@ void poll_state(SDL_Window* window) {
         events::emit(events::kGameStart, ev);
     }
 
-    if (startGame && DataStore::settings.minimizeOnLaunch) {
-        SDL_MinimizeWindow(window);
-        g.minimizedForGame = true;
+    if (startGame) {
+        const std::string& mode = DataStore::settings.onGameLaunch;
+        if (mode == "minimize") {
+            SDL_MinimizeWindow(window);
+            g.minimizedForGame = true;
+        } else if (mode == "quit") {
+            // Quitter ne tue PAS Minecraft : le jeu est lance sans objet
+            // de travail ni groupe de processus, et close_game ne fait
+            // que relacher des poignees. Verifie avant d'offrir l'option.
+            //
+            // En revanche le launcher ne verra pas la fin de la partie :
+            // la duree de jeu ne sera pas comptee. On enregistre donc au
+            // moins la DATE, sans quoi l'instance resterait affichee
+            // « jamais lancée » alors qu'on vient d'y jouer.
+            if (auto* e = find_instance(g.statInstId.empty() ? g.selInstId
+                                                             : g.statInstId)) {
+                std::time_t t = std::time(nullptr);
+                std::tm tmv{};
+#ifdef _WIN32
+                localtime_s(&tmv, &t);
+#else
+                localtime_r(&t, &tmv);
+#endif
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%S", &tmv);
+                (*e)["LastPlayed"] = buf;
+                DataStore::saveNow();
+            }
+            g.statActive = false; // rien a compter : on ne verra pas la fin
+            push_log("Partie lancée : fermeture du launcher (réglage).");
+            request_quit();
+        }
     }
 
     if (g.gameActive) {

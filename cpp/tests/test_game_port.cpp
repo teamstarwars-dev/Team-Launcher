@@ -7,6 +7,20 @@
 
 #include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
 
+// Survie du processus lance a la fermeture du launcher : interrogation
+// directe du systeme (objet de travail, etat du processus).
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#define NOMINMAX
+#include <Windows.h>
+#else
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "miniz.h"
 
 #include <algorithm>
@@ -419,6 +433,69 @@ int main() {
         }
 
         fs::remove_all(tmp, ec);
+
+        // =================================================================
+        // Le jeu doit SURVIVRE a la fermeture du launcher
+        // =================================================================
+        // C'est la promesse du reglage « quitter le launcher quand la
+        // partie demarre ». Si elle est fausse, l'option tue la partie de
+        // l'utilisateur — le pire defaut possible pour un launcher.
+        //
+        // Deux conditions, verifiees ici plutot que deduites :
+        //  1. close_game(), ce que fait l'arret, ne doit pas terminer le
+        //     processus enfant ;
+        //  2. l'enfant ne doit appartenir a AUCUN objet de travail, sinon
+        //     Windows le tuerait a la mort du launcher, quoi qu'on fasse.
+        //
+        // On n'a pas besoin de Minecraft : start_game lance l'executable
+        // qu'on lui donne, et un processus qui dort suffit a prouver la
+        // propriete.
+        {
+            LaunchInput in;
+#ifdef _WIN32
+            in.javaExe = "C:\\Windows\\System32\\ping.exe";
+            in.args = {"-n", "60", "127.0.0.1"};
+#else
+            in.javaExe = "/bin/sleep";
+            in.args = {"60"};
+#endif
+            in.gameDir = fs::temp_directory_path().string();
+            auto proc = start_game(in);
+            CHECK(proc.has_value());
+            if (proc) {
+                CHECK(proc->pid != 0);
+#ifdef _WIN32
+                // Aucun objet de travail : rien ne liera la survie de
+                // l'enfant a celle du launcher.
+                BOOL inJob = TRUE;
+                if (proc->hProcess &&
+                    IsProcessInJob(static_cast<HANDLE>(proc->hProcess), nullptr,
+                                   &inJob))
+                    CHECK(inJob == FALSE);
+#endif
+                close_game(*proc);
+                // Toujours vivant apres close_game ?
+#ifdef _WIN32
+                HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION |
+                                           PROCESS_TERMINATE,
+                                       FALSE, proc->pid);
+                CHECK(h != nullptr);
+                if (h) {
+                    DWORD code = 0;
+                    CHECK(GetExitCodeProcess(h, &code));
+                    CHECK(code == STILL_ACTIVE);
+                    TerminateProcess(h, 0); // menage
+                    CloseHandle(h);
+                }
+#else
+                CHECK(::kill(static_cast<pid_t>(proc->pid), 0) == 0);
+                ::kill(static_cast<pid_t>(proc->pid), SIGKILL); // menage
+                int st = 0;
+                ::waitpid(static_cast<pid_t>(proc->pid), &st, 0);
+#endif
+                std::printf("INFO le processus lance survit a close_game\n");
+            }
+        }
 
         if (g_failures) {
             std::printf("TESTS FAILED: %d\n", g_failures);

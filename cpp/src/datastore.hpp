@@ -63,6 +63,11 @@ struct AppSettings {
     // IP du serveur d'admin : obfusquee (S3) pour ne pas la laisser en clair
     // dans .rdata (elle est de toute facon chiffree DPAPI dans config.json).
     std::string adminServerUrl = TL_OBF("http://51.255.207.183:3000");
+    // Ce que fait le launcher quand la partie demarre : "nothing",
+    // "minimize" ou "quit". Remplace minimizeOnLaunch, conserve juste
+    // en dessous parce que la v5 Avalonia partage ce fichier de
+    // configuration et ne connait que le booleen.
+    std::string onGameLaunch = "minimize";
     bool minimizeOnLaunch = true;
     // ---- Phase A : réglages avancés (extensibles par les phases suivantes) --
     std::string logLevel = "Info"; // Trace/Debug/Info/Warn/Error/Fatal/Off

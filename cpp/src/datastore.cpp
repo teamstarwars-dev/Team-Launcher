@@ -380,7 +380,12 @@ static json serialize(const AppSettings& s) {
         {"InstallationId", s.installationId},
         {"AdminTelemetryEnabled", s.adminTelemetryEnabled},
         {"AdminServerUrl", secrets::encrypt_value(s.adminServerUrl)},
-        {"MinimizeOnLaunch", s.minimizeOnLaunch},
+        {"OnGameLaunch", s.onGameLaunch},
+        // Miroir derive, pour la v5 Avalonia qui partage ce fichier et ne
+        // connait que le booleen. « quitter » n'a pas d'equivalent chez
+        // elle : on l'ecrit comme « ne pas minimiser », ce qui est le
+        // comportement le moins surprenant de son cote.
+        {"MinimizeOnLaunch", s.onGameLaunch == "minimize"},
         {"LogLevel", s.logLevel},
         {"Theme", s.theme},
         {"UiFont", s.uiFont},
@@ -502,6 +507,16 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("AdminTelemetryEnabled", s.adminTelemetryEnabled);
     getSec("AdminServerUrl", s.adminServerUrl);
     getB("MinimizeOnLaunch", s.minimizeOnLaunch);
+    // Migration : une configuration ecrite avant l'ajout du reglage n'a
+    // que le booleen. On en derive la valeur plutot que d'imposer le
+    // defaut, sinon quelqu'un qui avait decoche « minimiser » verrait le
+    // launcher se minimiser de nouveau sans l'avoir demande.
+    s.onGameLaunch = s.minimizeOnLaunch ? "minimize" : "nothing";
+    getS("OnGameLaunch", s.onGameLaunch);
+    if (s.onGameLaunch != "nothing" && s.onGameLaunch != "minimize" &&
+        s.onGameLaunch != "quit")
+        s.onGameLaunch = "minimize";
+    s.minimizeOnLaunch = s.onGameLaunch == "minimize";
     getS("LogLevel", s.logLevel);
     getS("Theme", s.theme);
     getS("UiFont", s.uiFont);
