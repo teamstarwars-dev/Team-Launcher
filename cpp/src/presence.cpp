@@ -36,7 +36,7 @@ namespace tl::presence {
 
 namespace {
 
-constexpr const char* kSiteUrl = "https://teamstarwars-dev.github.io/Team-Launcher/";
+constexpr const char* kSiteUrl = "https://team-launcher.vercel.app";
 constexpr auto kRetryDelay = 20s; // chien de garde du C#
 
 void plog(const std::string& s) { log_line("[Presence] " + s); }

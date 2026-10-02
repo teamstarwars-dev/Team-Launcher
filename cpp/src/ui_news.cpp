@@ -260,7 +260,7 @@ void news_page() {
     if (accent_button(tr("Voir le site web"), ImVec2(160, 34))) {
         std::string url = trimmed_copy(DataStore::settings.newsUrl);
         if (url.rfind("http", 0) != 0)
-            url = "https://teamstarwars-dev.github.io/Team-Launcher/";
+            url = "https://team-launcher.vercel.app";
 #ifdef _WIN32
         const std::wstring w(url.begin(), url.end());
         ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr,

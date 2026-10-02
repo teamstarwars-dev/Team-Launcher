@@ -149,8 +149,8 @@ téléchargé — les empreintes SHA-256 sont ci-dessous et dans
 
 | Fichier | Taille | SHA-256 |
 |---|---|---|
-| `TeamLauncher-6.0.0-Setup.exe` | 6,4 Mo | `bcd4cd41fbc39cc9960bb82e08467ca6f430e92771919100f084ddee4a962abb` |
-| `teamlauncher_6.0.0_amd64.deb` | 5,8 Mo | `8625d6f916b7b729327859b54b41e20f26b646a5d3e513564c82fe830df4956c` |
+| `TeamLauncher-6.0.0-Setup.exe` | 6,4 Mo | `4017be143982c3c3fadd20345eb96d95ec84e6738b3be5a2460b7b909eb85063` |
+| `teamlauncher_6.0.0_amd64.deb` | 5,8 Mo | `46ab302f68754cbf0a10f6af57fcdb6b5cdea4d9390f39f13a61a73717476a88` |
 
 ---
 

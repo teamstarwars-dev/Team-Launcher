@@ -97,7 +97,8 @@ constexpr const char* kHostAllow[] = {
     // GitHub (API release, raw, Pages du projet)
     "github.com",
     "githubusercontent.com",        // raw. + objects.
-    "teamstarwars-dev.github.io",   // site / flux d'actus
+    "team-launcher.vercel.app",     // site vitrine (lien « Voir le site »)
+    "teamstarwars-dev.github.io",   // ancien site / flux d'actus
     // GitLab : Modrinth autorise cdn.modrinth.com, github.com,
     // raw.githubusercontent.com ET gitlab.com dans les URL de telechargement
     // d'un .mrpack. Sans cette entree, importer un modpack qui heberge un
