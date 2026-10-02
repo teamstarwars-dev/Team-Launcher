@@ -1,7 +1,7 @@
 # Team Launcher v6.0.0
 
 **Réécriture complète en C++. Plus de runtime .NET à installer, et le
-launcher passe de 46 Mo à 6,5 Mo.**
+launcher passe de 46 Mo à 6,4 Mo.**
 
 C'est la première version du portage : tout a été réécrit, du lancement
 du jeu à l'interface, et Linux est désormais une plateforme de plein
@@ -13,7 +13,7 @@ droit et non un projet annexe.
 
 | | v5 (C#) | v6 (C++) |
 |---|---|---|
-| Installeur | 46 Mo | **6,5 Mo** |
+| Installeur | 46 Mo | **6,4 Mo** |
 | Installé | — | **17 Mo** |
 | Runtime .NET | requis | **aucun** |
 | Linux | non | **oui** (.deb et script) |
@@ -143,9 +143,14 @@ Les deux installeurs embarquent tout le nécessaire, SDK Discord compris :
 aucun composant à télécharger séparément, et aucun runtime à installer.
 
 Les binaires **ne sont pas signés** : Windows SmartScreen affichera un
-avertissement au premier lancement. Les empreintes SHA-256 sont publiées
-à côté des fichiers pour que vous puissiez vérifier ce que vous avez
-téléchargé.
+avertissement au premier lancement. Vérifiez donc ce que vous avez
+téléchargé — les empreintes SHA-256 sont ci-dessous et dans
+`SHA256SUMS.txt`, à côté des fichiers.
+
+| Fichier | Taille | SHA-256 |
+|---|---|---|
+| `TeamLauncher-6.0.0-Setup.exe` | 6,4 Mo | `fabe33982eb78663e97160f43d4ee6f2a23070f9a042e751f5b3b899e19e39f1` |
+| `teamlauncher_6.0.0_amd64.deb` | 5,8 Mo | `b15342a35e7d0c73b982374be78397aee59e29d042d1231fa786fe6ac73d152b` |
 
 ---
 
