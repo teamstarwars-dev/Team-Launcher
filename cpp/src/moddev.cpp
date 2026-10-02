@@ -269,6 +269,40 @@ std::string uuid_v4() {
 
 // --- Versions des dependances -----------------------------------------------
 
+// fabric-api n'est pas servi par meta.fabricmc.net : ses versions vivent
+// dans le maven — celui-la meme ou Gradle ira les chercher. On lit donc
+// le meme index que lui, ce qui evite toute divergence entre ce qu'on
+// ecrit dans gradle.properties et ce que la construction sait resoudre.
+//
+// Le suffixe « +<version du jeu> » est ce qui lie une version de
+// fabric-api a une version de Minecraft : 0.119.4+1.21.4. Les entrees du
+// maven sont dans l'ordre de publication, donc la derniere qui porte le
+// bon suffixe est la plus recente.
+std::string resolve_fabric_api(const std::string& mcVersion) { // NOLINT
+    // (declaree dans moddev.hpp : exposee pour le test reseau)
+    const auto body = http::get_string(
+        "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/"
+        "maven-metadata.xml");
+    if (!body) return {};
+    const std::string suffix = "+" + mcVersion;
+    std::string best;
+    std::size_t p = 0;
+    for (;;) {
+        const auto a = body->find("<version>", p);
+        if (a == std::string::npos) break;
+        const auto b = body->find("</version>", a);
+        if (b == std::string::npos) break;
+        const std::string v = body->substr(a + 9, b - a - 9);
+        p = b + 10;
+        // Comparaison ancree sur la fin : « +1.21.4 » ne doit pas accepter
+        // une version de 1.21.41 si elle existait un jour.
+        if (v.size() > suffix.size() &&
+            v.compare(v.size() - suffix.size(), suffix.size(), suffix) == 0)
+            best = v;
+    }
+    return best;
+}
+
 Deps resolve_deps(Loader l, const std::string& mcVersion) {
     Deps d;
     d.yarn = mcVersion + kFallbackYarnSuffix;
@@ -306,14 +340,20 @@ Deps resolve_deps(Loader l, const std::string& mcVersion) {
             }
         }
     }
+    d.fabricApi = resolve_fabric_api(mcVersion);
+
     d.resolved = okYarn && okLoader;
     if (!d.resolved)
         d.note =
             "Versions Fabric non resolues (hors ligne ou service indisponible) : "
             "valeurs de repli ecrites dans gradle.properties, a verifier sur "
             "fabricmc.net/develop avant le premier build.";
-    if (d.fabricApi.empty())
-        d.fabricApi = "[1.0,)"; // plage Maven : laisse Gradle choisir
+    else if (d.fabricApi.empty())
+        d.note =
+            "fabric-api : aucune version publiee pour Minecraft " + mcVersion +
+            " (ou maven.fabricmc.net injoignable). La dependance est omise — "
+            "le squelette compile et se lance sans elle, puisqu'il n'utilise "
+            "que le chargeur. Ajoute-la quand tu en auras besoin.";
     return d;
 }
 
@@ -335,9 +375,16 @@ std::string fabric_gradle(const Deps& d, const std::string& archive) {
       << "dependencies {\n"
       << "    minecraft \"com.mojang:minecraft:${project.minecraft_version}\"\n"
       << "    mappings \"net.fabricmc:yarn:${project.yarn_mappings}:v2\"\n"
-      << "    modImplementation \"net.fabricmc:fabric-loader:${project.loader_version}\"\n"
-      << "    modImplementation \"net.fabricmc.fabric-api:fabric-api:${project.fabric_version}\"\n"
-      << "}\n\n"
+      << "    modImplementation \"net.fabricmc:fabric-loader:${project.loader_version}\"\n";
+    // Omise faute de version reelle. L'ancien repli « [1.0,) » etait une
+    // plage Maven inventee, jamais verifiee, et qui ne pouvait rien
+    // matcher : TOUTES les versions de fabric-api sont en 0.x. Resultat,
+    // le premier build de n'importe qui echouait apres quarante secondes
+    // de resolution, sur une liste de 1156 versions « disponibles ».
+    if (!d.fabricApi.empty())
+        o << "    modImplementation \"net.fabricmc.fabric-api:fabric-api:"
+             "${project.fabric_version}\"\n";
+    o << "}\n\n"
       << "processResources {\n"
       << "    inputs.property 'version', project.version\n"
       << "    filesMatching('fabric.mod.json') {\n"
@@ -391,8 +438,9 @@ std::string properties_for(const ProjectSpec& s, const Deps& d) {
     switch (s.loader) {
         case Loader::Fabric:
             o << "yarn_mappings=" << d.yarn << "\n"
-              << "loader_version=" << d.loader << "\n"
-              << "fabric_version=" << d.fabricApi << "\n";
+              << "loader_version=" << d.loader << "\n";
+            if (!d.fabricApi.empty())
+                o << "fabric_version=" << d.fabricApi << "\n";
             break;
         case Loader::Forge:
             o << "forge_version=" << d.forge << "\n";
@@ -518,17 +566,24 @@ std::map<std::string, std::string> project_files(const ProjectSpec& spec,
         java_source(spec, cls, modId);
 
     if (spec.loader == Loader::Fabric) {
+        // Le palier Java suit la version du jeu, il ne se devine pas :
+        // « >=21 » en dur aurait exige un JDK 21 d'un mod 1.18, qui tourne
+        // sur 17.
+        json depends = {
+            {"fabricloader", ">=" + deps.loader},
+            {"minecraft", "~" + spec.mcVersion},
+            {"java", ">=" + std::to_string(jdk_major_for(spec.mcVersion))}};
+        // Ne declarer fabric-api que si le projet en depend reellement :
+        // sinon le mod refuse de se charger faute d'une bibliotheque qu'il
+        // n'utilise meme pas.
+        if (!deps.fabricApi.empty()) depends["fabric-api"] = "*";
         json f = {{"schemaVersion", 1},
                   {"id", modId},
                   {"version", "${version}"},
                   {"name", spec.name},
                   {"environment", "*"},
                   {"entrypoints", {{"main", json::array({spec.pkg + "." + cls})}}},
-                  {"depends",
-                   {{"fabricloader", ">=" + deps.loader},
-                    {"fabric-api", "*"},
-                    {"minecraft", "~" + spec.mcVersion},
-                    {"java", ">=21"}}}};
+                  {"depends", depends}};
         out["src/main/resources/fabric.mod.json"] = f.dump(2);
     } else {
         std::ostringstream toml;

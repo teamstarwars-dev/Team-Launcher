@@ -1668,3 +1668,87 @@ le JDK présent ne convient pas.
 défaut : il est entièrement dans le câblage de l'interface, que les
 tests unitaires ne touchent pas. Il a été trouvé à l'écran, et c'est le
 troisième de ce genre sur cette page.
+
+## Mods (dev) : fabric-api n'était jamais résolu (02/10/2026)
+
+Premier `Build` réel jamais lancé, la chaîne d'outils venant tout juste
+d'être détectée correctement. Il échoue — mais **pas** sur le JDK : Gradle
+tourne quarante secondes, Loom résout Minecraft, puis bute sur
+`net.fabricmc.fabric-api:fabric-api`, en listant 1156 versions
+« disponibles » dont aucune ne convient.
+
+### La cause
+
+`gradle.properties` portait `fabric_version=[1.0,)`. En lisant le code :
+
+```cpp
+if (d.fabricApi.empty())
+    d.fabricApi = "[1.0,)"; // plage Maven : laisse Gradle choisir
+```
+
+Deux erreurs superposées.
+
+**`d.fabricApi` n'était jamais renseigné.** `resolve_deps` interroge
+meta.fabricmc.net pour yarn et le loader, et c'est tout — fabric-api n'y
+est pas servi, et aucun autre appel ne le cherchait. Le champ partait
+vide à tous les coups, donc le repli s'appliquait **toujours**.
+
+**Et le repli ne pouvait pas marcher.** `[1.0,)` demande une version
+supérieure ou égale à 1.0 ; or **toutes** les versions de fabric-api sont
+en 0.x — la plus récente est `0.119.4`. La plage ne matche donc rien, par
+construction. Le commentaire « laisse Gradle choisir » décrit une
+intention jamais vérifiée.
+
+Autrement dit : le premier build de **n'importe quel utilisateur**
+échouait, après deux minutes d'attente, sur un message qui ne nomme pas
+la cause.
+
+### Correctif
+
+`resolve_fabric_api(mcVersion)` lit
+`maven.fabricmc.net/.../fabric-api/maven-metadata.xml` — **le maven que
+Gradle interroge lui-même**, pour qu'on ne puisse pas diverger de ce
+qu'il sait résoudre. Le suffixe `+<version du jeu>` lie une version de
+fabric-api à une version de Minecraft ; les entrées étant dans l'ordre de
+publication, la dernière qui porte le bon suffixe est la plus récente.
+`fabricmc.net` était déjà dans l'allowlist.
+
+**Et plus aucun repli inventé.** Faute de version réelle, la dépendance
+est **omise** — du `build.gradle`, de `gradle.properties`, et des
+`depends` de `fabric.mod.json`. Le squelette n'importe que
+`net.fabricmc.api.ModInitializer`, qui vient du chargeur : il compile et
+se lance sans fabric-api. Mieux vaut un projet sans elle qu'un projet qui
+ne résout pas. La note explique ce qui manque et pourquoi.
+
+> Laisser `"fabric-api": "*"` dans le manifeste tout en retirant la
+> dépendance aurait produit un mod qui refuse de se charger faute d'une
+> bibliothèque qu'il n'utilise pas. Les trois endroits doivent rester
+> d'accord, et un test le vérifie.
+
+### Troisième défaut, trouvé en passant
+
+`"java": ">=21"` était écrit en dur dans le manifeste. Un mod 1.18 tourne
+sur un JDK 17 : exiger 21 l'aurait fermé à des joueurs dont le Java
+convenait. La valeur suit maintenant `jdk_major_for(mcVersion)`, comme
+ailleurs dans le module.
+
+### Vérifications
+
+- **Génération** : fabric-api résolue apparaît aux trois endroits ;
+  absente, elle n'apparaît nulle part — et la plage `[1.0,)` est
+  explicitement cherchée et doit rester introuvable.
+- **Palier Java** : 1.18.2 donne `>=17`.
+- **Résolution réelle** (`TL_TEST_NET=1`) : `resolve_fabric_api("1.21.4")`
+  rend `0.119.4+1.21.4`, suffixe vérifié ; une version de jeu inexistante
+  rend une chaîne vide, et surtout pas la dernière version tous jeux
+  confondus.
+- **Bout en bout** : `gradle build` sur le projet généré, avec le JDK et
+  le Gradle téléchargés par le launcher — **BUILD SUCCESSFUL en 2 min 6**,
+  `mon_mod-1.0.0.jar` produit et remappé.
+
+C'est la première fois que cette chaîne est exercée en entier. Les trois
+défauts corrigés aujourd'hui sur cette page étaient en série : tant que
+la détection restait bloquée en rouge, le build n'était pas atteignable,
+donc ce défaut-ci était invisible.
+
+**27 suites vertes sous Linux comme sous Windows.**

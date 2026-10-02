@@ -144,6 +144,96 @@ int main() {
         CHECK(src.find("class EpeeEnchantee implements ModInitializer") !=
               std::string::npos);
         CHECK(src.find("\"epee_enchantee\"") != std::string::npos);
+
+        // fabric-api resolue : elle doit apparaitre aux TROIS endroits qui
+        // doivent rester d'accord entre eux.
+        CHECK(props.find("fabric_version=0.114.0+1.21.4") != std::string::npos);
+        CHECK(f.at("build.gradle").find("fabric-api:fabric-api") !=
+              std::string::npos);
+        if (!j.is_discarded())
+            CHECK(j["depends"].contains("fabric-api"));
+    }
+
+    // =====================================================================
+    // 5bis. fabric-api non resolue : omise, jamais remplacee par une plage
+    // =====================================================================
+    //
+    // Defaut vecu : faute de version, on ecrivait « [1.0,) ». Une plage
+    // Maven qui ne peut rien matcher, puisque TOUTES les versions de
+    // fabric-api sont en 0.x. Le premier build echouait apres quarante
+    // secondes, sur une liste de 1156 versions « disponibles ».
+    //
+    // Mieux vaut un projet sans fabric-api — le squelette n'utilise que le
+    // chargeur — qu'un projet qui ne resout pas.
+    {
+        Deps d2 = deps;
+        d2.fabricApi.clear();
+        ProjectSpec s;
+        s.loader = Loader::Fabric;
+        s.mcVersion = "1.21.4";
+        s.name = "Sans Api";
+        s.pkg = "fr.exemple.sansapi";
+        const auto f = project_files(s, d2);
+
+        const auto& props = f.at("gradle.properties");
+        const auto& gradle = f.at("build.gradle");
+        CHECK(props.find("fabric_version=") == std::string::npos);
+        CHECK(gradle.find("fabric-api") == std::string::npos);
+        // Et surtout : la plage fautive ne doit reapparaitre nulle part.
+        CHECK(props.find("[1.0,)") == std::string::npos);
+        CHECK(gradle.find("[1.0,)") == std::string::npos);
+
+        // Le manifeste ne doit pas reclamer une bibliotheque absente du
+        // projet : le mod refuserait de se charger.
+        const auto j2 = json::parse(f.at("src/main/resources/fabric.mod.json"),
+                                    nullptr, false);
+        CHECK(!j2.is_discarded());
+        if (!j2.is_discarded()) CHECK(!j2["depends"].contains("fabric-api"));
+    }
+
+    // =====================================================================
+    // 5ter. Le palier Java suit la version du jeu
+    // =====================================================================
+    // « >=21 » etait ecrit en dur. Un mod 1.18 tourne sur un JDK 17 : exiger
+    // 21 aurait ferme le mod a des joueurs dont le Java convenait.
+    {
+        ProjectSpec s;
+        s.loader = Loader::Fabric;
+        s.mcVersion = "1.18.2";
+        s.name = "Vieux Mod";
+        s.pkg = "fr.exemple.vieux";
+        const auto j3 = json::parse(
+            project_files(s, deps).at("src/main/resources/fabric.mod.json"),
+            nullptr, false);
+        CHECK(!j3.is_discarded());
+        if (!j3.is_discarded())
+            CHECK_EQ(j3["depends"]["java"].get<std::string>(),
+                     ">=" + std::to_string(jdk_major_for("1.18.2")));
+    }
+
+    // =====================================================================
+    // 5quater. Reseau (TL_TEST_NET=1) : la vraie lecture du maven
+    // =====================================================================
+    // Les blocs ci-dessus prouvent qu'on sait ECRIRE une version de
+    // fabric-api. Celui-ci prouve qu'on sait la TROUVER — c'est la moitie
+    // qui manquait, et c'est elle qui a fait echouer le premier build.
+    if (std::getenv("TL_TEST_NET")) {
+        const std::string v = resolve_fabric_api("1.21.4");
+        std::printf("INFO fabric-api 1.21.4 : %s\n",
+                    v.empty() ? "(rien)" : v.c_str());
+        CHECK(!v.empty());
+        if (!v.empty()) {
+            // Le suffixe lie la version au jeu : sans lui, on aurait pris
+            // une version publiee pour une autre version de Minecraft.
+            const std::string suf = "+1.21.4";
+            CHECK(v.size() > suf.size() &&
+                  v.compare(v.size() - suf.size(), suf.size(), suf) == 0);
+            // Et jamais la plage fautive.
+            CHECK(v.find("[") == std::string::npos);
+        }
+        // Une version du jeu qui n'existe pas ne doit rien rendre, surtout
+        // pas la derniere version tous jeux confondus.
+        CHECK(resolve_fabric_api("1.0.0-inexistante").empty());
     }
 
     // =====================================================================

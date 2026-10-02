@@ -87,6 +87,15 @@ struct Deps {
 // ligne ou en cas de refus, renvoie un repli et renseigne `note`.
 Deps resolve_deps(Loader l, const std::string& mcVersion);
 
+// Derniere version de fabric-api publiee pour cette version du jeu, lue
+// dans le maven que Gradle interroge lui-meme — ex. « 0.119.4+1.21.4 ».
+// Chaine vide si le maven est injoignable ou ne publie rien pour cette
+// version : l'appelant OMET alors la dependance. Ne jamais lui substituer
+// une plage Maven : toutes les versions de fabric-api sont en 0.x, et une
+// borne basse de 1.0 ne matche rien.
+// Exposee pour etre testable (appel reseau, gate TL_TEST_NET).
+std::string resolve_fabric_api(const std::string& mcVersion);
+
 // --- Generation -------------------------------------------------------------
 
 // Fichiers du projet : chemin RELATIF -> contenu. Fonction pure, testable
