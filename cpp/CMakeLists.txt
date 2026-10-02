@@ -275,22 +275,48 @@ message(STATUS "SDK social Discord : ${TL_HAS_SOCIAL}")
 # invite a coller sa propre cle. C'est ce que verra quiconque reconstruit
 # le projet depuis un clone, et c'est voulu — une cle distribuee engage
 # celui qui l'a obtenue.
-set(TL_CF_KEY "")
-if(DEFINED ENV{TL_CURSEFORGE_KEY})
-  set(TL_CF_KEY "$ENV{TL_CURSEFORGE_KEY}")
-elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env")
-  file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env" _tl_secret_lines)
-  foreach(_line IN LISTS _tl_secret_lines)
-    if(_line MATCHES "^[ \t]*TL_CURSEFORGE_KEY[ \t]*=[ \t]*(.+)$")
-      set(TL_CF_KEY "${CMAKE_MATCH_1}")
-    endif()
-  endforeach()
-endif()
+# Lit un secret de build : variable d'environnement d'abord (pour les
+# chaines d'integration continue), puis build-secrets.env a cote de ce
+# fichier. Rend une chaine vide si le secret est absent.
+function(tl_read_build_secret name outvar)
+  set(_value "")
+  if(DEFINED ENV{${name}})
+    set(_value "$ENV{${name}}")
+  elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env")
+    file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/build-secrets.env" _tl_secret_lines)
+    foreach(_line IN LISTS _tl_secret_lines)
+      if(_line MATCHES "^[ \t]*${name}[ \t]*=[ \t]*(.+)$")
+        set(_value "${CMAKE_MATCH_1}")
+      endif()
+    endforeach()
+  endif()
+  set(${outvar} "${_value}" PARENT_SCOPE)
+endfunction()
+
+tl_read_build_secret(TL_CURSEFORGE_KEY TL_CF_KEY)
 if(TL_CF_KEY STREQUAL "")
   message(STATUS "Cle CurseForge : absente (build sans acces CurseForge)")
 else()
   message(STATUS "Cle CurseForge : presente (embarquee obfusquee)")
   target_compile_definitions(tl_core PRIVATE TL_CURSEFORGE_KEY="${TL_CF_KEY}")
+endif()
+
+# ---- Webhook de telemetrie Discord, injecte a la COMPILATION ---------
+# Meme mecanisme, et une lecon apprise a la dure : ce webhook a vecu en
+# clair dans un depot PUBLIC, a deux endroits — src/TeamLauncher/default.env
+# et un litteral dans datastore.cpp. TL_OBF n'y changeait rien : c'est un
+# XOR applique a la compilation, pas du chiffrement, et la source etait
+# lisible de tous. Un secret publie est brule ; il se revoque, il ne se
+# cache pas apres coup.
+#
+# Sans valeur, tout compile et la telemetrie se tait simplement
+# (telemetry.cpp n'envoie rien tant que le webhook est vide).
+tl_read_build_secret(TL_DISCORD_WEBHOOK TL_TELEMETRY_HOOK)
+if(TL_TELEMETRY_HOOK STREQUAL "")
+  message(STATUS "Webhook telemetrie : absent (telemetrie desactivee)")
+else()
+  message(STATUS "Webhook telemetrie : present (embarque obfusque)")
+  target_compile_definitions(tl_core PRIVATE TL_DISCORD_WEBHOOK="${TL_TELEMETRY_HOOK}")
 endif()
 
 # maintenance.cpp / telemetry.cpp rapportent la version du launcher

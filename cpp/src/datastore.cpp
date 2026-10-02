@@ -274,14 +274,17 @@ void DataStore::loadDefaults() {
         d["CURSEFORGE_API_KEY"] = TL_OBF(TL_CURSEFORGE_KEY);
 #endif
 
-    // Webhook Discord (S3) : retire de default.env (jamais en clair sur
-    // disque) et obfusque ici. Les deux cas sont couverts — fichier absent
-    // (bloc ci-dessus) ou fichier present sans la ligne — pour conserver le
-    // comportement « webhook non vide par defaut » d'applyDefaults().
+    // Webhook de telemetrie : injecte a la COMPILATION (voir CMakeLists),
+    // jamais en clair dans le depot. Il y a pourtant vecu en litteral ici
+    // meme, et TL_OBF ne l'a jamais protege : un XOR a la compilation ne
+    // cache rien quand la source est publique.
+    //
+    // Sans definition, la telemetrie reste muette — telemetry.cpp verifie
+    // que le webhook est non vide avant d'envoyer quoi que ce soit.
+#ifdef TL_DISCORD_WEBHOOK
     if (d.find("DISCORD_TELEMETRY_WEBHOOK") == d.end())
-        d["DISCORD_TELEMETRY_WEBHOOK"] = TL_OBF(
-            "https://discord.com/api/webhooks/1412511652776083586/"
-            "DnZ5eAZW5KwQCZJ0Cxy9e9m6AyLXWiNC-6JO6fIwS4yIkV-fLqZB6z-3c9x6s4CmhE-_");
+        d["DISCORD_TELEMETRY_WEBHOOK"] = TL_OBF(TL_DISCORD_WEBHOOK);
+#endif
 }
 
 void DataStore::applyDefaults(bool applyBooleans) {
