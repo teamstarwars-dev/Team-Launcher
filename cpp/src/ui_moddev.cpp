@@ -38,7 +38,11 @@ struct DevState {
     bool overwrite = false;
 
     moddev::Toolchain tc;
-    bool tcChecked = false;
+    // Atomique parce que le fil d'installation la remet a false pour
+    // demander une nouvelle detection. Lui ne peut pas toucher a `tc` :
+    // l'interface la lit a chaque frame sans verrou, et c'est le fil de
+    // l'interface qui en reste proprietaire.
+    std::atomic<bool> tcChecked{false};
     bool autoToolchain = false; // TL_AUTO_TOOLCHAIN (test)
 
     std::mutex m;
@@ -166,7 +170,14 @@ void install_toolchain() {
                       moddev::ensure_gradle(log_line, &cancel, &err);
                   if (g.empty()) log_line("Échec : " + err);
               }
-              log_line("Chaîne d'outils : vérifie à nouveau ci-dessus.");
+              // Redetecter, sinon la ligne d'etat continue de reclamer ce
+              // qu'on vient d'installer — defaut vu a l'ecran : le JDK et
+              // Gradle etaient bien la, et la page affichait toujours
+              // « Gradle : absent · JDK 8 ». Le message disait « verifie a
+              // nouveau ci-dessus », ce que personne ne lisait comme un
+              // ordre a executer soi-meme.
+              D.tcChecked.store(false);
+              log_line("Chaîne d'outils : nouvelle vérification en cours.");
           });
 }
 
@@ -335,9 +346,18 @@ void moddev_page() {
             java = "JDK " + (D.tc.javaMajor > 0
                                  ? std::to_string(D.tc.javaMajor)
                                  : std::string("?"));
-        ImGui::Text(tr("Chaîne d'outils — Gradle : %s · Java : %s (il en faut %d)",
-                       "Toolchain - Gradle: %s · Java: %s (needs %d)"),
-                    gradleFrom, java.c_str(), D.tc.javaNeeded);
+        // « il en faut 21 » n'a de sens que si ce n'est pas ce qu'on a.
+        // Affiche en permanence, le rappel donnait « JDK 21 (il en faut
+        // 21) » : du bruit exactement au moment ou tout va bien.
+        const bool javaOk = D.tc.jdk && D.tc.javaMajor >= D.tc.javaNeeded;
+        if (javaOk)
+            ImGui::Text(tr("Chaîne d'outils — Gradle : %s · Java : %s",
+                           "Toolchain - Gradle: %s · Java: %s"),
+                        gradleFrom, java.c_str());
+        else
+            ImGui::Text(tr("Chaîne d'outils — Gradle : %s · Java : %s (il en faut %d)",
+                           "Toolchain - Gradle: %s · Java: %s (needs %d)"),
+                        gradleFrom, java.c_str(), D.tc.javaNeeded);
     }
     ImGui::SameLine();
     if (ImGui::SmallButton(tr("Revérifier", "Re-check"))) recheck_toolchain();

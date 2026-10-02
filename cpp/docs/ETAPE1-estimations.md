@@ -1621,3 +1621,50 @@ l'écriture de `version.json`.
 
 **27 suites vertes sous Linux comme sous Windows**, avant et après la
 rotation.
+
+## Mods (dev) : la page réclamait ce qu'elle venait d'installer (02/10/2026)
+
+Signalé par l'utilisateur, capture à l'appui — suite directe du
+correctif de la veille, qui s'arrêtait une étape trop tôt.
+
+Le bouton « Installer la chaîne d'outils » faisait son travail : JDK 21
+et Gradle 8.12 téléchargés et extraits au bon endroit, vérifié sur le
+disque. La détection était correcte elle aussi : elle sait trouver un
+JDK géré et le faire primer sur un JDK 8 du PATH.
+
+**Mais rien ne la relançait.** Le fil d'installation se terminait sur
+`log_line("Chaîne d'outils : vérifie à nouveau ci-dessus.")` — une
+phrase qui était en réalité un **ordre adressé à l'utilisateur** (va
+cliquer sur « Revérifier »), et que personne ne lit comme tel. Elle se
+lit comme un compte rendu. La ligne d'état continuait donc d'afficher
+en rouge « Gradle : absent · Java : JDK 8 » alors que les deux étaient
+installés.
+
+### Pourquoi le fil d'installation ne pouvait pas le faire lui-même
+
+`D.tc` est lu par l'interface à chaque frame, sans verrou. L'écrire
+depuis le fil de travail serait une course de données. Le correctif
+réutilise donc le mécanisme déjà présent dans la page — le drapeau
+`tcChecked`, remis à `false` pour demander une nouvelle détection à la
+frame suivante — en le passant simplement en `std::atomic<bool>`.
+Un champ modifié, aucune synchronisation nouvelle, et `D.tc` reste la
+propriété exclusive du fil de l'interface.
+
+Le message dit maintenant « nouvelle vérification en cours », ce qui est
+vrai.
+
+### Un second défaut, visible seulement une fois le premier corrigé
+
+Le cas nominal s'affichant enfin, le rappel de version est apparu pour
+ce qu'il est : `(il en faut %d)` était concaténé en permanence, d'où
+« JDK 21 (il en faut 21) ». Utile quand les deux diffèrent, du bruit
+exactement au moment où tout va bien. Il n'est plus affiché que lorsque
+le JDK présent ne convient pas.
+
+> Ce défaut n'était pas visible avant : tant que la page était bloquée
+> en rouge, personne n'avait jamais vu la ligne dans son état correct.
+
+**27 suites vertes sous Linux comme sous Windows.** Aucune ne couvre ce
+défaut : il est entièrement dans le câblage de l'interface, que les
+tests unitaires ne touchent pas. Il a été trouvé à l'écran, et c'est le
+troisième de ce genre sur cette page.
