@@ -42,6 +42,22 @@ std::mutex& lock() {
 
 #ifdef TL_HAS_DISCORD_SOCIAL
 
+// Resume d'un resultat SDK pour le journal (toujours logue, pas seulement
+// en TL_SOCIAL_DEBUG : c'est la seule trace quand ca casse chez un
+// utilisateur qui n'a pas les hooks de diagnostic).
+std::string result_line(const char* step, const discordpp::ClientResult& r) {
+    std::string s = std::string("[SocialSDK] ") + step + " : ";
+    s += r.Successful() ? "ok" : "echec";
+    if (!r.Successful()) {
+        s += " type=" + std::to_string(static_cast<int>(r.Type()));
+        s += " erreur=" + r.Error();
+        s += " code=" + std::to_string(r.ErrorCode());
+        s += " http=" + std::to_string(static_cast<int>(r.Status()));
+        if (r.Retryable()) s += " (reessayable)";
+    }
+    return s;
+}
+
 struct Ctx {
     std::shared_ptr<discordpp::Client> client;
     discordpp::Client::Status status = discordpp::Client::Status::Disconnected;
@@ -1017,22 +1033,22 @@ void begin_login() {
     // supplementaire est une autorisation de plus a accorder.
     args.SetScopes(discordpp::Client::GetDefaultCommunicationScopes());
     args.SetCodeChallenge(codeVerifier.Challenge());
-    if (std::getenv("TL_SOCIAL_DEBUG"))
-        log_line("[SocialSDK] Authorize : appel.");
+    // Toujours journalise (pas seulement en DEBUG) : si le navigateur ne
+    // s'ouvre meme pas chez un utilisateur, c'est la seule trace.
+    log_line("[SocialSDK] Authorize : appel.");
     client->Authorize(
         args,
         [client, id, verifier](discordpp::ClientResult result, std::string code,
                                std::string redirectUri) {
             if (!result.Successful()) {
-                if (std::getenv("TL_SOCIAL_DEBUG"))
-                    log_line("[SocialSDK] Authorize : echec ou annulation.");
+                log_line(result_line("Authorize", result));
                 std::lock_guard<std::mutex> lk(lock());
                 ctx().loggingIn = false;
                 ctx().error = "Autorisation Discord refusée ou annulée.";
                 return;
             }
-            if (std::getenv("TL_SOCIAL_DEBUG"))
-                log_line("[SocialSDK] Authorize : code recu, echange...");
+            log_line("[SocialSDK] Authorize : code recu (retour=" +
+                     redirectUri + "), echange...");
             // Client public : l'echange code -> jeton se fait sans serveur.
             client->GetToken(
                 id, code, verifier, redirectUri,
@@ -1041,6 +1057,7 @@ void begin_login() {
                          discordpp::AuthorizationTokenType tokenType,
                          std::int32_t /*expiresIn*/, std::string /*scopes*/) {
                     if (!r.Successful()) {
+                        log_line(result_line("GetToken", r));
                         std::lock_guard<std::mutex> lk(lock());
                         ctx().loggingIn = false;
                         ctx().error = "Jeton Discord refusé.";
@@ -1055,6 +1072,7 @@ void begin_login() {
                                 std::lock_guard<std::mutex> lk(lock());
                                 ctx().loggingIn = false;
                                 if (!u.Successful()) {
+                                    log_line(result_line("UpdateToken", u));
                                     ctx().error = "Jeton Discord refusé.";
                                     return;
                                 }

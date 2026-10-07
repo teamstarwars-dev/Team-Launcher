@@ -36,7 +36,6 @@ namespace tl::presence {
 
 namespace {
 
-constexpr const char* kSiteUrl = "https://team-launcher.vercel.app";
 constexpr auto kRetryDelay = 20s; // chien de garde du C#
 
 void plog(const std::string& s) { log_line("[Presence] " + s); }
@@ -348,8 +347,9 @@ json build_activity(const Desired& d) {
     }
 
     activity["assets"] = assets;
-    activity["buttons"] =
-        json::array({{{"label", "🌐 Visiter le site"}, {"url", kSiteUrl}}});
+    // PAS de `buttons` : Discord a retire les boutons de la Rich Presence
+    // via IPC, et un payload avec `buttons` fait rejeter toute la mise a
+    // jour (plus de presence du tout). Le site reste dans large_text.
     return activity;
 }
 

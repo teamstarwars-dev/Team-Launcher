@@ -1,0 +1,70 @@
+POINT — PROTECTIONS ANTI-SPAM / ANTI-BOT (toutes couches)
+============================================================
+Note : document de synthese uniquement, pas une fonctionnalite du launcher.
+
+1. FORMULAIRE (FRONT + UX)
+--------------------------
+- Honeypot verifie cote serveur (champ invisible : rempli = bot).
+- Temps de remplissage minimum ET maximum (trop vite ou trop lent = suspect).
+- Ordre des champs + evenements humains (focus, blur, scroll, mousemove).
+- Jeton de formulaire unique (nonce signe, usage unique).
+- Jeton lie a la session.
+- Validation stricte des donnees (MX, domaines jetables, formats).
+- Hash du contenu pour detecter les soumissions dupliquees.
+- Challenge secondaire (bouton a maintenir, interaction legere).
+- CAPTCHA (solution + extensions).
+- Binding du jeton au fingerprint (hash navigateur + session).
+- Binding reseau (IP, ASN, pays, reputation).
+- Proof-of-work adaptatif (cout CPU cote client selon suspicion).
+- Double signature (serveur + cle interne).
+- Subresource Integrity (SRI) sur JS/CSS.
+- Versioning strict du SDK.
+- Challenge multi-etapes si suspicion.
+- Score comportemental leger.
+- Detection headless / automatisation.
+- Detection d'incoherences navigateur (WebGL, audio, canvas).
+
+2. RESEAU / INFRA
+-----------------
+- Rate limiting multi-facteurs (IP, ASN, fingerprint, cookie, pays, UA).
+- Durcissement datacenters (AWS, OVH, GCP, Azure : seuils stricts).
+- Filtrage VPN / proxy connus.
+- WAF avance (JA3/JA4, anomalies HTTP/2).
+- Detection de rafales synchrones.
+- Limitation par action (contact, inscription, reset).
+- Shadow banning (reponse OK mais rien n'est traite).
+- Tarpitting (ralentissement volontaire des bots).
+
+3. BACKEND / LOGIQUE SERVEUR
+----------------------------
+- Nonce serveur lie au formulaire (usage unique, expiration courte).
+- Signature serveur sur actions sensibles.
+- Validation stricte des headers (Origin, Referer, Content-Type).
+- Rejet des POST sans GET prealable.
+- Rejet des POST multipart suspects.
+- Analyse du rythme de soumission.
+- Detection de duplication de contenu.
+- Blacklist dynamique (IP, ASN, UA, patterns).
+- Whitelist dynamique.
+- Logs + detection d'anomalies (pics, pays, heures).
+- Score anti-spam interne (contenu, liens, mots cles).
+
+4. COUCHES HARDCORE
+-------------------
+- Proof-of-work progressif (difficulte croissante si suspicion).
+- Challenge cryptographique serveur.
+- Double challenge (captcha + bouton a maintenir).
+- Analyse comportement reseau (latence, jitter, TCP fingerprint).
+- Detection d'environnement virtualise (VM, sandbox, headless).
+- Detection d'incoherences navigateur (WebGL, canvas, audio).
+- Tarpitting intelligent (ralentissement cible).
+- Token lie a un identifiant materiel leger (fingerprint hashe).
+- Jeton usage unique + nonce interne + timestamp serre.
+- Rejeu impossible (token + nonce + session + IP + timestamp lies).
+
+5. RESULTAT
+-----------
+En combinant toutes les couches (captcha, formulaire, reseau, backend,
+challenges adaptatifs), un bot doit contourner simultanement toutes les
+protections. Le cout devient extremement eleve et le systeme devient
+pratiquement impossible a automatiser ou a abuser.

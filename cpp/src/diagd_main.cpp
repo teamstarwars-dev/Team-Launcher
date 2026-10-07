@@ -56,7 +56,7 @@
 #endif
 
 #ifndef TL_VERSION_STRING
-#define TL_VERSION_STRING "6.0.0"
+#define TL_VERSION_STRING "6.0.1"
 #endif
 
 namespace fs = std::filesystem;
