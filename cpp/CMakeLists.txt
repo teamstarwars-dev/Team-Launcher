@@ -12,6 +12,10 @@ endif()
 option(TL_LTO "Enable LTO in Release" ON)
 option(TL_FORTIFY "Enable _FORTIFY_SOURCE" ON)
 option(TL_UNITY "Unity build for faster compile" OFF)
+# Harnais de fuzzing sous ASan + UBSan. A activer dans un dossier de build
+# SEPARE : un binaire instrumente n'est pas celui qu'on livre, et il
+# tourne plusieurs fois moins vite.
+option(TL_FUZZ "Construit tl_fuzz_parsers (ASan + UBSan)" OFF)
 
 # Resource dir clang complet (install LLVM partiel = pas de headers builtin → _mm_* externes)
 if(CMAKE_C_COMPILER_ID MATCHES "Clang")
@@ -572,4 +576,23 @@ if(TL_BUILD_TESTS)
     endif()
     tl_release_flags(${ttgt})
   endforeach()
+
+  # ---- Harnais de fuzzing (optionnel) -------------------------------
+  # -DTL_FUZZ=ON dans un dossier de build SEPARE. Les sanitizers doivent
+  # couvrir tl_core aussi, pas seulement le harnais : c'est DANS les
+  # parseurs que le depassement se produit, et ASan ne voit que le code
+  # qu'il a instrumente.
+  #
+  # Hors de la passe de tests habituelle : une campagne dure, et un
+  # binaire sous ASan n'est pas celui qu'on livre.
+  if(TL_FUZZ AND NOT MSVC)
+    set(TL_SAN -fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    add_executable(tl_fuzz_parsers tests/fuzz_parsers.cpp)
+    target_link_libraries(tl_fuzz_parsers PRIVATE tl_core)
+    target_compile_options(tl_fuzz_parsers PRIVATE ${TL_SAN})
+    target_link_options(tl_fuzz_parsers PRIVATE ${TL_SAN})
+    target_compile_options(tl_core PRIVATE ${TL_SAN})
+    target_link_options(tl_core PUBLIC ${TL_SAN})
+    message(STATUS "Harnais de fuzzing : ON (ASan + UBSan)")
+  endif()
 endif()
