@@ -4,11 +4,16 @@
 // decision sont exercées.
 
 #include "http_win.hpp"
+#include "miniz.h"
+#include "util_zip.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <string>
+#include <vector>
 
 using namespace tl::http;
+namespace fs = std::filesystem;
 
 static int g_failures = 0;
 
@@ -172,6 +177,73 @@ int main() {
     CHECK_EQ(redact_url("http://51.255.207.183:3000/api/etat"),
              std::string("http://51.255.207.183:3000/api/etat"));
     CHECK_EQ(redact_url(""), std::string(""));
+
+    // --- 8. Extraction d'archive : aucune entrée ne doit sortir du dossier
+    //
+    // Défaut réel, corrigé dans util_zip.cpp. L'ancien contrôle ne
+    // regardait que la forme du nom (« .. », premier caractère « / ») et
+    // laissait passer « C:/… ». Or `destDir / chemin_absolu` REMPLACE la
+    // base : l'extraction écrivait là où l'archive le demandait.
+    //
+    // Un modpack est une archive téléchargée depuis Internet. Ce test
+    // échoue si la protection disparaît.
+    {
+        std::error_code ec;
+        const fs::path tmp = fs::temp_directory_path() / "tl_sec_zip";
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp, ec);
+        const fs::path dest = tmp / "dest";
+        fs::create_directories(dest, ec);
+
+        // Cible absolue d'évasion : volontairement inoffensive, mais
+        // bien HORS du dossier de destination.
+        const fs::path evade = tmp / "evade.txt";
+        const fs::path zipPath = tmp / "malveillant.zip";
+
+        // Noms d'entrée hostiles, dans les formes qui comptent :
+        // remontée relative, chemin absolu, et — sous Windows —
+        // relatif-au-lecteur, que l'ancien contrôle ne voyait pas.
+        std::vector<std::string> noms = {
+            "ok.txt",
+            "../evade.txt",
+            evade.generic_string(),
+        };
+#ifdef _WIN32
+        noms.push_back("C:evade.txt");
+        noms.push_back("C:/Windows/Temp/tl_sec_evade.txt");
+#endif
+        mz_zip_archive z{};
+        if (mz_zip_writer_init_file(&z, zipPath.string().c_str(), 0)) {
+            const char* data = "x";
+            for (const auto& n : noms)
+                mz_zip_writer_add_mem(&z, n.c_str(), data, 1,
+                                      MZ_DEFAULT_COMPRESSION);
+            mz_zip_writer_finalize_archive(&z);
+            mz_zip_writer_end(&z);
+        }
+
+        const int written = tl::zip_extract_all(zipPath, dest);
+
+        // La seule entrée légitime est extraite.
+        CHECK(fs::exists(dest / "ok.txt", ec));
+        CHECK_EQ(written, 1);
+        // Et aucune des autres n'a atterri où elle voulait.
+        CHECK(!fs::exists(evade, ec));
+#ifdef _WIN32
+        CHECK(!fs::exists(fs::path("C:/Windows/Temp/tl_sec_evade.txt"), ec));
+#endif
+        // Rien non plus ailleurs sous le dossier de travail : un seul
+        // fichier au total sous `dest`.
+        int sous = 0;
+        for (auto it = fs::recursive_directory_iterator(dest, ec);
+             it != fs::recursive_directory_iterator(); it.increment(ec)) {
+            if (ec) break;
+            if (it->is_regular_file(ec)) ++sous;
+        }
+        CHECK_EQ(sous, 1);
+
+        fs::remove_all(tmp, ec);
+    }
 
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");

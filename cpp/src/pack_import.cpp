@@ -31,10 +31,12 @@ void report(const Progress& p, const std::string& msg) {
 }
 
 // Garde-fou : un chemin d'entree ne doit pas sortir du dossier de l'instance.
-bool safe_relative(const std::string& rel) {
-    return !rel.empty() && rel.find("..") == std::string::npos && rel[0] != '/' &&
-           rel[0] != '\\' && rel.find(':') == std::string::npos;
-}
+// safe_relative vivait ici, en double avec le contrôle de util_zip.cpp.
+// Celui-ci etait le plus strict des deux — il rejetait « : », donc les
+// lettres de lecteur — et c'est l'AUTRE qui avait le defaut. Deux
+// implementations separees du meme controle, c'est une occasion de plus
+// qu'une seule se trompe : il n'en reste qu'une, safe_join, et elle
+// verifie le chemin OBTENU plutot que la forme du nom.
 
 } // namespace
 
@@ -214,8 +216,10 @@ Result import_modrinth(const fs::path& mrpack, const Progress& progress,
             report(progress, "Mods et fichiers (" + std::to_string(done) + "/" +
                                  std::to_string(total) + ")...");
             const std::string rel = f.value("path", std::string{});
-            if (!safe_relative(rel)) {
+            const auto dest = safe_join(gameDir, rel);
+            if (!dest) {
                 ++res.failed;
+                log_line("mrpack : chemin refusé « " + rel + " »");
                 continue;
             }
             auto dl = f.find("downloads");
@@ -225,7 +229,7 @@ Result import_modrinth(const fs::path& mrpack, const Progress& progress,
             }
             const std::string url = dl->front().get<std::string>();
             auto r = http::get_response(url, {}, &cancel);
-            if (!r || r->status != 200 || !write_file(gameDir / rel, r->body)) {
+            if (!r || r->status != 200 || !write_file(*dest, r->body)) {
                 ++res.failed;
                 log_line("mrpack : échec de " + rel);
                 continue;

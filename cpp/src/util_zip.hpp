@@ -41,6 +41,14 @@ int zip_extract_all(const std::filesystem::path& zip,
 // Archive illisible = liste vide.
 std::vector<std::string> zip_top_level_dirs(const std::filesystem::path& zipPath);
 
+// Compose un chemin de destination à partir d'un nom venu d'une archive
+// ou d'un manifeste, et rend nullopt si ce nom tente de sortir du
+// dossier. Un seul exemplaire de ce contrôle pour tout le projet : il y
+// en avait deux, écrits séparément, et le moins strict des deux laissait
+// passer « C:/… » (voir le commentaire de l'implémentation).
+std::optional<std::filesystem::path> safe_join(
+    const std::filesystem::path& destDir, const std::string& name);
+
 // Compresse recursivement dir vers zipPath (export d'instance, C# ZipFile).
 // false = echec ou dossier vide.
 bool zip_create_from_dir(const std::filesystem::path& dir,

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,12 +13,45 @@ namespace fs = std::filesystem;
 
 namespace tl {
 
-namespace {
-bool has_traversal(const std::string& name) {
-    return name.find("..") != std::string::npos ||
-           (!name.empty() && (name[0] == '/' || name[0] == '\\'));
+// Chemin de destination sûr pour une entrée d'archive, ou nullopt si
+// l'entrée tente de sortir du dossier.
+//
+// DÉFAUT CORRIGÉ ICI, et il était exploitable. L'ancien contrôle ne
+// regardait que le NOM : il refusait « .. » et un premier caractère
+// « / » ou « \ ». Il laissait donc passer « C:/Windows/System32/x.dll »
+// — et comme `destDir / chemin_absolu` REMPLACE la base au lieu de
+// l'étendre, l'extraction écrivait à l'adresse donnée par l'archive.
+// Mesuré :
+//   « C:/Windows/System32/evil.dll »  accepté  -> C:/Windows/System32/evil.dll
+//   « C:evil.dll »                    accepté  -> C:evil.dll
+// La seconde forme est relative au lecteur, pas moins dangereuse.
+//
+// Un modpack est une archive téléchargée depuis Internet. Une entrée
+// pointant vers le dossier Démarrage de l'utilisateur suffisait donc à
+// faire exécuter un fichier à la session suivante.
+//
+// Le contrôle ne porte plus sur la FORME du nom mais sur le RÉSULTAT :
+// on compose, on normalise, et on vérifie que le chemin obtenu est bien
+// sous le dossier de destination. C'est la seule formulation qui couvre
+// aussi les cas auxquels on n'a pas pensé.
+std::optional<fs::path> safe_join(const fs::path& destDir,
+                                  const std::string& name) {
+    if (name.empty()) return std::nullopt;
+    const fs::path entry(name);
+    // Une entrée d'archive est TOUJOURS relative. Racine, lettre de
+    // lecteur ou préfixe UNC : refusé avant même de composer.
+    if (entry.is_absolute() || entry.has_root_name() || entry.has_root_directory())
+        return std::nullopt;
+
+    const fs::path base = destDir.lexically_normal();
+    const fs::path dest = (base / entry).lexically_normal();
+    // lexically_relative plutôt qu'une comparaison de préfixe de chaîne :
+    // « …/mods » ne doit pas « contenir » « …/mods-voles ». Ici la
+    // comparaison se fait composant par composant.
+    const fs::path rel = dest.lexically_relative(base);
+    if (rel.empty() || *rel.begin() == "..") return std::nullopt;
+    return dest;
 }
-} // namespace
 
 int zip_extract_natives(const fs::path& jar, const fs::path& destDir) {
     mz_zip_archive zip{};
@@ -46,11 +80,11 @@ int zip_extract_natives(const fs::path& jar, const fs::path& destDir) {
             match = std::tolower(static_cast<unsigned char>(tail[k])) ==
                     static_cast<unsigned char>(kNativeExt[k]);
         if (!match) continue;
-        if (has_traversal(name)) continue;
+        const auto dest = safe_join(destDir, name);
+        if (!dest) continue;
 
-        fs::path dest = destDir / fs::path(name);
-        if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
-        if (!mz_zip_reader_extract_to_file(&zip, i, dest.string().c_str(), 0))
+        if (dest->has_parent_path()) fs::create_directories(dest->parent_path(), ec);
+        if (!mz_zip_reader_extract_to_file(&zip, i, dest->string().c_str(), 0))
             continue;
         ++extracted;
     }
@@ -109,11 +143,11 @@ int zip_extract_prefix(const fs::path& zipPath, const std::string& prefix,
         if (name.compare(0, prefix.size(), prefix) != 0) continue;
         const std::string rel = name.substr(prefix.size());
         if (rel.empty() || rel.back() == '/' || rel.back() == '\\') continue; // dossier
-        if (has_traversal(rel)) continue;
+        const auto dest = safe_join(destDir, rel);
+        if (!dest) continue;
 
-        fs::path dest = destDir / fs::path(rel);
-        if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
-        if (mz_zip_reader_extract_to_file(&zip, i, dest.string().c_str(), 0))
+        if (dest->has_parent_path()) fs::create_directories(dest->parent_path(), ec);
+        if (mz_zip_reader_extract_to_file(&zip, i, dest->string().c_str(), 0))
             ++written;
     }
     mz_zip_reader_end(&zip);
@@ -134,11 +168,11 @@ int zip_extract_all(const fs::path& zipPath, const fs::path& destDir) {
         if (!mz_zip_reader_file_stat(&zip, i, &st)) continue;
         const std::string name = st.m_filename;
         if (name.empty() || name.back() == '/' || name.back() == '\\') continue; // dossier
-        if (has_traversal(name)) continue;
+        const auto dest = safe_join(destDir, name);
+        if (!dest) continue;
 
-        fs::path dest = destDir / fs::path(name);
-        if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
-        if (mz_zip_reader_extract_to_file(&zip, i, dest.string().c_str(), 0))
+        if (dest->has_parent_path()) fs::create_directories(dest->parent_path(), ec);
+        if (mz_zip_reader_extract_to_file(&zip, i, dest->string().c_str(), 0))
             ++written;
     }
     mz_zip_reader_end(&zip);
