@@ -36,7 +36,14 @@ New-Item -ItemType Directory -Force $root | Out-Null
 $deps = @(
   @{ Name = 'imgui';         Url = 'https://github.com/ocornut/imgui.git';      Tag = 'v1.91.8' }
   @{ Name = 'SDL';           Url = 'https://github.com/libsdl-org/SDL.git';     Tag = 'release-2.30.9' }
-  @{ Name = 'cpp-httplib';   Url = 'https://github.com/yhirose/cpp-httplib.git'; Tag = 'v0.18.3' }
+  # 0.18.3 -> 0.60.1 (09/10/2026). Le projet a publie 23 avis de securite,
+  # TOUS corriges dans des versions posterieures a la 0.18.3. Nous n'utilisons
+  # que le serveur dans le launcher livre, mais cela laissait quand meme
+  # ouverts : contrebande d'en-tetes via les trailers, masquage des en-tetes
+  # internes (l'authentification lit Authorization dans cette meme table),
+  # trois injections CRLF, une bombe zip, une taille de bloc negative et deux
+  # contournements du plafond de charge utile.
+  @{ Name = 'cpp-httplib';   Url = 'https://github.com/yhirose/cpp-httplib.git'; Tag = 'v0.60.1' }
   @{ Name = 'nlohmann_json'; Url = 'https://github.com/nlohmann/json.git';      Tag = 'v3.11.3' }
   @{ Name = 'miniz';         Url = 'https://github.com/richgel999/miniz.git';   Tag = '3.1.2' }
 )

@@ -254,8 +254,11 @@ int main() {
             CHECK(false);
         }
         // Mauvais jeton : 401 aussi.
-        if (auto r = cli.Get("/api/status",
-                             {{"Authorization", "Bearer faux"}})) {
+        // En-tetes nommes plutot qu'une liste d'initialisation nue :
+        // depuis cpp-httplib 0.60, Get() a des surcharges supplementaires
+        // et « {{...}} » ne designe plus un seul type possible.
+        const httplib::Headers faux{{"Authorization", "Bearer faux"}};
+        if (auto r = cli.Get("/api/status", faux)) {
             CHECK_EQ(r->status, 401);
         } else {
             CHECK(false);

@@ -3,6 +3,7 @@
 #include "apikeys.hpp"
 #include "datastore.hpp" // new_guid (aléatoire du système)
 #include "diagapi.hpp"
+#include "game_launcher.hpp" // log_line : une trace dans launcher.log
 
 #include <nlohmann/json.hpp>
 
@@ -128,6 +129,28 @@ bool start(int port, const std::string& token, std::string* errOut) {
     stop();
 
     auto* srv = new httplib::Server();
+
+    // Defense en profondeur, deux barrieres que ce serveur n'avait pas.
+    //
+    // 1. Gestionnaire d'exception a nous. Sans lui, cpp-httplib applique
+    //    le sien, qui renvoyait le texte de l'exception au client dans un
+    //    en-tete (CVE-2026-28434, corrigee en 0.60.1). La bibliotheque est
+    //    a jour, mais on ne laisse pas la confidentialite d'un message
+    //    d'erreur dependre du comportement par defaut d'une dependance :
+    //    tl_diagd pose deja le sien, celui-ci manquait.
+    // 2. Plafond de taille. Les requetes attendues tiennent en quelques
+    //    kilo-octets ; rien ne justifiait d'accepter un corps sans borne,
+    //    meme sur la boucle locale, ou n'importe quel programme de la
+    //    session peut se connecter.
+    srv->set_exception_handler(
+        [](const httplib::Request& rq, httplib::Response& rs,
+           std::exception_ptr) {
+            rs.status = 500;
+            rs.set_content(R"({"error":"erreur interne"})", "application/json");
+            log_line("API locale : " + rq.path + " 500 (exception)");
+        });
+    srv->set_payload_max_length(64 * 1024);
+
     {
         std::lock_guard<std::mutex> lk(c.m);
         c.srv = srv;
