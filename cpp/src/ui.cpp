@@ -2,6 +2,7 @@
 
 #include "presets.hpp"
 #include "social.hpp"
+#include "util_image.hpp" // image::from_path : rendu de l'image de fond
 
 #include "account.hpp"
 #include "apievents.hpp"
@@ -1192,6 +1193,70 @@ void phase8_pump(SDL_Window* window) {
 
 } // namespace
 
+// --- Image de fond ---------------------------------------------------
+//
+// Le chemin etait enregistre depuis le portage et PERSONNE ne le lisait :
+// « rendu du fond : portage a venir », disait le code. Choisir une image
+// ne faisait donc rien du tout, ce qui se remonte — a juste titre —
+// comme « le bouton ne marche pas ».
+//
+// La texture est gardee tant que le chemin ne change pas : recharger un
+// JPEG a chaque frame couterait plus cher que tout le reste de
+// l'interface reunie.
+struct BgImage {
+    std::string path;   // chemin actuellement charge (ou tente)
+    unsigned tex = 0;
+    int w = 0, h = 0;
+    bool failed = false; // echec deja signale : on ne reessaie pas en boucle
+};
+BgImage g_bg;
+
+// Rend true si une image est effectivement dessinee — l'appelant rend
+// alors les fonds de fenetre transparents.
+bool draw_background_image() {
+    const std::string& want = DataStore::settings.backgroundImagePath;
+    if (want != g_bg.path) {
+        if (g_bg.tex) image::free_tex(g_bg.tex);
+        g_bg = BgImage{};
+        g_bg.path = want;
+        if (!want.empty()) {
+            g_bg.tex = image::from_path(std::filesystem::path(want), &g_bg.w,
+                                        &g_bg.h);
+            g_bg.failed = (g_bg.tex == 0);
+            if (g_bg.failed)
+                push_log("Image de fond illisible : " + want);
+        }
+    }
+    if (!g_bg.tex || g_bg.w <= 0 || g_bg.h <= 0) return false;
+
+    const ImVec2 scr = ImGui::GetIO().DisplaySize;
+    if (scr.x <= 0 || scr.y <= 0) return false;
+
+    // Cadrage « couverture » : remplir l'ecran sans deformer, le
+    // debordement est rogne et centre. Etirer une photo sur un ecran large
+    // est la premiere chose qu'on remarque.
+    const float sx = scr.x / static_cast<float>(g_bg.w);
+    const float sy = scr.y / static_cast<float>(g_bg.h);
+    const float s = sx > sy ? sx : sy;
+    const ImVec2 sz(g_bg.w * s, g_bg.h * s);
+    const ImVec2 p0((scr.x - sz.x) * 0.5f, (scr.y - sz.y) * 0.5f);
+
+    ImDrawList* dl = ImGui::GetBackgroundDrawList();
+    dl->AddImage(static_cast<ImTextureID>(static_cast<std::uintptr_t>(g_bg.tex)),
+                 p0, ImVec2(p0.x + sz.x, p0.y + sz.y));
+
+    // Voile a la couleur de fond du theme. Sans lui, une photo claire rend
+    // le texte illisible — et c'est le genre de reglage dont on ne se
+    // mefie qu'apres avoir rendu son launcher inutilisable. L'opacite est
+    // choisie pour que le contraste du texte reste correct dans les deux
+    // themes, tout en laissant deviner l'image.
+    ImVec4 veil = kBg;
+    veil.w = 0.78f;
+    dl->AddRectFilled(ImVec2(0, 0), scr,
+                      ImGui::ColorConvertFloat4ToU32(veil));
+    return true;
+}
+
 void frame(SDL_Window* window) {
     poll_state(window);
 
@@ -1273,6 +1338,17 @@ void frame(SDL_Window* window) {
     static int prevPage = -1;
     if (prevPage != 1 && g.page == 1) g.countsDirty = true;
     prevPage = g.page;
+
+    // L'image de fond se dessine AVANT la fenetre racine, sur la liste
+    // d'arriere-plan. Quand elle est affichee, les fonds opaques des
+    // fenetres et des enfants deviennent transparents : sans cela l'image
+    // serait parfaitement invisible, recouverte par kBg.
+    const bool bgImage = draw_background_image();
+    if (bgImage) {
+        const ImVec4 clear(0, 0, 0, 0);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, clear);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, clear);
+    }
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -1409,6 +1485,7 @@ void frame(SDL_Window* window) {
     search_frame();
 
     ImGui::End();
+    if (bgImage) ImGui::PopStyleColor(2);
 
     // ---- Assistant de premier lancement (avant tout le reste) ----
     onboarding_frame();

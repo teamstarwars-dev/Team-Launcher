@@ -1130,21 +1130,28 @@ void start() {
     // d'autorisation (overlay) fait planer un assert dans le SDK.
     c.client->SetGameWindowPid(static_cast<std::int32_t>(::GetCurrentProcessId()));
 #endif
-    // Traces du SDK vers launcher.log (diagnostic : TL_SOCIAL_DEBUG=1).
-    // Indispensable pour voir ce que fait le flux device (ouverture de
-    // l'ecran d'autorisation, repli navigateur, erreurs).
-    if (std::getenv("TL_SOCIAL_DEBUG")) {
-        c.client->AddLogCallback(
-            [](std::string msg, discordpp::LoggingSeverity sev) {
-                log_line("[SocialSDK] " + std::string(discordpp::EnumToString(sev)) +
-                         " : " + msg);
-            },
-            discordpp::LoggingSeverity::Verbose);
+    // Traces du SDK vers launcher.log.
+    //
+    // Elles etaient ENTIEREMENT conditionnees a TL_SOCIAL_DEBUG=1. Un
+    // utilisateur qui signale « je n'arrive pas a lier mon compte »
+    // produisait donc un journal sans la moindre ligne du SDK : rien a
+    // diagnostiquer. Les avertissements et les erreurs passent desormais
+    // toujours ; le bavardage reste derriere le drapeau.
+    const bool verbose = std::getenv("TL_SOCIAL_DEBUG") != nullptr;
+    const auto level = verbose ? discordpp::LoggingSeverity::Verbose
+                               : discordpp::LoggingSeverity::Warning;
+    c.client->AddLogCallback(
+        [](std::string msg, discordpp::LoggingSeverity sev) {
+            log_line("[SocialSDK] " + std::string(discordpp::EnumToString(sev)) +
+                     " : " + msg);
+        },
+        level);
+    if (verbose)
         // Fichier du SDK lui-meme : survit a un plantage (contrairement aux
-        // callbacks, ecrits depuis ses threads).
+        // callbacks, ecrits depuis ses threads). Reserve au diagnostic : il
+        // est volumineux et bavard.
         c.client->SetLogDir(DataStore::dir().string(),
                             discordpp::LoggingSeverity::Verbose);
-    }
     // Le callback peut arriver depuis le pompage des callbacks : il doit
     // donc prendre le verrou comme tout le monde. On garde une reference
     // faible pour ne pas retenir le client si l'on s'arrete entre-temps.
@@ -1154,7 +1161,12 @@ void start() {
             std::lock_guard<std::mutex> lk2(lock());
             auto& c = ctx();
             c.status = st;
-            if (std::getenv("TL_SOCIAL_DEBUG"))
+            // Un changement de statut PORTEUR D'ERREUR est toujours
+            // journalise : c'est la seule trace exploitable quand la
+            // liaison echoue chez quelqu'un. Les transitions normales
+            // restent reservees au mode bavard.
+            if (err != discordpp::Client::Error::None ||
+                std::getenv("TL_SOCIAL_DEBUG"))
                 log_line(std::string("[SocialSDK] statut : ") +
                          std::to_string(static_cast<int>(st)) + " err=" +
                          std::to_string(static_cast<int>(err)) + " code=" +

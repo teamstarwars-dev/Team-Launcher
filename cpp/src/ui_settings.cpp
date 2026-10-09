@@ -567,8 +567,8 @@ void tab_appearance() {
             s.backgroundImagePath = *p;
             DataStore::save();
             notify_toast(tr("Apparence"),
-                         tr("Image enregistrée (rendu du fond : portage à venir).",
-                            "Image saved (background rendering: port pending)."));
+                         tr("Image de fond appliquée.",
+                            "Background image applied."));
         }
     }
     ImGui::SameLine();
@@ -578,11 +578,14 @@ void tab_appearance() {
     }
     ImGui::Spacing();
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextWrapped("%s", tr("Le chemin est conservé et partagé avec la v5 ; "
-                                "l'affichage de l'image derrière l'interface "
-                                "reste à porter.",
-                                "The path is stored and shared with v5; drawing "
-                                "the image behind the UI is not ported yet."));
+    ImGui::TextWrapped(
+        "%s",
+        tr("L'image remplit la fenêtre sans être déformée : le débordement "
+           "est rogné. Un voile assombrit le fond pour que le texte reste "
+           "lisible. Le chemin est partagé avec la v5.",
+           "The image fills the window without distortion: the overflow is "
+           "cropped. A veil dims it so text stays readable. The path is "
+           "shared with v5."));
     ImGui::PopStyleColor();
 }
 
