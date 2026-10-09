@@ -399,8 +399,25 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
                         if (ld.contains("artifact")) {
                             const auto& art = ld.at("artifact");
                             std::string relPath = art.at("path").get<std::string>();
+#ifdef _WIN32
+                            // Conversion reservee a Windows, comme pour les
+                            // natives plus bas. Elle etait inconditionnelle :
+                            // sous Linux, « com/mojang/x.jar » devenait
+                            // « com\mojang\x.jar », c'est-a-dire UN SEUL nom
+                            // de fichier contenant des antislashs, a plat dans
+                            // le dossier des bibliotheques au lieu d'une
+                            // arborescence.
                             std::replace(relPath.begin(), relPath.end(), '/', '\\');
-                            const fs::path dest = libraries_dir() / fs::path(relPath);
+#endif
+                            // Chemin issu du manifeste : compose puis verifie.
+                            // Il arrive de piston-meta.mojang.com en HTTPS,
+                            // mais « donnee recue » ne veut pas dire « donnee
+                            // sure » : un « .. » suffirait a ecrire ailleurs.
+                            const auto destOpt = safe_join(libraries_dir(), relPath);
+                            if (!destOpt)
+                                throw std::runtime_error("lib: chemin refusé (" +
+                                                         relPath + ")");
+                            const fs::path dest = *destOpt;
                             const std::string sha = art.value("sha1", "");
                             if (!fast || !fs::exists(dest, ec)) {
                                 if (!download_file(art.at("url").get<std::string>(), dest,
@@ -424,7 +441,11 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
 #ifdef _WIN32
                                 std::replace(natRel.begin(), natRel.end(), '/', '\\');
 #endif
-                                const fs::path natDest = libraries_dir() / fs::path(natRel);
+                                const auto natOpt = safe_join(libraries_dir(), natRel);
+                                if (!natOpt)
+                                    throw std::runtime_error(
+                                        "natives: chemin refusé (" + natRel + ")");
+                                const fs::path natDest = *natOpt;
                                 const std::string sha = nat.value("sha1", "");
                                 // C# : skip download si fast+present ; on force si absent
                                 if (!fs::exists(natDest, ec) || !fast)
@@ -571,7 +592,9 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
                 const std::string rel =
                     maven_name_to_path(lib.at("name").get<std::string>());
                 if (rel.empty()) continue;
-                const fs::path full = libraries_dir() / fs::path(rel);
+                const auto fullOpt = safe_join(libraries_dir(), rel);
+                if (!fullOpt) continue; // chemin Maven refuse : voir safe_join
+                const fs::path full = *fullOpt;
                 if (!fs::exists(full, ec) && lib.contains("downloads") &&
                     lib.at("downloads").contains("artifact")) {
                     const auto& art = lib.at("downloads").at("artifact");
@@ -633,7 +656,9 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
             const std::string name = lib.at("name").get<std::string>();
             const std::string rel = maven_name_to_path(name);
             if (rel.empty()) continue;
-            const fs::path full = libraries_dir() / fs::path(rel);
+            const auto fullOpt = safe_join(libraries_dir(), rel);
+                if (!fullOpt) continue; // chemin Maven refuse : voir safe_join
+                const fs::path full = *fullOpt;
             if (!fs::exists(full, ec)) {
                 std::string urlBase = lib.contains("url")
                     ? lib.at("url").get<std::string>()
@@ -677,7 +702,9 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
                 const std::string rel =
                     maven_name_to_path(lib.at("name").get<std::string>());
                 if (rel.empty()) continue;
-                const fs::path full = libraries_dir() / fs::path(rel);
+                const auto fullOpt = safe_join(libraries_dir(), rel);
+                if (!fullOpt) continue; // chemin Maven refuse : voir safe_join
+                const fs::path full = *fullOpt;
                 if (!fs::exists(full, ec)) {
                     std::string urlBase = lib.contains("url")
                         ? lib.at("url").get<std::string>()
