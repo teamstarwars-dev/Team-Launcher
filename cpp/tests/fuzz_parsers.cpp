@@ -219,6 +219,140 @@ void fuzz_region(int iterations) {
     fs::remove_all(tmp, ec);
 }
 
+// --- Décodage d'un chunk ---------------------------------------------
+//
+// Trou comblé : la campagne précédente n'appelait que list_chunks et
+// read_chunk_local. Elle ne touchait donc JAMAIS ChunkView::at, ni
+// block_at, heightmap ou unique_blocks — c'est-à-dire le dépaquetage de
+// bits, le code le plus retors du module. Un fichier de région mutilé
+// échoue presque toujours à la décompression zlib, si bien que le
+// décodeur de sections n'était quasiment jamais atteint.
+//
+// On mute donc le NBT du chunk DIRECTEMENT, en partant d'un chunk
+// réaliste, pour entrer dans le décodeur avec des palettes et des
+// tableaux de bits incohérents.
+
+nbt::Compound seed_chunk(bool legacy) {
+    nbt::Compound root;
+    nbt::Tag dv;
+    dv.type = nbt::Type::Int;
+    dv.num = legacy ? 1343 : 3700; // 1.12 vs 1.20+
+    root["DataVersion"] = dv;
+
+    nbt::Tag sec;
+    sec.type = nbt::Type::Compound;
+    sec.comp = std::make_shared<nbt::Compound>();
+
+    nbt::Tag y;
+    y.type = nbt::Type::Byte;
+    y.num = 0;
+    (*sec.comp)["Y"] = y;
+
+    if (legacy) {
+        // Format 1.12 : identifiants bruts, plus le demi-octet « Add ».
+        nbt::Tag blocks;
+        blocks.type = nbt::Type::ByteArray;
+        blocks.bytes.assign(4096, 1);
+        (*sec.comp)["Blocks"] = blocks;
+        nbt::Tag add;
+        add.type = nbt::Type::ByteArray;
+        add.bytes.assign(2048, 0x12);
+        (*sec.comp)["Add"] = add;
+    } else {
+        // Format moderne : palette + indices empaquetés.
+        nbt::Tag bs;
+        bs.type = nbt::Type::Compound;
+        bs.comp = std::make_shared<nbt::Compound>();
+
+        nbt::Tag pal;
+        pal.type = nbt::Type::List;
+        pal.listElem = nbt::Type::Compound;
+        pal.list = std::make_shared<nbt::List>();
+        for (const char* n : {"minecraft:air", "minecraft:stone",
+                              "minecraft:dirt", "minecraft:grass_block"}) {
+            nbt::Tag e;
+            e.type = nbt::Type::Compound;
+            e.comp = std::make_shared<nbt::Compound>();
+            nbt::Tag nm;
+            nm.type = nbt::Type::String;
+            nm.str = n;
+            (*e.comp)["Name"] = nm;
+            pal.list->push_back(e);
+        }
+        (*bs.comp)["palette"] = pal;
+
+        // 4 entrées -> 2 bits chacune, mais Minecraft impose un minimum
+        // de 4 bits : 16 indices par long, donc 256 longs pour 4096.
+        nbt::Tag data;
+        data.type = nbt::Type::LongArray;
+        data.longs.assign(256, 0x0123456789ABCDEFll);
+        (*bs.comp)["data"] = data;
+
+        (*sec.comp)["block_states"] = bs;
+    }
+
+    nbt::Tag secs;
+    secs.type = nbt::Type::List;
+    secs.listElem = nbt::Type::Compound;
+    secs.list = std::make_shared<nbt::List>();
+    secs.list->push_back(sec);
+    root[legacy ? "Sections" : "sections"] = secs;
+
+    if (legacy) {
+        // 1.12 range tout sous « Level ».
+        nbt::Compound outer;
+        nbt::Tag lvl;
+        lvl.type = nbt::Type::Compound;
+        lvl.comp = std::make_shared<nbt::Compound>(root);
+        outer["Level"] = lvl;
+        return outer;
+    }
+    return root;
+}
+
+void fuzz_chunk(int iterations) {
+    const std::vector<std::uint8_t> bases[] = {nbt::write(seed_chunk(false), ""),
+                                               nbt::write(seed_chunk(true), "")};
+    // Altitudes volontairement hors monde aux extrémités : c'est là que
+    // se cache un index négatif ou un débordement de section.
+    static const int ys[] = {-2048, -64, -1, 0, 1, 15, 16, 127, 319, 320, 4096};
+    static const int xs[] = {0, 7, 15};
+
+    // Compteurs de COUVERTURE : sans eux, une cible qui ne plante jamais
+    // peut aussi bien ne rien tester. C'est précisément ce qui était
+    // arrivé à la cible « Région » pour le décodeur de sections.
+    long long parsed = 0, decoded = 0;
+    for (int i = 0; i < iterations; ++i) {
+        auto b = bases[i & 1];
+        const int rounds = 1 + static_cast<int>(rnd(4));
+        for (int r = 0; r < rounds; ++r) mutate(b);
+        g_cases++;
+        const auto c = nbt::parse(b.data(), b.size());
+        if (!c) continue; // mutation trop destructrice : rien à décoder
+        ++parsed;
+
+        region::ChunkView v(*c);
+        bool hit = false;
+        for (const int yy : ys)
+            for (const int xx : xs) {
+                if (!v.at(xx, yy, xx).empty()) hit = true;
+                (void)region::block_at(*c, xx, yy, xx);
+            }
+        if (hit) ++decoded;
+        (void)region::heightmap(*c);
+        (void)region::unique_blocks(*c);
+        if ((i % 1000) == 0) { std::printf("."); std::fflush(stdout); }
+    }
+    std::printf(" [%lld analysés, %lld avec un bloc décodé]", parsed, decoded);
+    // Garde-fou : si plus rien n'atteint le décodeur, la cible est creuse
+    // et doit échouer bruyamment plutôt que de rassurer à tort.
+    if (iterations >= 1000 && decoded == 0) {
+        std::printf("\nECHEC : aucun bloc décodé — la cible n'atteint pas "
+                    "le décodeur de sections\n");
+        std::exit(1);
+    }
+}
+
 // Le manifeste de plugin est du texte, mais il vient d'un dossier que
 // n'importe qui peut déposer.
 void fuzz_manifest(int iterations) {
@@ -267,6 +401,7 @@ int main(int argc, char** argv) {
     std::printf("Fuzzing des parseurs (%d itérations par cible)\n", n);
     std::printf("NBT       "); fuzz_nbt(n);            std::printf(" ok\n");
     std::printf("Région    "); fuzz_region(n / 8 + 1); std::printf(" ok\n");
+    std::printf("Chunk     "); fuzz_chunk(n);           std::printf(" ok\n");
     std::printf("Manifeste "); fuzz_manifest(n);       std::printf(" ok\n");
     std::printf("\n%lld cas traités, aucun plantage.\n", g_cases);
     std::printf("ALL TESTS PASSED\n");
