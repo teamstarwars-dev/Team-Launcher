@@ -108,14 +108,34 @@ target_include_directories(tl_headers INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
-# ---- Flags Release communs : taille + gc-sections + LTO ----
+# ---- Flags Release communs : taille + gc-sections + LTO + durcissement ----
+#
+# Les protections memoire ont ete MESUREES sur les binaires produits, pas
+# supposees. Etat constate avant ce bloc :
+#   Windows : ASLR, ASLR haute entropie et DEP actifs (defauts de
+#             lld-link), mais NI Control Flow Guard NI CET.
+#   Linux   : PIE et _FORTIFY_SOURCE actifs, RELRO seulement PARTIEL
+#             (pas de BIND_NOW), et AUCUN canari de pile — zero symbole
+#             __stack_chk dans le binaire.
+# Rien n'avait donc « regresse » : ces protections-la n'avaient jamais
+# ete demandees. Elles le sont maintenant, et le test de securite
+# verifie qu'elles le restent.
 function(tl_release_flags tgt)
   if(MSVC)
     target_compile_options(${tgt} PRIVATE
       $<$<CONFIG:Release>:/O1 /W4 /WX- /permissive->
+      # Control Flow Guard : le compilateur instrumente les appels
+      # indirects, l'editeur de liens pose la table des cibles valides.
+      # Il faut les DEUX : /guard:cf cote compilation seul ne produit
+      # aucune protection.
+      $<$<CONFIG:Release>:/guard:cf>
     )
     target_link_options(${tgt} PRIVATE
       $<$<CONFIG:Release>:/OPT:REF /OPT:ICF /DEBUG:NONE>
+      # /CETCOMPAT : pile fantome materielle (Intel CET). Ignore par les
+      # processeurs qui ne la gerent pas, donc sans risque de
+      # compatibilite.
+      $<$<CONFIG:Release>:/guard:cf /CETCOMPAT /DYNAMICBASE /NXCOMPAT /HIGHENTROPYVA>
     )
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
       # clang-cl ignore /GL+/LTCG (avertissement 'unused') → LTO reel via -flto=thin
@@ -129,9 +149,23 @@ function(tl_release_flags tgt)
     target_compile_options(${tgt} PRIVATE
       $<$<CONFIG:Release>:-Os -ffunction-sections -fdata-sections -Wall -Wextra>
       $<$<AND:$<CONFIG:Release>,$<BOOL:${TL_FORTIFY}>>:-D_FORTIFY_SOURCE=2>
+      # Canari de pile : il n'y en avait AUCUN (zero symbole __stack_chk
+      # dans le binaire mesure). « strong » plutot que « all » : meme
+      # couverture utile pour une fraction du cout.
+      $<$<CONFIG:Release>:-fstack-protector-strong>
+      # Protection materielle du flot de controle (Intel CET / IBT).
+      # Ignoree a l'execution par les processeurs qui ne la gerent pas.
+      $<$<CONFIG:Release>:-fcf-protection=full>
     )
     target_link_options(${tgt} PRIVATE
       $<$<CONFIG:Release>:-Wl,--gc-sections>
+      # RELRO COMPLET : le segment etait marque GNU_RELRO mais sans
+      # BIND_NOW, donc la table de liaison restait inscriptible pendant
+      # toute la vie du processus — la cible classique d'une ecriture
+      # arbitraire. -z now resout tout au demarrage et scelle la table.
+      $<$<CONFIG:Release>:-Wl,-z,relro -Wl,-z,now>
+      # Pile non executable, explicitement plutot que par defaut.
+      $<$<CONFIG:Release>:-Wl,-z,noexecstack>
     )
     if(TL_LTO)
       target_compile_options(${tgt} PRIVATE $<$<CONFIG:Release>:-flto>)
@@ -330,6 +364,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_definitions(tl_core PUBLIC _CRT_USE_BUILTIN_OFFSETOF)
 endif()
 tl_release_flags(tl_core)
+# imgui est compile par NOUS : sans les memes drapeaux, ses objets n'ont
+# pas la propriete CET, et l'editeur de liens la retire alors du binaire
+# ENTIER — cette propriete est un ET sur toutes les entrees statiques.
+# Mesure avant ce correctif : 12808 instructions endbr64 bien presentes,
+# mais aucune propriete IBT declaree, donc une protection que le noyau
+# n'aurait jamais appliquee.
+tl_release_flags(imgui)
 
 # ---- Service de diagnostic autonome (tl_diagd) ----
 # Volontairement SANS tl_core : le service n'a besoin que des analyses
