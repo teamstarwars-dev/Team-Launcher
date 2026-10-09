@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cmath> // std::floor (MSVC l'obtient par transitivité, pas GCC)
 #include <filesystem>
+#include <limits>
 #include <string>
 
 using namespace tl::worldedit;
@@ -96,6 +97,21 @@ int main() {
         CHECK_EQ(b.volume(), std::int64_t{9} * 5 * 8);
         // Un point isole a un volume de 1 (bornes inclusives)
         CHECK_EQ(bounds_of({0, 0, 0}, {0, 0, 0}).volume(), std::int64_t{1});
+
+        // Bornes extremes : le produit des trois dimensions depasse int64.
+        // Avant la saturation, c'etait un comportement indefini, et le
+        // resultat pouvait reboucler SOUS kMaxVolume — precheck() aurait
+        // alors laisse passer une selection gigantesque. Il doit desormais
+        // valoir le maximum, donc etre refuse.
+        const int lo = (std::numeric_limits<int>::min)();
+        const int hi = (std::numeric_limits<int>::max)();
+        const auto huge = bounds_of({lo, lo, lo}, {hi, hi, hi}).volume();
+        CHECK_EQ(huge, (std::numeric_limits<std::int64_t>::max)());
+        CHECK(huge > kMaxVolume);
+        // Et une selection grande mais representable reste exacte : la
+        // saturation ne doit pas toucher aux valeurs legitimes.
+        CHECK_EQ(bounds_of({0, -64, 0}, {999, 319, 999}).volume(),
+                 std::int64_t{1000} * 384 * 1000);
     }
 
     const fs::path world = fs::temp_directory_path() / "tl-worldedit-test";

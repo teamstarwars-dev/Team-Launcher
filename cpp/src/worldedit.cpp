@@ -4,6 +4,7 @@
 #include "region.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <cmath>
 #include <system_error>
 
@@ -139,7 +140,22 @@ std::int64_t Bounds::volume() const {
     const std::int64_t dy = static_cast<std::int64_t>(y2) - y1 + 1;
     const std::int64_t dz = static_cast<std::int64_t>(z2) - z1 + 1;
     if (dx <= 0 || dy <= 0 || dz <= 0) return 0;
-    return dx * dy * dz;
+    // Saturation plutot que debordement. Chaque dimension tient sur ~4e9
+    // (ecart de deux int32) : le produit des trois peut depasser int64,
+    // ce qui est un comportement indefini — et le resultat pourrait
+    // reboucler SOUS kMaxVolume, faisant passer precheck() a une
+    // selection gigantesque.
+    //
+    // Inatteignable aujourd'hui : pos1/pos2 ne viennent que d'un
+    // double-clic sur des chunks reels. Mais c'est precheck() qui protege
+    // les boucles `for (int y = y1; y <= y2; ++y)` de chaque operation, et
+    // la premiere saisie numerique ou entree d'API ajoutee un jour
+    // l'aurait contourne sans que rien ne le signale.
+    constexpr std::int64_t kSat = (std::numeric_limits<std::int64_t>::max)();
+    if (dx > kSat / dy) return kSat;
+    const std::int64_t xy = dx * dy;
+    if (xy > kSat / dz) return kSat;
+    return xy * dz;
 }
 
 Bounds bounds_of(const Pos& a, const Pos& b) {
