@@ -559,6 +559,11 @@ app.use((req, res) => {
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
+    // JSON malforme (curl Windows et ses guillemets, client casse...) :
+    // 400 lisible, pas 500.
+    if (err instanceof SyntaxError && err.status === 400) {
+        return res.status(400).json({ error: 'json invalide' });
+    }
     console.error('[api]', err && err.message ? err.message : err);
     res.status(500).json({ error: 'erreur interne' });
 });
