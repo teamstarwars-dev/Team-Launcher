@@ -35,7 +35,11 @@ New-Item -ItemType Directory -Force $root | Out-Null
 # (docs/ETAPE1-estimations.md). Ne pas les bouger sans remesurer taille et RAM.
 $deps = @(
   @{ Name = 'imgui';         Url = 'https://github.com/ocornut/imgui.git';      Tag = 'v1.91.8' }
-  @{ Name = 'SDL';           Url = 'https://github.com/libsdl-org/SDL.git';     Tag = 'release-2.30.9' }
+  # 2.30.9 -> 2.32.10 (09/10/2026), derniere de la branche SDL2. Aucun
+  # avis de securite ne visait la 2.30.9 ; la montee est de principe —
+  # deux ans de correctifs sur une bibliotheque qui decode des entrees
+  # (images, audio, evenements) valent mieux qu'un retard assume.
+  @{ Name = 'SDL';           Url = 'https://github.com/libsdl-org/SDL.git';     Tag = 'release-2.32.10' }
   # 0.18.3 -> 0.60.1 (09/10/2026). Le projet a publie 23 avis de securite,
   # TOUS corriges dans des versions posterieures a la 0.18.3. Nous n'utilisons
   # que le serveur dans le launcher livre, mais cela laissait quand meme
