@@ -1161,6 +1161,30 @@ void server_modals() {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##phurl", "https://panel.exemple.fr",
                                  s_phUrl, sizeof(s_phUrl));
+        // La cle API part en « Authorization: Bearer » a chaque requete.
+        // En http, elle traverse donc le reseau en clair, lisible par
+        // quiconque est sur le chemin. On n'INTERDIT pas http — un panel
+        // auto-heberge sur un reseau local en est souvent depourvu, et le
+        // bloquer casserait des installations legitimes — mais on cesse
+        // de l'accepter en silence.
+        {
+            const std::string u = trimmed(s_phUrl);
+            const bool clair = u.rfind("http://", 0) == 0;
+            const bool local = u.rfind("http://127.0.0.1", 0) == 0 ||
+                               u.rfind("http://localhost", 0) == 0 ||
+                               u.rfind("http://[::1]", 0) == 0;
+            if (clair && !local) {
+                ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+                ImGui::TextWrapped(
+                    "%s",
+                    tr("En http, la clé API voyage en clair sur le réseau à "
+                       "chaque requête. Préférez https dès que le panel le "
+                       "permet.",
+                       "Over http, the API key travels unencrypted on every "
+                       "request. Prefer https whenever the panel allows it."));
+                ImGui::PopStyleColor();
+            }
+        }
         label(tr("Clé API (Client API) :"));
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##phkey", "ptlc_...", s_phKey,
