@@ -18,6 +18,7 @@
 #include "presence.hpp"
 
 #include "datastore.hpp"
+#include "social.hpp" // presence_active : le SDK porte la presence s'il est la
 #include "game_launcher.hpp" // log_line
 
 #include <atomic>
@@ -79,20 +80,34 @@ class Pipe {
 public:
     ~Pipe() { close(); }
 
-    bool open() {
+    // `preferred` : emplacement ayant deja fonctionne, essaye en premier.
+    // `avoidMask` : emplacements deja ecartes pendant cette tentative.
+    //
+    // Sans preference, le balayage repart toujours de zero. Sur une machine
+    // ou DEUX clients Discord tournent, la reconnexion atterrit alors
+    // tantot sur l'un tantot sur l'autre : le journal montrait deux
+    // utilisateurs en alternance et une presence qui ne tenait jamais.
+    bool open(int preferred = -1, unsigned avoidMask = 0) {
         close();
-        for (int i = 0; i < 10; ++i) {
+        for (int n = -1; n < 10; ++n) {
+            const int i = (n < 0) ? preferred : n;
+            if (i < 0 || i > 9) continue;
+            if (n >= 0 && i == preferred) continue; // deja tente au tour -1
+            if (avoidMask & (1u << i)) continue;
             wchar_t path[64];
             std::swprintf(path, 64, L"\\\\.\\pipe\\discord-ipc-%d", i);
             HANDLE h = CreateFileW(path, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                                    OPEN_EXISTING, 0, nullptr);
             if (h != INVALID_HANDLE_VALUE) {
                 h_ = h;
+                slot_ = i;
                 return true;
             }
         }
         return false;
     }
+
+    int slot() const { return slot_; }
 
     void close() {
         if (h_ != INVALID_HANDLE_VALUE) {
@@ -158,6 +173,7 @@ public:
 
 private:
     HANDLE h_ = INVALID_HANDLE_VALUE;
+    int slot_ = -1;
 };
 
 #else // POSIX : socket Unix, non-bloquante + poll() ( memes delais que Windows)
@@ -166,13 +182,19 @@ class Pipe {
 public:
     ~Pipe() { close(); }
 
-    bool open() {
+    // Voir le commentaire de la version Windows : preference pour le
+    // dernier emplacement qui a marche, et exclusion de ceux deja ecartes.
+    bool open(int preferred = -1, unsigned avoidMask = 0) {
         close();
         // $XDG_RUNTIME_DIR, repli /tmp (jamais le HOME : perms et menage).
         std::string base;
         if (const char* r = std::getenv("XDG_RUNTIME_DIR"); r && *r) base = r;
         else base = "/tmp";
-        for (int i = 0; i < 10; ++i) {
+        for (int n = -1; n < 10; ++n) {
+            const int i = (n < 0) ? preferred : n;
+            if (i < 0 || i > 9) continue;
+            if (n >= 0 && i == preferred) continue;
+            if (avoidMask & (1u << i)) continue;
             const std::string path = base + "/discord-ipc-" + std::to_string(i);
             const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
             if (fd < 0) return false;
@@ -188,6 +210,7 @@ public:
                 const int fl = ::fcntl(fd, F_GETFL, 0);
                 if (fl >= 0) ::fcntl(fd, F_SETFL, fl | O_NONBLOCK);
                 fd_ = fd;
+                slot_ = i;
                 return true;
             }
             ::close(fd);
@@ -203,6 +226,8 @@ public:
     }
 
     bool valid() const { return fd_ >= 0; }
+
+    int slot() const { return slot_; }
 
     bool write_frame(std::uint32_t opcode, const std::string& payload) {
         if (!valid()) return false;
@@ -252,6 +277,7 @@ public:
 
 private:
     int fd_ = -1;
+    int slot_ = -1;
 
     bool wait_for(short events, int timeoutMs) {
         pollfd p{};
@@ -353,9 +379,28 @@ json build_activity(const Desired& d) {
     return activity;
 }
 
+// Traduit la charge SET_ACTIVITY (JSON du canal direct) vers les champs
+// attendus par le SDK. Les deux chemins partent ainsi du MEME
+// build_activity : une presence identique, quel que soit le transport.
+social::PresenceFields to_fields(const json& a) {
+    social::PresenceFields f;
+    f.details = a.value("details", std::string{});
+    f.state = a.value("state", std::string{});
+    if (auto t = a.find("timestamps"); t != a.end() && t->is_object())
+        f.startUnix = t->value("start", 0LL);
+    if (auto s = a.find("assets"); s != a.end() && s->is_object()) {
+        f.largeImage = s->value("large_image", std::string{});
+        f.largeText = s->value("large_text", std::string{});
+        f.smallImage = s->value("small_image", std::string{});
+        f.smallText = s->value("small_text", std::string{});
+    }
+    return f;
+}
+
 void worker() {
     Pipe pipe;
     bool handshaked = false;
+    int lastGood = -1; // emplacement IPC qui a repondu la derniere fois
     auto lastAttempt = std::chrono::steady_clock::now() - kRetryDelay;
 
     for (;;) {
@@ -371,30 +416,65 @@ void worker() {
         }
         if (stop) break;
 
+        // --- Le SDK social a la priorite -------------------------------
+        // S'il est connecte, c'est lui qui porte la presence. Garder en
+        // plus notre canal IPC direct ouvert avec le MEME client_id fait
+        // que Discord ferme l'une des deux connexions a chaque fois : le
+        // journal montrait un battement toutes les trente secondes, et la
+        // presence n'avait jamais le temps de s'afficher.
+        if (social::presence_active()) {
+            if (handshaked) {
+                plog("SDK social connecté : la présence passe par lui, "
+                     "fermeture du canal direct.");
+                pipe.close();
+                handshaked = false;
+                std::lock_guard<std::mutex> lk(ctx().m);
+                ctx().connected = false;
+            }
+            if (dirty) social::update_presence(to_fields(build_activity(want)));
+            continue;
+        }
+
         // --- Connexion / reconnexion (chien de garde 20 s) ---
         if (!handshaked) {
             if (std::chrono::steady_clock::now() - lastAttempt < kRetryDelay) continue;
             lastAttempt = std::chrono::steady_clock::now();
             const std::string appId = DataStore::settings.discordAppId;
             if (appId.empty()) continue;
-            if (!pipe.open()) {
-                plog("connexion échouée (Discord est-il ouvert ?).");
-                continue;
-            }
-            const json hs = {{"v", 1}, {"client_id", appId}};
-            if (!pipe.write_frame(0, hs.dump())) {
-                plog("poignée de main impossible.");
-                pipe.close();
-                continue;
-            }
-            std::uint32_t op = 0;
+
+            // On essaie les emplacements l'un apres l'autre DANS LA MEME
+            // tentative, au lieu de buter vingt secondes sur le premier.
+            // Observe dans le journal : « pas de réponse à la poignée de
+            // main » toutes les 21 s pendant plus d'une minute, parce
+            // qu'un emplacement acceptait la connexion sans jamais
+            // repondre, et qu'on y revenait sans cesse.
             std::string body;
-            if (!pipe.read_frame(&op, &body, 3000)) {
-                plog("pas de réponse à la poignée de main.");
+            unsigned avoid = 0;
+            for (int tries = 0; tries < 10 && !handshaked; ++tries) {
+                if (!pipe.open(lastGood, avoid)) {
+                    if (tries == 0)
+                        plog("connexion échouée (Discord est-il ouvert ?).");
+                    break;
+                }
+                const json hs = {{"v", 1}, {"client_id", appId}};
+                std::uint32_t op = 0;
+                body.clear();
+                // op == 2 (CLOSE) en reponse = refus, typiquement un
+                // client_id que Discord ne reconnait pas. L'ancien code
+                // ne regardait pas l'opcode et se croyait connecte.
+                if (pipe.write_frame(0, hs.dump()) &&
+                    pipe.read_frame(&op, &body, 3000) && op != 2) {
+                    handshaked = true;
+                    lastGood = pipe.slot();
+                    break;
+                }
+                plog("emplacement " + std::to_string(pipe.slot()) +
+                     " muet ou refusé, essai du suivant.");
+                avoid |= 1u << pipe.slot();
+                lastGood = -1;
                 pipe.close();
-                continue;
             }
-            handshaked = true;
+            if (!handshaked) continue;
             {
                 std::lock_guard<std::mutex> lk(ctx().m);
                 ctx().connected = true;
@@ -416,18 +496,31 @@ void worker() {
             dirty = true; // pousser l'etat courant des la connexion
         }
 
-        if (!dirty) {
-            // Draine les trames entrantes ; leur absence ne dit rien, mais un
-            // echec de lecture signale un lien coupe.
-            std::uint32_t op = 0;
-            std::string body;
-            if (pipe.read_frame(&op, &body, 0) && op == 2) { // CLOSE
-                plog("connexion fermée par Discord (le chien de garde relance).");
-                pipe.close();
-                handshaked = false;
-                std::lock_guard<std::mutex> lk(ctx().m);
-                ctx().connected = false;
+        // Draine ce que Discord a envoye. A CHAQUE tour, et apres chaque
+        // envoi — pas seulement quand il n'y a rien a pousser. Les accuses
+        // de reception de SET_ACTIVITY n'etaient jamais lus : ils
+        // s'accumulaient dans le tube, et un CLOSE poli se retrouvait
+        // derriere cette file, donc vu avec plusieurs secondes de retard.
+        auto drain = [&](int timeoutMs) {
+            for (int i = 0; i < 16 && handshaked; ++i) {
+                std::uint32_t op = 0;
+                std::string in;
+                if (!pipe.read_frame(&op, &in, timeoutMs)) return;
+                timeoutMs = 0; // les suivantes sans attendre
+                if (op == 2) {  // CLOSE
+                    plog("connexion fermée par Discord (le chien de garde "
+                         "relance).");
+                    pipe.close();
+                    handshaked = false;
+                    std::lock_guard<std::mutex> lk(ctx().m);
+                    ctx().connected = false;
+                    return;
+                }
             }
+        };
+
+        if (!dirty) {
+            drain(0);
             continue;
         }
 
@@ -442,6 +535,11 @@ void worker() {
             handshaked = false;
             std::lock_guard<std::mutex> lk(ctx().m);
             ctx().connected = false;
+        } else {
+            // Lire l'accuse tout de suite : sinon le tube se remplit, et un
+            // refus de Discord (charge invalide, cadence trop rapide) passe
+            // inapercu — la presence semble envoyee et n'apparait jamais.
+            drain(200);
         }
     }
 
@@ -485,6 +583,10 @@ bool enabled() {
 }
 
 bool connected() {
+    // Le SDK social compte comme connecte : c'est lui qui porte la
+    // presence quand il est la, et l'interface n'a pas a savoir par quel
+    // transport elle passe.
+    if (social::presence_active()) return true;
     std::lock_guard<std::mutex> lk(ctx().m);
     return ctx().connected;
 }

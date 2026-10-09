@@ -1,5 +1,7 @@
 #include "ui_internal.hpp"
 
+#include "game_launcher.hpp" // log_line : une trace dans launcher.log
+#include "http_win.hpp"      // host_allowed : allowlist S2
 #include "ms_auth.hpp"
 #include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
 
@@ -17,9 +19,56 @@
 
 namespace tl::ui {
 
+// Hote d'une URL, en minuscules, sans port ni chemin. Vide si l'URL n'est
+// pas en https — tout le reste est refuse d'office.
+std::string https_host(const std::string& url) {
+    if (url.size() < 9) return {};
+    std::string head = url.substr(0, 8);
+    for (auto& ch : head) ch = static_cast<char>(std::tolower((unsigned char)ch));
+    if (head != "https://") return {};
+    std::string host = url.substr(8);
+    for (const char sep : {'/', '?', '#'}) {
+        const auto p = host.find(sep);
+        if (p != std::string::npos) host.resize(p);
+    }
+    if (const auto p = host.find('@'); p != std::string::npos)
+        host.erase(0, p + 1); // « user:pass@vrai-hote » : on garde l'hote reel
+    if (const auto p = host.find(':'); p != std::string::npos) host.resize(p);
+    for (auto& ch : host) ch = static_cast<char>(std::tolower((unsigned char)ch));
+    return host;
+}
+
+// Ouvre un lien dans le navigateur de l'utilisateur.
+//
+// Defaut vecu : cette fonction reutilisait browser_url_allowed(), le garde
+// du flux d'authentification Microsoft, qui n'autorise que login.live.com
+// et consorts. TOUS les autres liens etaient donc refuses — la page Aide
+// en entier, le visualiseur de modeles, et les deux boutons « Ouvrir la
+// page de la version ». En silence, sans trace ni message : pour
+// l'utilisateur, des boutons qui ne font rien.
+//
+// Le garde reste, avec la bonne politique :
+//  - https exclusivement. C'est la vraie surface d'attaque d'un
+//    ShellExecute sur une chaine venue d'ailleurs : file://, javascript:,
+//    et les gestionnaires de protocole du systeme.
+//  - hote dans l'allowlist S2, la meme que pour les requetes sortantes.
+//    Plusieurs de ces URL viennent de donnees distantes (page d'une
+//    release, flux d'actus) : elles ne sont pas de confiance.
+//  - un refus se VOIT. Un bouton muet est un bug ; un bouton qui dit
+//    pourquoi il refuse est un comportement.
 void open_url(const std::string& url) {
-    // Même garde que open_browser côté flux : l'URL vient du JSON serveur.
-    if (!auth::detail::browser_url_allowed(url)) return;
+    const std::string host = https_host(url);
+    if (host.empty() || !http::host_allowed(host)) {
+        log_line("Lien refusé (hôte non autorisé ou URL non https) : " +
+                 http::redact_url(url));
+        notify_toast(tr("Lien non ouvert", "Link not opened"),
+                     host.empty()
+                         ? tr("Seuls les liens https sont ouverts.",
+                              "Only https links are opened.")
+                         : tr("Hôte non autorisé : ", "Host not allowed: ") +
+                               host);
+        return;
+    }
 #ifdef _WIN32
     const int n = MultiByteToWideChar(CP_UTF8, 0, url.c_str(), -1, nullptr, 0);
     if (n <= 1) return;

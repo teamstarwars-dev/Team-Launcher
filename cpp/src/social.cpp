@@ -1238,6 +1238,54 @@ bool login_in_progress() {
 #endif
 }
 
+bool presence_active() {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::lock_guard<std::mutex> lk(lock());
+    auto& c = ctx();
+    return c.started && c.client &&
+           c.status == discordpp::Client::Status::Ready;
+#else
+    return false;
+#endif
+}
+
+void update_presence(const PresenceFields& p) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        auto& c = ctx();
+        if (!c.started || !c.client ||
+            c.status != discordpp::Client::Status::Ready)
+            return;
+        client = c.client;
+    }
+    discordpp::Activity a;
+    a.SetType(discordpp::ActivityTypes::Playing);
+    a.SetName("Team Launcher");
+    if (!p.details.empty()) a.SetDetails(p.details);
+    if (!p.state.empty()) a.SetState(p.state);
+    if (!p.largeImage.empty() || !p.smallImage.empty()) {
+        discordpp::ActivityAssets as;
+        if (!p.largeImage.empty()) as.SetLargeImage(p.largeImage);
+        if (!p.largeText.empty()) as.SetLargeText(p.largeText);
+        if (!p.smallImage.empty()) as.SetSmallImage(p.smallImage);
+        if (!p.smallText.empty()) as.SetSmallText(p.smallText);
+        a.SetAssets(as);
+    }
+    if (p.startUnix > 0) {
+        discordpp::ActivityTimestamps ts;
+        ts.SetStart(static_cast<std::uint64_t>(p.startUnix));
+        a.SetTimestamps(ts);
+    }
+    client->UpdateRichPresence(std::move(a), [](discordpp::ClientResult r) {
+        if (!r.Successful()) log_line(result_line("UpdateRichPresence", r));
+    });
+#else
+    (void)p;
+#endif
+}
+
 void begin_login() {
 #ifdef TL_HAS_DISCORD_SOCIAL
     if (std::getenv("TL_SOCIAL_DEBUG"))

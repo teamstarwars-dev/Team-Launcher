@@ -893,7 +893,11 @@ bool call_accept(std::string* errOut) {
         return false;
     }
     json out;
-    if (!parse_api(*r, out, errOut)) return false;
+    if (!parse_api(*r, out, errOut)) {
+        alog("accept refuse : " + (errOut ? *errOut : std::string("?")));
+        return false;
+    }
+    alog("accept ok, jonction vocale...");
     social::voice_join_async(
         lobbyStr, [apiId](std::uint64_t lobby, const std::string& error) {
             std::lock_guard<std::mutex> lk(lock());
@@ -906,6 +910,7 @@ bool call_accept(std::string* errOut) {
                 reset_call_locked(c);
                 c.callNotice =
                     error.empty() ? "Vocal indisponible." : error;
+                alog("jonction vocale echec : " + c.callNotice);
                 // Prevenir l'appelant : sans ca il sonne dans le vide.
                 std::string id = apiId;
                 std::thread([id]() {
@@ -919,6 +924,7 @@ bool call_accept(std::string* errOut) {
             c.callActive = true;
             c.callSince = unix_now();
             c.callDenoise = true;
+            alog("appel actif (lobby joint)");
         });
     return true;
 }

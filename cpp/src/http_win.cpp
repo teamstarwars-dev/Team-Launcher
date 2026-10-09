@@ -107,6 +107,7 @@ constexpr const char* kHostAllow[] = {
     // Discord (webhook de telemetrie : format actuel + ancien)
     "discord.com",
     "discordapp.com",
+    "discord.gg",            // invitations de salon (lien d'entraide)
     // Donnees cartographiques (generateur de ville)
     "overpass-api.de",
     // Skins / vignettes

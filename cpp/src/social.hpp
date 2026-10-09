@@ -131,6 +131,25 @@ bool voice_set_denoise(std::uint64_t lobby, bool denoise,
 // d'autorisation dans l'application Discord : le launcher n'a ni serveur de
 // redirection ni code a afficher, contrairement a l'authentification
 // Microsoft. Sans effet si une liaison est deja en cours.
+// --- Rich Presence portee par le SDK ---------------------------------
+//
+// Quand le SDK social est connecte, c'est LUI qui doit publier la
+// presence. Le canal IPC direct de presence.cpp et le SDK ouvrent sinon
+// DEUX connexions RPC avec le MEME client_id, et Discord ferme la
+// precedente a chaque fois : le journal montrait « connexion fermée par
+// Discord » toutes les trente secondes, suivie de reconnexions en
+// boucle, et une Rich Presence qui n'apparaissait jamais cote
+// utilisateur.
+struct PresenceFields {
+    std::string details, state;
+    std::string largeImage, largeText, smallImage, smallText;
+    long long startUnix = 0; // epoch s, 0 = pas de chrono
+};
+
+// Vrai quand le SDK peut porter la presence : compile, demarre, connecte.
+bool presence_active();
+void update_presence(const PresenceFields& p);
+
 void begin_login();
 
 // Une liaison est-elle en cours ? Sert a griser le bouton.
