@@ -249,10 +249,31 @@ void refresh_friends_locked(const std::string& b, const std::string& tok,
         if (j.contains("pendingOut") && j["pendingOut"].is_array())
             for (const auto& n : j["pendingOut"])
                 if (n.is_string()) c.pendOut.push_back(n.get<std::string>());
+        if (j.contains("blocked") && j["blocked"].is_array())
+            for (const auto& n : j["blocked"]) {
+                if (!n.is_string()) continue;
+                Friend fr;
+                fr.name = n.get<std::string>();
+                fr.online = false;
+                fr.blocked = true;
+                const auto uit = c.unread.find(fr.name);
+                fr.unread = (uit != c.unread.end()) ? uit->second : 0;
+                c.friendsCache.push_back(std::move(fr));
+            }
         alog("amis : " + std::to_string(c.friendsCache.size()) + " (" +
              std::to_string(c.pendIn.size()) + " demande(s))");
     } catch (const std::exception&) {
     }
+}
+
+// Rafraichissement immediat (apres ajout/accept/refus/retrait/blocage) :
+// sans ca, la liste ne bouge qu'au prochain evenement ou dans 60 s et le
+// bouton semble mort. Appelé sans verrou tenu.
+void refresh_now() {
+    const std::string b = base();
+    const std::string tok = token();
+    if (b.empty() || tok.empty()) return;
+    refresh_friends_locked(b, tok, nullptr);
 }
 
 void ingest_message_locked(const std::string& peer, long long id, bool mine,
@@ -578,19 +599,25 @@ bool friend_request(const std::string& username, std::string* errOut) {
     }
     json body;
     body["username"] = username;
-    return friend_post("/api/friends/request", body, errOut);
+    if (!friend_post("/api/friends/request", body, errOut)) return false;
+    refresh_now();
+    return true;
 }
 
 bool friend_accept(const std::string& username, std::string* errOut) {
     json body;
     body["username"] = username;
-    return friend_post("/api/friends/accept", body, errOut);
+    if (!friend_post("/api/friends/accept", body, errOut)) return false;
+    refresh_now();
+    return true;
 }
 
 bool friend_decline(const std::string& username, std::string* errOut) {
     json body;
     body["username"] = username;
-    return friend_post("/api/friends/decline", body, errOut);
+    if (!friend_post("/api/friends/decline", body, errOut)) return false;
+    refresh_now();
+    return true;
 }
 
 bool friend_remove(const std::string& username, std::string* errOut) {
@@ -603,13 +630,25 @@ bool friend_remove(const std::string& username, std::string* errOut) {
         return false;
     }
     json out;
-    return parse_api(*r, out, errOut);
+    if (!parse_api(*r, out, errOut)) return false;
+    refresh_now();
+    return true;
 }
 
 bool friend_block(const std::string& username, std::string* errOut) {
     json body;
     body["username"] = username;
-    return friend_post("/api/friends/block", body, errOut);
+    if (!friend_post("/api/friends/block", body, errOut)) return false;
+    refresh_now();
+    return true;
+}
+
+bool friend_unblock(const std::string& username, std::string* errOut) {
+    json body;
+    body["username"] = username;
+    if (!friend_post("/api/friends/unblock", body, errOut)) return false;
+    refresh_now();
+    return true;
 }
 
 std::vector<Message> conversation(const std::string& peer) {

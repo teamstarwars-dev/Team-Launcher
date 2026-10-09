@@ -185,12 +185,13 @@ app.get('/api/friends', requireAuth, async (req, res, next) => {
                     f.status AS rel, f.requested_by
              FROM friendships f
              JOIN users u ON u.id = CASE WHEN f.user_a = $1 THEN f.user_b ELSE f.user_a END
-             WHERE (f.user_a = $1 OR f.user_b = $1) AND f.status IN ('pending', 'accepted')`,
+             WHERE (f.user_a = $1 OR f.user_b = $1) AND f.status IN ('pending', 'accepted', 'blocked')`,
             [me]
         );
         const friends = [];
         const pendingIn = [];
         const pendingOut = [];
+        const blocked = [];
         for (const r of rows) {
             const online =
                 r.status !== 'offline' &&
@@ -198,13 +199,15 @@ app.get('/api/friends', requireAuth, async (req, res, next) => {
                 Date.now() - new Date(r.seen).getTime() < 120000;
             if (r.rel === 'accepted') {
                 friends.push({ username: r.username, online: !!online });
+            } else if (r.rel === 'blocked') {
+                if (r.requested_by === me) blocked.push(r.username);
             } else if (r.requested_by === me) {
                 pendingOut.push(r.username);
             } else {
                 pendingIn.push(r.username);
             }
         }
-        res.json({ friends, pendingIn, pendingOut });
+        res.json({ friends, pendingIn, pendingOut, blocked });
     } catch (e) {
         next(e);
     }
@@ -304,6 +307,27 @@ app.post('/api/friends/block', requireAuth, async (req, res, next) => {
              DO UPDATE SET status = 'blocked', requested_by = $3`,
             [a, b, req.user.id]
         );
+        res.json({ ok: true });
+    } catch (e) {
+        next(e);
+    }
+});
+
+app.post('/api/friends/unblock', requireAuth, async (req, res, next) => {
+    try {
+        const name = String(req.body.username || '').trim();
+        const other = await findUser(name);
+        if (!other) return bad(res, 404, 'utilisateur introuvable');
+        const [a, b] = orderedPair(req.user.id, other.id);
+        const { rowCount } = await pool.query(
+            `UPDATE friendships SET status = 'accepted'
+             WHERE user_a = $1 AND user_b = $2 AND status = 'blocked'`,
+            [a, b]
+        );
+        if (rowCount === 0) return bad(res, 404, 'personne bloquee avec ce pseudo');
+        await pushEvent(other.id, 'friend.accepted', {
+            by: publicUser(req.user),
+        });
         res.json({ ok: true });
     } catch (e) {
         next(e);

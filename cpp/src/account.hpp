@@ -28,6 +28,7 @@ struct Friend {
     std::string name;
     bool online = false;
     int unread = 0;
+    bool blocked = false; // bloque par moi (section dediee + deblocage)
 };
 
 struct Message {
@@ -68,6 +69,7 @@ bool friend_accept(const std::string& username, std::string* errOut);
 bool friend_decline(const std::string& username, std::string* errOut);
 bool friend_remove(const std::string& username, std::string* errOut);
 bool friend_block(const std::string& username, std::string* errOut);
+bool friend_unblock(const std::string& username, std::string* errOut);
 
 std::vector<Message> conversation(const std::string& peer);
 bool send(const std::string& peer, const std::string& text,

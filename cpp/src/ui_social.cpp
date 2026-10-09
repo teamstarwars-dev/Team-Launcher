@@ -35,8 +35,6 @@ struct SocialState {
     char draft[512] = "";      // message en cours de saisie
     char addBuf[64] = "";      // pseudo a ajouter
     char searchBuf[64] = "";   // filtre de recherche local
-    char reportBuf[200] = "";  // motif de signalement
-    std::string reportTarget;  // ami vise par le signalement
     std::string lastError;
     std::string threadId;      // fil suivi pour l'autoscroll
     size_t threadCount = 0;     // messages vus dans ce fil
@@ -207,6 +205,13 @@ void draw_friend_list(const std::vector<social::Friend>& list) {
                 if (!account::friend_decline(name, &err)) S.lastError = err;
             }
             ImGui::PopID();
+        }
+        // Demandes envoyees : visibles aussi, sinon on croit qu'elles
+        // sont parties dans le vide.
+        for (const std::string& name : account::pending_out()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::Text("%s %s", tr("Demande envoyée à"), name.c_str());
+            ImGui::PopStyleColor();
         }
     }
 
@@ -395,6 +400,9 @@ void draw_conversation(const std::vector<social::Friend>& list) {
     ImGui::SameLine();
     if (cIdle) {
         // Aucun appel : proposer d'appeler ce correspondant.
+        // Cote maison, la voix passe par Discord : sans Discord lie, le
+        // bouton seul mene a une erreur — on l'explique sur place.
+        const bool needDiscord = tl && !social::status().ready;
         ImGui::BeginDisabled(!voiceOk || cur->blocked);
         if (ImGui::SmallButton(tr("Appel vocal", "Voice call"))) {
             std::string err;
@@ -403,6 +411,13 @@ void draw_conversation(const std::vector<social::Friend>& list) {
             if (!ok) S.lastError = err;
         }
         ImGui::EndDisabled();
+        if (needDiscord) {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextUnformatted(tr("(voix : lie Discord aussi)",
+                                      "(voice: link Discord too)"));
+            ImGui::PopStyleColor();
+        }
     } else if (cPeerId == cur->id && cOut) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         ImGui::TextUnformatted(tr("Appel en cours…", "Calling…"));
@@ -464,14 +479,21 @@ void draw_conversation(const std::vector<social::Friend>& list) {
     }
     ImGui::SameLine();
     if (tl) {
-        if (ImGui::SmallButton(tr("Retirer", "Remove"))) {
-            std::string err;
-            if (!account::friend_remove(peer, &err)) S.lastError = err;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton(tr("Bloquer", "Block"))) {
-            std::string err;
-            if (!account::friend_block(peer, &err)) S.lastError = err;
+        if (cur->blocked) {
+            if (ImGui::SmallButton(tr("Débloquer", "Unblock"))) {
+                std::string err;
+                if (!account::friend_unblock(peer, &err)) S.lastError = err;
+            }
+        } else {
+            if (ImGui::SmallButton(tr("Retirer", "Remove"))) {
+                std::string err;
+                if (!account::friend_remove(peer, &err)) S.lastError = err;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Bloquer", "Block"))) {
+                std::string err;
+                if (!account::friend_block(peer, &err)) S.lastError = err;
+            }
         }
     } else {
         if (ImGui::SmallButton(cur->blocked ? tr("Débloquer", "Unblock")
@@ -480,9 +502,6 @@ void draw_conversation(const std::vector<social::Friend>& list) {
             if (!social::set_blocked(cur->id, !cur->blocked, &err))
                 S.lastError = err;
         }
-        ImGui::SameLine();
-        if (ImGui::SmallButton(tr("Signaler", "Report")))
-            S.reportTarget = cur->id;
     }
     ImGui::Separator();
 
@@ -558,66 +577,11 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         else
             S.lastError = err;
     }
-    // Echecs asynchrones et evenements d'appel : affiche une fois, puis
-    // oublie (les deux backends sont interroges, seul l'actif repond).
-    if (std::string sendErr = social::take_send_error(); !sendErr.empty())
-        S.lastError = sendErr;
-    if (std::string accErr = account::take_send_error(); !accErr.empty())
-        S.lastError = accErr;
-    if (std::string callNote = social::take_call_notice(); !callNote.empty())
-        S.lastError = callNote;
-    if (std::string accCall = account::take_call_notice(); !accCall.empty())
-        S.lastError = accCall;
-    if (std::string note = account::take_notice(); !note.empty())
-        S.lastError = note;
+    // (Notifications relevees au niveau de la page : voir social_page.)
 }
 
-void draw_report_modal() {
-    if (S.reportTarget.empty()) return;
-    ImGui::OpenPopup("###socreport");
-    const ImVec2 c(ImGui::GetIO().DisplaySize.x * 0.5f,
-                   ImGui::GetIO().DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(c, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(460, 220), ImGuiCond_Appearing);
-    const std::string title =
-        std::string(tr("Signaler", "Report")) + "###socreport";
-    bool open = true;
-    if (ImGui::BeginPopupModal(title.c_str(), &open,
-                               ImGuiWindowFlags_NoResize |
-                                   ImGuiWindowFlags_NoCollapse)) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-        ImGui::TextWrapped(
-            "%s", tr("Le signalement est transmis à Discord, qui applique sa "
-                     "propre modération. Le launcher ne conserve rien.",
-                     "The report goes to Discord, which applies its own "
-                     "moderation. The launcher keeps nothing."));
-        ImGui::PopStyleColor();
-        ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, kBg);
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputTextWithHint("##reason", tr("Motif", "Reason"),
-                                 S.reportBuf, sizeof(S.reportBuf));
-        ImGui::PopStyleColor();
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 52.0f);
-        if (ImGui::Button(tr("Annuler"), ImVec2(150, 34))) {
-            S.reportTarget.clear();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::SameLine();
-        ImGui::BeginDisabled(S.reportBuf[0] == '\0');
-        if (danger_button(tr("Signaler", "Report"), ImVec2(150, 34))) {
-            std::string err;
-            if (!social::report(S.reportTarget, S.reportBuf, &err))
-                S.lastError = err;
-            S.reportBuf[0] = '\0';
-            S.reportTarget.clear();
-            ImGui::CloseCurrentPopup();
-        }
-        ImGui::EndDisabled();
-        ImGui::EndPopup();
-    }
-    if (!open) S.reportTarget.clear();
-}
+// Le signalement n'a pas d'API dans le SDK social : pas de bouton leurre.
+// Pour signaler un utilisateur, passer par le client Discord lui-meme.
 
 } // namespace
 
@@ -637,8 +601,6 @@ void draw_split(const std::vector<social::Friend>& list) {
     draw_conversation(list);
     ImGui::EndChild();
 
-    draw_report_modal();
-
     if (!S.lastError.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
         ImGui::TextWrapped("%s", S.lastError.c_str());
@@ -652,10 +614,35 @@ void social_page() {
     if (fBig) ImGui::PopFont();
 
     // Source : Discord (SDK) ou compte maison (API). Meme mise en page,
-    // donnees et actions routees par S.src.
+    // donnees et actions routees par S.src. Le compteur signale les
+    // demandes d'amis en attente cote maison.
     if (ImGui::SmallButton(tr("Discord"))) S.src = 0;
     ImGui::SameLine();
     if (ImGui::SmallButton(tr("Team Launcher"))) S.src = 1;
+    {
+        const int demandes =
+            static_cast<int>(account::pending_in().size());
+        if (demandes > 0) {
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+            ImGui::Text("(%d)", demandes);
+            ImGui::PopStyleColor();
+        }
+    }
+    // Notifications des deux backends, relevees ici (pas seulement dans
+    // la conversation) : sinon, sans fil ouvert, on rate tout.
+    if (std::string sendErr = social::take_send_error(); !sendErr.empty())
+        S.lastError = sendErr;
+    if (std::string accErr = account::take_send_error(); !accErr.empty())
+        S.lastError = accErr;
+    if (std::string callNote = social::take_call_notice(); !callNote.empty())
+        S.lastError = callNote;
+    if (std::string accCall = account::take_call_notice(); !accCall.empty())
+        S.lastError = accCall;
+    if (std::string note = account::take_notice(); !note.empty())
+        S.lastError = note;
+    if (std::string socNote = social::take_notice(); !socNote.empty())
+        S.lastError = socNote;
     ImGui::Spacing();
 
     if (tl_tab()) {
@@ -693,6 +680,7 @@ void social_page() {
             m.presence = f.online ? social::Presence::Online
                                   : social::Presence::Offline;
             m.unread = f.unread;
+            m.blocked = f.blocked;
             list.push_back(std::move(m));
         }
         draw_split(list);

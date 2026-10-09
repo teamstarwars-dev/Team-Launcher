@@ -84,6 +84,9 @@ struct Ctx {
     std::set<std::string> historyAsked;
     std::string sendError;
     std::uint64_t pendingSeq = 0;
+    // Derniere info d'action asynchrone (ajout/blocage) : consommee par
+    // l'UI via take_notice().
+    std::string notice;
 
     // Appel vocal prive : un seul a la fois.
     enum class CallDir { None, Out, In };
@@ -406,12 +409,18 @@ std::vector<Friend> friends() {
         Friend f;
         f.id = std::to_string(rel.Id());
         f.name = user->Username();
-        // Presence reelle du SDK (en ligne / absent / ne pas deranger /
-        // streaming) ; l'activite de jeu bascule en « en jeu ».
-        f.presence = map_presence(user->Status());
-        if (const auto act = user->GameActivity()) {
-            f.presence = Presence::Playing;
-            f.activity = "Joue à " + act->Name();
+        // Bloque cote Discord : affiche « bloqué », pas « hors ligne ».
+        if (user->Status() == discordpp::StatusType::Blocked) {
+            f.blocked = true;
+            f.presence = Presence::Offline;
+        } else {
+            // Presence reelle du SDK (en ligne / absent / ne pas deranger /
+            // streaming) ; l'activite de jeu bascule en « en jeu ».
+            f.presence = map_presence(user->Status());
+            if (const auto act = user->GameActivity()) {
+                f.presence = Presence::Playing;
+                f.activity = "Joue à " + act->Name();
+            }
         }
         const auto uit = c.unread.find(f.id);
         f.unread = (uit != c.unread.end()) ? uit->second : 0;
@@ -505,7 +514,26 @@ bool add_friend(const std::string& pseudo, std::string* errOut) {
         if (errOut) *errOut = "Indique un pseudo.";
         return false;
     }
+#ifdef TL_HAS_DISCORD_SOCIAL
+    // Demande d'ami Discord (par pseudo unique, pas le nom affiche).
+    // Reponse asynchrone : echec -> notice, succes -> rien (la liste se
+    // rafraichit via les evenements de relation).
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        if (!ctx().client) return refuse(errOut);
+        client = ctx().client;
+    }
+    client->SendDiscordFriendRequest(
+        pseudo, [](discordpp::ClientResult r) {
+            if (r.Successful()) return;
+            std::lock_guard<std::mutex> lk(lock());
+            ctx().notice = "Demande impossible (pseudo inconnu ?).";
+        });
+    return true;
+#else
     return refuse(errOut);
+#endif
 }
 
 bool send(const std::string& friendId, const std::string& text,
@@ -1024,10 +1052,50 @@ bool voice_set_denoise(std::uint64_t lobby, bool denoise, std::string* errOut) {
 #endif
 }
 
-bool set_blocked(const std::string& friendId, bool, std::string* errOut) {
+bool set_blocked(const std::string& friendId, bool blocked,
+                 std::string* errOut) {
     if (!status().ready) return refuse(errOut);
     if (friendId.empty()) return refuse(errOut);
+#ifdef TL_HAS_DISCORD_SOCIAL
+    const std::uint64_t id = parse_user_id(friendId);
+    if (id == 0) {
+        if (errOut) *errOut = "Destinataire invalide.";
+        return false;
+    }
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        if (!ctx().client) return refuse(errOut);
+        client = ctx().client;
+    }
+    const auto done = [](discordpp::ClientResult r, const char* failMsg) {
+        if (r.Successful()) return;
+        std::lock_guard<std::mutex> lk(lock());
+        ctx().notice = failMsg;
+    };
+    if (blocked)
+        client->BlockUser(id, [done](discordpp::ClientResult r) {
+            done(r, "Blocage impossible.");
+        });
+    else
+        client->UnblockUser(id, [done](discordpp::ClientResult r) {
+            done(r, "Déblocage impossible.");
+        });
+    return true;
+#else
     return refuse(errOut);
+#endif
+}
+
+std::string take_notice() {
+    std::lock_guard<std::mutex> lk(lock());
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::string n = ctx().notice;
+    ctx().notice.clear();
+    return n;
+#else
+    return "";
+#endif
 }
 
 bool report(const std::string& friendId, const std::string& reason,

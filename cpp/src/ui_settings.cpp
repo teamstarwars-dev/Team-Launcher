@@ -23,6 +23,8 @@
 #endif
 
 #include <functional>
+#include <mutex>
+#include <thread>
 #include <utility>
 
 #ifndef TL_VERSION_STRING
@@ -931,6 +933,18 @@ void tab_integrations() {
     }
     {
         const account::Status st = account::status();
+        // Connexion/inscription asynchrones : le HTTP ne bloque jamais
+        // l'interface (60 s de timeout sinon). Le fil de fond ecrit le
+        // resultat, la frame suivante l'affiche.
+        struct AuthPending {
+            std::mutex m;
+            bool busy = false;
+            bool done = false;
+            bool ok = false;
+            bool wasRegister = false;
+            std::string msg;
+        };
+        static AuthPending auth;
         if (!st.configured) {
             // Rien de plus sans URL.
         } else if (!st.loggedIn) {
@@ -942,32 +956,74 @@ void tab_integrations() {
             ImGui::InputTextWithHint("##tlpass", tr("Mot de passe"),
                                      b.tlApiPass, sizeof(b.tlApiPass),
                                      ImGuiInputTextFlags_Password);
-            if (ImGui::Button(tr("Se connecter", "Sign in"), ImVec2(160, 34))) {
-                std::string err;
-                if (account::login(trimmed(b.tlApiUser), b.tlApiPass, &err)) {
-                    b.tlApiPass[0] = '\0';
-                    set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
-                    account::start();
-                    notify_toast(tr("Compte"), tr("Connecté.",
-                                                          "Signed in."));
-                } else {
-                    notify_toast(tr("Compte"), err);
+            bool busyNow = false;
+            {
+                std::lock_guard<std::mutex> lk(auth.m);
+                busyNow = auth.busy;
+                if (auth.done) {
+                    auth.done = false;
+                    auth.busy = false;
+                    if (auth.ok) {
+                        b.tlApiPass[0] = '\0';
+                        set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
+                        account::start();
+                    }
+                    notify_toast(tr("Compte"), auth.msg);
+                }
+            }
+            ImGui::BeginDisabled(busyNow);
+            // Labels dynamiques : suffixe ## distinct OBLIGATOIRE, sinon
+            // les deux boutons partagent l'ID « Patiente… » (assert ImGui).
+            const std::string loginLabel =
+                busyNow ? tr("Patiente…", "Waiting…") + std::string("##login")
+                        : tr("Se connecter", "Sign in");
+            if (ImGui::Button(loginLabel.c_str(), ImVec2(160, 34))) {
+                const std::string u = trimmed(b.tlApiUser);
+                const std::string p = b.tlApiPass;
+                std::lock_guard<std::mutex> lk(auth.m);
+                if (!auth.busy) {
+                    auth.busy = true;
+                    auth.done = false;
+                    auth.wasRegister = false;
+                    std::thread([u, p]() {
+                        std::string err;
+                        const bool ok = account::login(u, p, &err);
+                        std::lock_guard<std::mutex> lk2(auth.m);
+                        auth.busy = false;
+                        auth.done = true;
+                        auth.ok = ok;
+                        auth.msg =
+                            ok ? tr("Connecté.", "Signed in.") : err;
+                    }).detach();
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button(tr("Créer un compte", "Sign up"), ImVec2(160, 34))) {
-                std::string err;
-                if (account::register_account(trimmed(b.tlApiUser), b.tlApiPass,
-                                              &err)) {
-                    b.tlApiPass[0] = '\0';
-                    set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
-                    account::start();
-                    notify_toast(tr("Compte"), tr("Compte créé.",
-                                                          "Account created."));
-                } else {
-                    notify_toast(tr("Compte"), err);
+            const std::string signupLabel =
+                busyNow ? tr("Patiente…", "Waiting…") + std::string("##signup")
+                        : tr("Créer un compte", "Sign up");
+            if (ImGui::Button(signupLabel.c_str(), ImVec2(160, 34))) {
+                const std::string u = trimmed(b.tlApiUser);
+                const std::string p = b.tlApiPass;
+                std::lock_guard<std::mutex> lk(auth.m);
+                if (!auth.busy) {
+                    auth.busy = true;
+                    auth.done = false;
+                    auth.wasRegister = true;
+                    std::thread([u, p]() {
+                        std::string err;
+                        const bool ok =
+                            account::register_account(u, p, &err);
+                        std::lock_guard<std::mutex> lk2(auth.m);
+                        auth.busy = false;
+                        auth.done = true;
+                        auth.ok = ok;
+                        auth.msg = ok ? tr("Compte créé.",
+                                                  "Account created.")
+                                              : err;
+                    }).detach();
                 }
             }
+            ImGui::EndDisabled();
             if (!st.detail.empty()) {
                 ImGui::PushStyleColor(ImGuiCol_Text, kDim);
                 ImGui::TextWrapped("%s", st.detail.c_str());

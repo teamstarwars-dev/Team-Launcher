@@ -1327,7 +1327,21 @@ void frame(SDL_Window* window) {
     ImGui::Spacing();
     nav(icons::Id::Download, "Téléchargements", 15);
     nav(icons::Id::Help, "Aide", 17);
-    nav(icons::Id::Account, "Amis", 16);
+    // Pastille d'amis : demandes en attente (compte maison) + appel entrant
+    // en cours (n'importe quelle source). Sans elle, une demande reçue
+    // pendant qu'on est ailleurs passe inaperçue.
+    {
+        std::string amis = tr("Amis");
+        const int demandes =
+            static_cast<int>(account::pending_in().size());
+        const bool sonne = social::call_info().incoming ||
+                           account::call_info().incoming;
+        if (demandes > 0) amis += " (" + std::to_string(demandes) + ")";
+        if (sonne) amis += tr(" — appel !", " — call!");
+        if (icons::nav_item(icons::Id::Account, amis.c_str(), g.page == 16,
+                            compact))
+            g.page = 16;
+    }
     nav(icons::Id::Account, "Compte", 7);
     nav(icons::Id::Settings, "Paramètres", 8);
 

@@ -110,6 +110,8 @@ bool call_set_deaf(bool deaf, std::string* errOut);
 bool call_set_denoise(bool denoise, std::string* errOut);
 // Dernier evenement d'appel (« Appel refusé. »...) : consomme une fois.
 std::string take_call_notice();
+// Derniere info d'action asynchrone (demande envoyee, blocage...) : une fois.
+std::string take_notice();
 
 // --- Audio voix reutilisable (lobby Discord) --------------------------------
 // Rejoint (ou cree) le lobby vocal `secret` et demarre l'appel : utilise
