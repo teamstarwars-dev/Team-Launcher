@@ -2,6 +2,8 @@
 
 #include "presets.hpp"
 #include "social.hpp"
+
+#include "account.hpp"
 #include "apievents.hpp"
 #include "apikeys.hpp"
 #include "gamesession.hpp"
@@ -1081,6 +1083,9 @@ void init(SDL_Window*) {
     // SDK n est pas la ou si l integration est desactivee.
     social::start();
 
+    // Compte Team Launcher (API maison). Sans effet sans URL ni jeton.
+    account::start();
+
     // Cache de metadonnees : un plafond, sinon il grossit indefiniment. Le
     // menage se fait au demarrage plutot qu'a chaque ecriture — parcourir
     // le dossier a chaque reponse mise en cache couterait plus cher que ce
@@ -1376,6 +1381,9 @@ void frame(SDL_Window* window) {
     // callbacks (connexion, amis). Sans effet s'il n'est pas la.
     social::pump();
 
+    // Timeouts d'appel du compte maison. Sans effet si non configure.
+    account::pump();
+
     // ---- Phase 8 : préchauffage et pont de l'API locale ----
     phase8_pump(window);
 
@@ -1480,6 +1488,7 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: backup_timer\n");
     backup::auto_stop();
     social::stop();
+    account::stop();
     downloads::save_state();
     downloads::shutdown();
     if (dbg) std::fprintf(stderr, "SH: downloads_stop done\n");

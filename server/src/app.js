@@ -16,6 +16,15 @@ app.disable('x-powered-by');
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '64kb' }));
 
+// Le client C++ ne fait que GET/POST : DELETE via X-HTTP-Method-Override.
+app.use((req, res, next) => {
+    const override = req.get('X-HTTP-Method-Override');
+    if (req.method === 'POST' && override && /^[A-Z]+$/.test(override)) {
+        req.method = override;
+    }
+    next();
+});
+
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
 const msgLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
 const callLimiter = rateLimit({ windowMs: 60 * 1000, max: 20 });

@@ -95,6 +95,7 @@ struct Ctx {
     std::string callSecret;       // secret du lobby, echange en DM
     bool callMuted = false;
     bool callDeaf = false;
+    bool callDenoise = false; // reduction de bruit active cote SDK
     long long callSince = 0;      // voix etablie a cette heure unix
     long long callDeadline = 0;   // timeout sortant (unix), 0 si aucun
     std::string callNotice;       // dernier evenement, consomme par l'UI
@@ -104,6 +105,17 @@ struct Ctx {
 Ctx& ctx() {
     static Ctx c;
     return c;
+}
+
+// Tache reportee sur le thread de pump (qui fait tourner l'interface) :
+// les callbacks du SDK peuvent arriver de n'importe quel thread.
+void post_task(std::function<void()> task) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::lock_guard<std::mutex> lk(lock());
+    ctx().tasks.push_back(std::move(task));
+#else
+    (void)task;
+#endif
 }
 
 std::uint64_t app_id() {
@@ -164,6 +176,7 @@ void reset_call_locked(Ctx& c) {
     c.callSecret.clear();
     c.callMuted = false;
     c.callDeaf = false;
+    c.callDenoise = false;
     c.callSince = 0;
     c.callDeadline = 0;
 }
@@ -577,6 +590,7 @@ CallInfo call_info() {
     i.peerName = c.callPeerName;
     i.muted = c.callMuted;
     i.deaf = c.callDeaf;
+    i.denoise = c.callDenoise;
     i.startedUnix = c.callSince;
 #endif
     return i;
@@ -665,6 +679,16 @@ bool call_start(const std::string& friendId, std::string* errOut) {
                 }
                 return;
             }
+            // Traitement audio d'entree : suppression du bruit + annulation
+            // d'echo actives d'office (niveaux client, pas par appel).
+            client->SetNoiseSuppression(true);
+            client->SetEchoCancellation(true);
+            {
+                std::lock_guard<std::mutex> lk(lock());
+                auto& c = ctx();
+                if (c.callDir == Ctx::CallDir::Out && c.callSecret == secret)
+                    c.callDenoise = true;
+            }
             // Invitation : si elle ne part pas, tout nettoyer.
             send_signal(client, parse_user_id(friendId), "invite", secret,
                         [client, secret](discordpp::ClientResult sr,
@@ -716,6 +740,8 @@ bool call_accept(std::string* errOut) {
                 return;
             }
             const discordpp::Call call = client->StartCall(lobbyId);
+            client->SetNoiseSuppression(true);
+            client->SetEchoCancellation(true);
             {
                 std::lock_guard<std::mutex> lk(lock());
                 auto& c = ctx();
@@ -732,6 +758,7 @@ bool call_accept(std::string* errOut) {
                 c.callLobby = lobbyId;
                 c.callActive = true;
                 c.callSince = unix_now();
+                c.callDenoise = true;
             }
             // Prevenir l'appelant qu'on arrive (l'etat actif suit aussi
             // l'entree au lobby de son cote).
@@ -797,9 +824,50 @@ bool call_hangup(std::string* errOut) {
 
 bool call_set_muted(bool muted, std::string* errOut) {
     if (!status().ready) return refuse(errOut);
+    std::uint64_t lobby = 0;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+#ifdef TL_HAS_DISCORD_SOCIAL
+        lobby = ctx().callLobby;
+#endif
+        if (lobby == 0) {
+            if (errOut) *errOut = "Aucun appel en cours.";
+            return false;
+        }
+    }
+    if (!voice_set_muted(lobby, muted, errOut)) return false;
+    std::lock_guard<std::mutex> lk(lock());
+#ifdef TL_HAS_DISCORD_SOCIAL
+    ctx().callMuted = muted;
+#endif
+    return true;
+}
+
+bool call_set_deaf(bool deaf, std::string* errOut) {
+    if (!status().ready) return refuse(errOut);
+    std::uint64_t lobby = 0;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+#ifdef TL_HAS_DISCORD_SOCIAL
+        lobby = ctx().callLobby;
+#endif
+        if (lobby == 0) {
+            if (errOut) *errOut = "Aucun appel en cours.";
+            return false;
+        }
+    }
+    if (!voice_set_deaf(lobby, deaf, errOut)) return false;
+    std::lock_guard<std::mutex> lk(lock());
+#ifdef TL_HAS_DISCORD_SOCIAL
+    ctx().callDeaf = deaf;
+#endif
+    return true;
+}
+
+bool call_set_denoise(bool denoise, std::string* errOut) {
+    if (!status().ready) return refuse(errOut);
 #ifdef TL_HAS_DISCORD_SOCIAL
     std::shared_ptr<discordpp::Client> client;
-    std::uint64_t lobby = 0;
     {
         std::lock_guard<std::mutex> lk(lock());
         auto& c = ctx();
@@ -808,7 +876,83 @@ bool call_set_muted(bool muted, std::string* errOut) {
             return false;
         }
         client = c.client;
-        lobby = c.callLobby;
+    }
+    // Niveau client (comme l'activation d'office au demarrage d'appel).
+    client->SetNoiseSuppression(denoise);
+    std::lock_guard<std::mutex> lk(lock());
+    ctx().callDenoise = denoise;
+    return true;
+#else
+    return refuse(errOut);
+#endif
+}
+
+// --- Audio voix reutilisable (compte maison) --------------------------------
+
+void voice_join_async(const std::string& secret, VoiceJoinCallback cb) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    if (!cb) return;
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        auto& c = ctx();
+        if (!c.client || !c.started ||
+            c.status != discordpp::Client::Status::Ready || secret.empty()) {
+            post_task([cb]() { cb(0, "Vocal Discord indisponible."); });
+            return;
+        }
+        client = c.client;
+    }
+    client->CreateOrJoinLobby(
+        secret, [client, cb](discordpp::ClientResult r, std::uint64_t lobbyId) {
+            if (!r.Successful() || lobbyId == 0) {
+                post_task([cb]() { cb(0, "Création du vocal impossible."); });
+                return;
+            }
+            discordpp::Call call = client->StartCall(lobbyId);
+            client->SetNoiseSuppression(true);
+            client->SetEchoCancellation(true);
+            post_task([client, cb, lobbyId, ok = static_cast<bool>(call)]() {
+                if (!ok) {
+                    leave_lobby_async(client, lobbyId);
+                    cb(0, "Vocal indisponible.");
+                    return;
+                }
+                cb(lobbyId, "");
+            });
+        });
+#else
+    if (cb) cb(0, "SDK social absent.");
+#endif
+}
+
+void voice_leave(std::uint64_t lobby) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        client = ctx().client;
+    }
+    leave_lobby_async(client, lobby);
+#else
+    (void)lobby;
+#endif
+}
+
+bool voice_set_muted(std::uint64_t lobby, bool muted, std::string* errOut) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    if (lobby == 0) {
+        if (errOut) *errOut = "Aucun appel en cours.";
+        return false;
+    }
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        client = ctx().client;
+    }
+    if (!client) {
+        if (errOut) *errOut = "Vocal Discord indisponible.";
+        return false;
     }
     discordpp::Call call = client->GetCall(lobby);
     if (!call) {
@@ -816,28 +960,29 @@ bool call_set_muted(bool muted, std::string* errOut) {
         return false;
     }
     call.SetSelfMute(muted);
-    std::lock_guard<std::mutex> lk(lock());
-    ctx().callMuted = muted;
     return true;
 #else
-    return refuse(errOut);
+    (void)lobby;
+    (void)muted;
+    if (errOut) *errOut = "Vocal indisponible.";
+    return false;
 #endif
 }
 
-bool call_set_deaf(bool deaf, std::string* errOut) {
-    if (!status().ready) return refuse(errOut);
+bool voice_set_deaf(std::uint64_t lobby, bool deaf, std::string* errOut) {
 #ifdef TL_HAS_DISCORD_SOCIAL
+    if (lobby == 0) {
+        if (errOut) *errOut = "Aucun appel en cours.";
+        return false;
+    }
     std::shared_ptr<discordpp::Client> client;
-    std::uint64_t lobby = 0;
     {
         std::lock_guard<std::mutex> lk(lock());
-        auto& c = ctx();
-        if (!c.client || c.callLobby == 0) {
-            if (errOut) *errOut = "Aucun appel en cours.";
-            return false;
-        }
-        client = c.client;
-        lobby = c.callLobby;
+        client = ctx().client;
+    }
+    if (!client) {
+        if (errOut) *errOut = "Vocal Discord indisponible.";
+        return false;
     }
     discordpp::Call call = client->GetCall(lobby);
     if (!call) {
@@ -845,11 +990,37 @@ bool call_set_deaf(bool deaf, std::string* errOut) {
         return false;
     }
     call.SetSelfDeaf(deaf);
-    std::lock_guard<std::mutex> lk(lock());
-    ctx().callDeaf = deaf;
     return true;
 #else
-    return refuse(errOut);
+    (void)lobby;
+    (void)deaf;
+    if (errOut) *errOut = "Vocal indisponible.";
+    return false;
+#endif
+}
+
+bool voice_set_denoise(std::uint64_t lobby, bool denoise, std::string* errOut) {
+#ifdef TL_HAS_DISCORD_SOCIAL
+    if (lobby == 0) {
+        if (errOut) *errOut = "Aucun appel en cours.";
+        return false;
+    }
+    std::shared_ptr<discordpp::Client> client;
+    {
+        std::lock_guard<std::mutex> lk(lock());
+        client = ctx().client;
+    }
+    if (!client) {
+        if (errOut) *errOut = "Vocal Discord indisponible.";
+        return false;
+    }
+    client->SetNoiseSuppression(denoise);
+    return true;
+#else
+    (void)lobby;
+    (void)denoise;
+    if (errOut) *errOut = "Vocal indisponible.";
+    return false;
 #endif
 }
 

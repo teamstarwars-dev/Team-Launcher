@@ -19,6 +19,7 @@
 // dependent pas du fournisseur et ne seront pas a refaire : brancher le
 // SDK revient a implementer `Provider`.
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -96,6 +97,7 @@ struct CallInfo {
     std::string peerName;
     bool muted = false;
     bool deaf = false;
+    bool denoise = false;  // reduction de bruit (suppression SDK)
     long long startedUnix = 0; // voix etablie a cette heure, 0 sinon
 };
 CallInfo call_info();
@@ -105,8 +107,24 @@ bool call_decline(std::string* errOut);
 bool call_hangup(std::string* errOut);
 bool call_set_muted(bool muted, std::string* errOut);
 bool call_set_deaf(bool deaf, std::string* errOut);
+bool call_set_denoise(bool denoise, std::string* errOut);
 // Dernier evenement d'appel (« Appel refusé. »...) : consomme une fois.
 std::string take_call_notice();
+
+// --- Audio voix reutilisable (lobby Discord) --------------------------------
+// Rejoint (ou cree) le lobby vocal `secret` et demarre l'appel : utilise
+// pour les appels dont la signalisation vient d'ailleurs (compte maison).
+// Asynchrone : le resultat arrive via cb, TOUJOURS sur le thread de pump.
+// voice_leave quitte le vocal puis le lobby (sans bloquer). Les reglages
+// s'appliquent au Call du lobby indique.
+using VoiceJoinCallback =
+    std::function<void(std::uint64_t lobby, const std::string& error)>;
+void voice_join_async(const std::string& secret, VoiceJoinCallback cb);
+void voice_leave(std::uint64_t lobby);
+bool voice_set_muted(std::uint64_t lobby, bool muted, std::string* errOut);
+bool voice_set_deaf(std::uint64_t lobby, bool deaf, std::string* errOut);
+bool voice_set_denoise(std::uint64_t lobby, bool denoise,
+                       std::string* errOut);
 // Lance la liaison du compte Discord. Le SDK ouvre lui-meme l'ecran
 // d'autorisation dans l'application Discord : le launcher n'a ni serveur de
 // redirection ni code a afficher, contrairement a l'authentification

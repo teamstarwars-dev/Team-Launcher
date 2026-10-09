@@ -1,6 +1,7 @@
 #include "ui_internal.hpp"
-
 #include "backup.hpp"
+
+#include "account.hpp"
 #include "downloads.hpp"
 #include "netcache.hpp"
 #include "fonts.hpp"
@@ -54,6 +55,9 @@ struct Buffers {
     char bg[16] = "";
     char card[16] = "";
     char accent[16] = "";
+    char tlApiUrl[320] = "";
+    char tlApiUser[64] = "";
+    char tlApiPass[128] = "";
     bool init = false;
 };
 Buffers b;
@@ -72,6 +76,8 @@ void reload_buffers() {
     set(b.curseForge, sizeof(b.curseForge), s.curseForgeApiKey);
     set(b.webhook, sizeof(b.webhook), s.discordTelemetryWebhook);
     set(b.helpDiscord, sizeof(b.helpDiscord), s.helpDiscordUrl);
+    set(b.tlApiUrl, sizeof(b.tlApiUrl), s.tlApiUrl);
+    set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
     set(b.bg, sizeof(b.bg), s.bgColor.empty() ? hex_of(kBg) : s.bgColor);
     set(b.card, sizeof(b.card), s.cardColor.empty() ? hex_of(kCard) : s.cardColor);
     set(b.accent, sizeof(b.accent),
@@ -904,6 +910,78 @@ void tab_integrations() {
                                 "discord.com/developers/applications under the "
                                 "exact name \"logo\" (Rich Presence > Art Assets)."));
     ImGui::PopStyleColor();
+
+    section("Compte Team Launcher");
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped("%s", tr("Amis, messages et appels vocaux sans Discord, "
+                                "via ton propre serveur (URL de l'API). "
+                                "Laisse vide pour désactiver.",
+                                "Friends, messages and voice calls without "
+                                "Discord, through your own server (API URL). "
+                                "Leave empty to disable."));
+    ImGui::PopStyleColor();
+    ImGui::SetNextItemWidth(420.0f);
+    if (ImGui::InputTextWithHint(
+            "##tlurl", tr("URL de l'API (ex. http://192.168.1.58:3000)"),
+            b.tlApiUrl, sizeof(b.tlApiUrl))) {
+        s.tlApiUrl = trimmed(b.tlApiUrl);
+        DataStore::save();
+        account::stop();
+        account::start();
+    }
+    {
+        const account::Status st = account::status();
+        if (!st.configured) {
+            // Rien de plus sans URL.
+        } else if (!st.loggedIn) {
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::InputTextWithHint("##tluser", tr("Pseudo"), b.tlApiUser,
+                                     sizeof(b.tlApiUser));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::InputTextWithHint("##tlpass", tr("Mot de passe"),
+                                     b.tlApiPass, sizeof(b.tlApiPass),
+                                     ImGuiInputTextFlags_Password);
+            if (ImGui::Button(tr("Se connecter", "Sign in"), ImVec2(160, 34))) {
+                std::string err;
+                if (account::login(trimmed(b.tlApiUser), b.tlApiPass, &err)) {
+                    b.tlApiPass[0] = '\0';
+                    set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
+                    account::start();
+                    notify_toast(tr("Compte"), tr("Connecté.",
+                                                          "Signed in."));
+                } else {
+                    notify_toast(tr("Compte"), err);
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(tr("Créer un compte", "Sign up"), ImVec2(160, 34))) {
+                std::string err;
+                if (account::register_account(trimmed(b.tlApiUser), b.tlApiPass,
+                                              &err)) {
+                    b.tlApiPass[0] = '\0';
+                    set(b.tlApiUser, sizeof(b.tlApiUser), s.tlApiUser);
+                    account::start();
+                    notify_toast(tr("Compte"), tr("Compte créé.",
+                                                          "Account created."));
+                } else {
+                    notify_toast(tr("Compte"), err);
+                }
+            }
+            if (!st.detail.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextWrapped("%s", st.detail.c_str());
+                ImGui::PopStyleColor();
+            }
+        } else {
+            ImGui::Text("%s %s", tr("Connecté en tant que :"), s.tlApiUser.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Se déconnecter", "Sign out"))) {
+                account::logout();
+                notify_toast(tr("Compte"), tr("Déconnecté.", "Signed out."));
+            }
+        }
+    }
 
     section("MISES À JOUR AUTOMATIQUES");
     ImGui::SetNextItemWidth(420.0f);

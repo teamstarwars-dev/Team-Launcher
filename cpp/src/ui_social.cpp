@@ -1,5 +1,6 @@
 #include "ui_internal.hpp"
 
+#include "account.hpp"
 #include "icons.hpp"
 #include "social.hpp"
 
@@ -29,7 +30,8 @@ namespace tl::ui {
 namespace {
 
 struct SocialState {
-    std::string selected;      // ami courant
+    std::string selected;      // ami courant (id Discord, ou "tl:"+pseudo)
+    int src = 0;               // 0 = Discord, 1 = compte Team Launcher
     char draft[512] = "";      // message en cours de saisie
     char addBuf[64] = "";      // pseudo a ajouter
     char searchBuf[64] = "";   // filtre de recherche local
@@ -69,6 +71,15 @@ int presence_rank(const social::Friend& f) {
     }
     return 2;
 }
+
+// Les ids du compte maison sont prefixes ("tl:"+pseudo) pour ne jamais
+// entrer en collision avec les ids numeriques Discord. Strip a l'usage.
+std::string tl_strip(const std::string& id) {
+    if (id.rfind("tl:", 0) == 0) return id.substr(3);
+    return id;
+}
+
+bool tl_tab() { return S.src == 1; }
 
 // Minuscules byte a byte (suffit au filtre : on compare la frappe telle
 // quelle, sans plier les accents).
@@ -169,10 +180,34 @@ void draw_friend_list(const std::vector<social::Friend>& list) {
     const bool go = ImGui::Button(tr("Ajouter", "Add"), ImVec2(80, 0));
     if ((enter || go) && S.addBuf[0] != '\0') {
         std::string err;
-        if (social::add_friend(S.addBuf, &err))
+        const bool ok = tl_tab() ? account::friend_request(S.addBuf, &err)
+                                 : social::add_friend(S.addBuf, &err);
+        if (ok)
             S.addBuf[0] = '\0';
         else
             S.lastError = err;
+    }
+
+    // Demandes recues (compte maison) : accepter ou refuser ici, sinon
+    // elles s'entassent invisibles.
+    if (tl_tab()) {
+        for (const std::string& name : account::pending_in()) {
+            ImGui::PushID(("tlpin:" + name).c_str());
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Accepter", "Accept"))) {
+                std::string err;
+                if (!account::friend_accept(name, &err)) S.lastError = err;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Refuser", "Decline"))) {
+                std::string err;
+                if (!account::friend_decline(name, &err)) S.lastError = err;
+            }
+            ImGui::PopID();
+        }
     }
 
     ImGui::Separator();
@@ -279,6 +314,38 @@ void draw_friend_list(const std::vector<social::Friend>& list) {
 }
 
 void draw_conversation(const std::vector<social::Friend>& list) {
+    const bool tl = tl_tab();
+    // Banniere d'appel entrant, quel que soit le fil affiche et l'onglet :
+    // un appel manqué parce qu'on regardait l'autre source, non merci.
+    {
+        const auto sci = social::call_info();
+        const auto aci = account::call_info();
+        const bool useTl = !sci.incoming && aci.incoming;
+        if (sci.incoming || aci.incoming) {
+            const std::string& peerName = useTl ? aci.peer : sci.peerName;
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+            ImGui::TextUnformatted(tr("Appel entrant de :", "Incoming call from:"));
+            ImGui::PopStyleColor();
+            ImGui::SameLine();
+            ImGui::TextUnformatted(peerName.c_str());
+            ImGui::SameLine();
+            if (accent_button(tr("Décrocher", "Answer"), ImVec2(120, 0))) {
+                std::string err;
+                const bool ok = useTl ? account::call_accept(&err)
+                                      : social::call_accept(&err);
+                if (!ok) S.lastError = err;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton(tr("Refuser", "Decline"))) {
+                std::string err;
+                const bool ok = useTl ? account::call_decline(&err)
+                                      : social::call_decline(&err);
+                if (!ok) S.lastError = err;
+            }
+            ImGui::Separator();
+        }
+    }
+
     const social::Friend* cur = nullptr;
     for (const auto& f : list)
         if (f.id == S.selected) cur = &f;
@@ -290,64 +357,90 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         ImGui::PopStyleColor();
         return;
     }
+    const std::string peer = tl ? tl_strip(cur->id) : cur->id;
 
     // --- en-tete : nom, vocal, blocage, signalement ---
-    const social::CallInfo ci = social::call_info();
-    const bool voiceOk = social::status().voiceAvailable;
-    // Banniere d'appel entrant, quel que soit le fil affiche.
-    if (ci.incoming) {
-        ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
-        ImGui::TextUnformatted(tr("Appel entrant de :", "Incoming call from:"));
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        ImGui::TextUnformatted(ci.peerName.c_str());
-        ImGui::SameLine();
-        if (accent_button(tr("Décrocher", "Answer"), ImVec2(120, 0))) {
-            std::string err;
-            if (!social::call_accept(&err)) S.lastError = err;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton(tr("Refuser", "Decline"))) {
-            std::string err;
-            if (!social::call_decline(&err)) S.lastError = err;
-        }
-        ImGui::Separator();
+    // Etats d'appel unifies (les deux backends ont les memes champs).
+    bool cIdle = true, cOut = false, cAct = false;
+    std::string cPeerId, cPeerName;
+    bool cMut = false, cDeaf = false, cDen = false;
+    long long cSince = 0;
+    bool voiceOk = false;
+    if (tl) {
+        const auto ci = account::call_info();
+        cIdle = ci.idle;
+        cOut = ci.outgoing;
+        cAct = ci.active;
+        cPeerId = ci.peer.empty() ? "" : ("tl:" + ci.peer);
+        cPeerName = ci.peer;
+        cMut = ci.muted;
+        cDeaf = ci.deaf;
+        cDen = ci.denoise;
+        cSince = ci.startedUnix;
+        voiceOk = account::status().loggedIn;
+    } else {
+        const auto ci = social::call_info();
+        cIdle = ci.idle;
+        cOut = ci.outgoing;
+        cAct = ci.active;
+        cPeerId = ci.peerId;
+        cPeerName = ci.peerName;
+        cMut = ci.muted;
+        cDeaf = ci.deaf;
+        cDen = ci.denoise;
+        cSince = ci.startedUnix;
+        voiceOk = social::status().voiceAvailable;
     }
     ImGui::TextUnformatted(cur->name.c_str());
     ImGui::SameLine();
-    if (ci.idle) {
+    if (cIdle) {
         // Aucun appel : proposer d'appeler ce correspondant.
         ImGui::BeginDisabled(!voiceOk || cur->blocked);
         if (ImGui::SmallButton(tr("Appel vocal", "Voice call"))) {
             std::string err;
-            if (!social::call_start(cur->id, &err)) S.lastError = err;
+            const bool ok = tl ? account::call_start(peer, &err)
+                               : social::call_start(cur->id, &err);
+            if (!ok) S.lastError = err;
         }
         ImGui::EndDisabled();
-    } else if (ci.peerId == cur->id && ci.outgoing) {
+    } else if (cPeerId == cur->id && cOut) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         ImGui::TextUnformatted(tr("Appel en cours…", "Calling…"));
         ImGui::PopStyleColor();
         ImGui::SameLine();
         if (ImGui::SmallButton(tr("Raccrocher", "Hang up"))) {
             std::string err;
-            if (!social::call_hangup(&err)) S.lastError = err;
+            const bool ok =
+                tl ? account::call_hangup(&err) : social::call_hangup(&err);
+            if (!ok) S.lastError = err;
         }
-    } else if (ci.peerId == cur->id && ci.active) {
-        if (ImGui::SmallButton(ci.muted ? tr("Micro coupé", "Muted")
-                                        : tr("Micro", "Mute"))) {
+    } else if (cPeerId == cur->id && cAct) {
+        if (ImGui::SmallButton(cMut ? tr("Micro coupé", "Muted")
+                                    : tr("Micro", "Mute"))) {
             std::string err;
-            if (!social::call_set_muted(!ci.muted, &err)) S.lastError = err;
+            const bool ok = tl ? account::call_set_muted(!cMut, &err)
+                               : social::call_set_muted(!cMut, &err);
+            if (!ok) S.lastError = err;
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton(ci.deaf ? tr("Son coupé", "Deafened")
-                                       : tr("Son", "Deafen"))) {
+        if (ImGui::SmallButton(cDeaf ? tr("Son coupé", "Deafened")
+                                     : tr("Son", "Deafen"))) {
             std::string err;
-            if (!social::call_set_deaf(!ci.deaf, &err)) S.lastError = err;
+            const bool ok = tl ? account::call_set_deaf(!cDeaf, &err)
+                               : social::call_set_deaf(!cDeaf, &err);
+            if (!ok) S.lastError = err;
         }
         ImGui::SameLine();
-        const long long dur = ci.startedUnix > 0
-                                  ? std::time(nullptr) - ci.startedUnix
-                                  : 0;
+        if (ImGui::SmallButton(cDen ? tr("Bruit réduit", "Denoised")
+                                    : tr("Bruit", "Noise"))) {
+            std::string err;
+            const bool ok = tl ? account::call_set_denoise(!cDen, &err)
+                               : social::call_set_denoise(!cDen, &err);
+            if (!ok) S.lastError = err;
+        }
+        ImGui::SameLine();
+        const long long dur =
+            cSince > 0 ? std::time(nullptr) - cSince : 0;
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%02lld:%02lld",
                       dur / 60 < 0 ? 0 : dur / 60, dur % 60 < 0 ? 0 : dur % 60);
@@ -357,7 +450,9 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         ImGui::SameLine();
         if (ImGui::SmallButton(tr("Raccrocher", "Hang up"))) {
             std::string err;
-            if (!social::call_hangup(&err)) S.lastError = err;
+            const bool ok =
+                tl ? account::call_hangup(&err) : social::call_hangup(&err);
+            if (!ok) S.lastError = err;
         }
     } else {
         // Appel avec un autre correspondant : le signaler sans proposer.
@@ -365,25 +460,54 @@ void draw_conversation(const std::vector<social::Friend>& list) {
         ImGui::TextUnformatted(tr("En appel avec :", "In a call with:"));
         ImGui::PopStyleColor();
         ImGui::SameLine();
-        ImGui::TextUnformatted(ci.peerName.c_str());
+        ImGui::TextUnformatted(cPeerName.c_str());
     }
     ImGui::SameLine();
-    if (ImGui::SmallButton(cur->blocked ? tr("Débloquer", "Unblock")
-                                        : tr("Bloquer", "Block"))) {
-        std::string err;
-        if (!social::set_blocked(cur->id, !cur->blocked, &err))
-            S.lastError = err;
+    if (tl) {
+        if (ImGui::SmallButton(tr("Retirer", "Remove"))) {
+            std::string err;
+            if (!account::friend_remove(peer, &err)) S.lastError = err;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Bloquer", "Block"))) {
+            std::string err;
+            if (!account::friend_block(peer, &err)) S.lastError = err;
+        }
+    } else {
+        if (ImGui::SmallButton(cur->blocked ? tr("Débloquer", "Unblock")
+                                            : tr("Bloquer", "Block"))) {
+            std::string err;
+            if (!social::set_blocked(cur->id, !cur->blocked, &err))
+                S.lastError = err;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(tr("Signaler", "Report")))
+            S.reportTarget = cur->id;
     }
-    ImGui::SameLine();
-    if (ImGui::SmallButton(tr("Signaler", "Report")))
-        S.reportTarget = cur->id;
     ImGui::Separator();
 
     // --- fil ---
     const float composerH = 78.0f;
     ImGui::BeginChild("##thread",
                       ImVec2(0, ImGui::GetContentRegionAvail().y - composerH));
-    const auto msgs = social::conversation(cur->id);
+    // Les messages du compte maison sont convertis au format d'affichage
+    // commun (memes champs) : le rendu ci-dessous reste unique.
+    const std::vector<social::Message> dmsgs =
+        tl ? std::vector<social::Message>() : social::conversation(cur->id);
+    std::vector<social::Message> tmsgs;
+    if (tl) {
+        for (const auto& m : account::conversation(peer)) {
+            social::Message c;
+            c.id = std::to_string(m.id);
+            c.authorId = m.sender;
+            c.text = m.text;
+            c.unixTime = m.unixTime;
+            c.mine = m.mine;
+            c.pending = m.pending;
+            tmsgs.push_back(std::move(c));
+        }
+    }
+    const auto& msgs = tl ? tmsgs : dmsgs;
     if (msgs.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         ImGui::TextWrapped("%s", tr("Aucun message.", "No messages."));
@@ -427,17 +551,25 @@ void draw_conversation(const std::vector<social::Friend>& list) {
     ImGui::EndDisabled();
     if ((enter || go) && S.draft[0] != '\0' && !cur->blocked) {
         std::string err;
-        if (social::send(cur->id, S.draft, &err))
+        const bool ok = tl ? account::send(peer, S.draft, &err)
+                           : social::send(cur->id, S.draft, &err);
+        if (ok)
             S.draft[0] = '\0';
         else
             S.lastError = err;
     }
-    // Echec d'envoi asynchrone (reponse du SDK apres coup) : affiche une
-    // fois, puis oublie. Idem pour les evenements d'appel.
+    // Echecs asynchrones et evenements d'appel : affiche une fois, puis
+    // oublie (les deux backends sont interroges, seul l'actif repond).
     if (std::string sendErr = social::take_send_error(); !sendErr.empty())
         S.lastError = sendErr;
+    if (std::string accErr = account::take_send_error(); !accErr.empty())
+        S.lastError = accErr;
     if (std::string callNote = social::take_call_notice(); !callNote.empty())
         S.lastError = callNote;
+    if (std::string accCall = account::take_call_notice(); !accCall.empty())
+        S.lastError = accCall;
+    if (std::string note = account::take_notice(); !note.empty())
+        S.lastError = note;
 }
 
 void draw_report_modal() {
@@ -489,27 +621,8 @@ void draw_report_modal() {
 
 } // namespace
 
-void social_page() {
-    if (fBig) ImGui::PushFont(fBig);
-    ImGui::TextUnformatted(tr("Amis"));
-    if (fBig) ImGui::PopFont();
-
-    const auto st = social::status();
-    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextWrapped(
-        "%s", tr("Amis, messages et appels passent par Discord : le launcher "
-                 "n'héberge aucun serveur et ne conserve aucun message.",
-                 "Friends, messages and calls go through Discord: the "
-                 "launcher hosts no server and keeps no message."));
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
-
-    if (!st.ready) {
-        draw_unavailable(st);
-        return;
-    }
-
-    const auto list = social::friends();
+// Mise en page partagee des deux sources : liste a gauche, fil a droite.
+void draw_split(const std::vector<social::Friend>& list) {
     // Bloc d'amis proportionnel a la page (36 %), borne : assez large
     // pour les longs pseudos, sans ecraser la conversation.
     float friendsW = ImGui::GetContentRegionAvail().x * 0.36f;
@@ -531,6 +644,77 @@ void social_page() {
         ImGui::TextWrapped("%s", S.lastError.c_str());
         ImGui::PopStyleColor();
     }
+}
+
+void social_page() {
+    if (fBig) ImGui::PushFont(fBig);
+    ImGui::TextUnformatted(tr("Amis"));
+    if (fBig) ImGui::PopFont();
+
+    // Source : Discord (SDK) ou compte maison (API). Meme mise en page,
+    // donnees et actions routees par S.src.
+    if (ImGui::SmallButton(tr("Discord"))) S.src = 0;
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Team Launcher"))) S.src = 1;
+    ImGui::Spacing();
+
+    if (tl_tab()) {
+        const account::Status ast = account::status();
+        if (!ast.configured) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextWrapped(
+                "%s", tr("Compte Team Launcher non configuré : renseigne "
+                         "l'URL de l'API dans Paramètres > Intégrations.",
+                         "Team Launcher account not configured: set the API "
+                         "URL in Settings > Integrations."));
+            ImGui::PopStyleColor();
+            return;
+        }
+        if (!ast.loggedIn) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextWrapped(
+                "%s", tr("Connecte ton compte dans Paramètres > "
+                         "Intégrations.",
+                         "Sign in to your account in Settings > "
+                         "Integrations."));
+            if (!ast.detail.empty()) {
+                ImGui::Spacing();
+                ImGui::TextWrapped("%s", ast.detail.c_str());
+            }
+            ImGui::PopStyleColor();
+            return;
+        }
+        // Liste mappee au format d'affichage (ids prefixes "tl:").
+        std::vector<social::Friend> list;
+        for (const auto& f : account::friends()) {
+            social::Friend m;
+            m.id = "tl:" + f.name;
+            m.name = f.name;
+            m.presence = f.online ? social::Presence::Online
+                                  : social::Presence::Offline;
+            m.unread = f.unread;
+            list.push_back(std::move(m));
+        }
+        draw_split(list);
+        return;
+    }
+
+    const auto st = social::status();
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped(
+        "%s", tr("Amis, messages et appels passent par Discord : le launcher "
+                 "n'héberge aucun serveur et ne conserve aucun message.",
+                 "Friends, messages and calls go through Discord: the "
+                 "launcher hosts no server and keeps no message."));
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+
+    if (!st.ready) {
+        draw_unavailable(st);
+        return;
+    }
+
+    draw_split(social::friends());
 }
 
 } // namespace tl::ui

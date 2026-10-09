@@ -44,3 +44,7 @@ test-update/
 imgui.ini
 .obj/
 
+# API serveur : dependances et secrets locaux
+server/node_modules/
+server/.env
+

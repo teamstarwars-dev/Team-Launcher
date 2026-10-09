@@ -107,6 +107,12 @@ struct AppSettings {
     // lance un `java -version` par candidat, d'ou le reglage — rien ne
     // doit s'activer en fond sans qu'on puisse l'arreter.
     bool jvmPreload = true;
+    // Compte Team Launcher (API maison : amis, messages, signaling vocal).
+    // URL de base vide = fonction desactivee. Le jeton est chiffre comme
+    // les autres secrets (DPAPI / trousseau).
+    std::string tlApiUrl;
+    std::string tlApiToken;
+    std::string tlApiUser;
     // API HTTP locale (phase 8) : 0 = desactivee. Jamais exposee hors de
     // 127.0.0.1, et toujours protegee par un jeton.
     int localApiPort = 0;

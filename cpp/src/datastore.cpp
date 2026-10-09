@@ -378,6 +378,9 @@ static json serialize(const AppSettings& s) {
         {"AutoShortcut", s.autoShortcut},
         {"VpsUrl", s.vpsUrl},
         {"VpsApiKey", secrets::encrypt_value(s.vpsApiKey)},
+        {"TlApiUrl", s.tlApiUrl},
+        {"TlApiToken", secrets::encrypt_value(s.tlApiToken)},
+        {"TlApiUser", s.tlApiUser},
         {"TelemetryEnabled", s.telemetryEnabled},
         {"DiscordTelemetryWebhook", secrets::encrypt_value(s.discordTelemetryWebhook)},
         {"InstallationId", s.installationId},
@@ -504,6 +507,9 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("AutoShortcut", s.autoShortcut);
     getS("VpsUrl", s.vpsUrl);
     getSec("VpsApiKey", s.vpsApiKey);
+    getS("TlApiUrl", s.tlApiUrl);
+    getSec("TlApiToken", s.tlApiToken);
+    getS("TlApiUser", s.tlApiUser);
     getB("TelemetryEnabled", s.telemetryEnabled);
     getSec("DiscordTelemetryWebhook", s.discordTelemetryWebhook);
     getS("InstallationId", s.installationId);
