@@ -13,6 +13,10 @@ const { createSession, requireAuth, hashToken } = require('./auth');
 
 const app = express();
 app.disable('x-powered-by');
+// Derriere Cloudflare Tunnel (un seul saut de proxy) : sans ca,
+// express-rate-limit voit l'IP du tunnel pour tout le monde (un abuseur
+// penaliserait tout le monde) et emet un avertissement au demarrage.
+app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: '64kb' }));
 

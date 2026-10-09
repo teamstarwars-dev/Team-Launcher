@@ -52,6 +52,11 @@ struct Ctx {
     std::set<std::string> historyAsked;
     long long lastEventId = 0;
     long long pendingSeq = 0;
+    // Joignabilite vue par le worker (sonde toutes les ~25 s). Sert de
+    // coupe-circuit : sans elle, chaque clic (envoi, ajout d'ami...)
+    // bloquerait jusqu'au timeout HTTP quand le serveur est eteint.
+    bool serverUp = false;
+    long long serverUpAt = 0;
     // Appel (un seul a la fois)
     enum class CallDir { None, Out, In };
     CallDir callDir = CallDir::None;
@@ -83,11 +88,17 @@ void alog(const std::string& msg) {
     if (std::getenv("TL_ACCOUNT_DEBUG")) log_line("[Account] " + msg);
 }
 
-// URL de base sans '/' final. Vide = fonction desactivee.
+// URL de base sans '/' final. Vide = fonction desactivee. Tolere un
+// copier-coller depuis un controle de sante (suffixe /api/health retire),
+// parce que c'est exactement ce qu'on affiche pour verifier le serveur.
 std::string base() {
     std::string b = DataStore::settings.tlApiUrl;
     while (!b.empty() && (b.back() == '/' || b.back() == ' ')) b.pop_back();
     while (!b.empty() && b.front() == ' ') b.erase(b.begin());
+    const std::string suffix = "/api/health";
+    if (b.size() > suffix.size() &&
+        b.compare(b.size() - suffix.size(), suffix.size(), suffix) == 0)
+        b.erase(b.size() - suffix.size());
     return b;
 }
 
@@ -127,6 +138,10 @@ std::optional<http::Response> api_call(const std::string& method,
                                        std::atomic<bool>* cancel = nullptr) {
     const std::string b = base();
     if (b.empty()) return std::nullopt;
+    // L'hote est declare a chaque appel, pas seulement dans start() :
+    // l'inscription/connexion arrivent AVANT tout worker, sinon la
+    // securite S2 refuse et rien ne part (silencieux sans TL_HTTP_DEBUG).
+    http::allow_host(b);
     const std::string url = b + path;
     const std::string headers = auth ? auth_headers() : std::string{};
     std::optional<http::Response> r;
@@ -179,6 +194,20 @@ bool need_auth(std::string* errOut) {
         return false;
     }
     return true;
+}
+
+// Coupe-circuit : si le worker a constate recemment que le serveur ne
+// repond pas, echouer aussitot au lieu de bloquer jusqu'au timeout.
+// Inactif tant que le worker n'a jamais sonde (premiere connexion).
+bool server_down(std::string* errOut) {
+    std::lock_guard<std::mutex> lk(lock());
+    const auto& c = ctx();
+    if (c.serverUpAt != 0 && !c.serverUp &&
+        unix_now() - c.serverUpAt < 120) {
+        if (errOut) *errOut = "Serveur injoignable.";
+        return true;
+    }
+    return false;
 }
 
 // --- worker (long-polling + rafraichissements) --------------------------------
@@ -336,6 +365,11 @@ void worker_main(std::shared_ptr<std::atomic<bool>> cancel) {
         const auto r = http::get_response(
             b + "/api/events?since=" + std::to_string(since), headers,
             cancel.get());
+        {
+            std::lock_guard<std::mutex> lk(lock());
+            ctx().serverUp = r.has_value();
+            ctx().serverUpAt = unix_now();
+        }
         if (cancel->load()) return;
         if (!r) {
             std::this_thread::sleep_for(std::chrono::seconds(2));
@@ -525,6 +559,7 @@ namespace {
 bool friend_post(const std::string& path, const json& body,
                  std::string* errOut) {
     if (!need_auth(errOut)) return false;
+    if (server_down(errOut)) return false;
     const auto r = api_call("POST", path, body.dump(), true);
     if (!r) {
         if (errOut) *errOut = "Serveur injoignable.";
@@ -579,6 +614,10 @@ bool friend_block(const std::string& username, std::string* errOut) {
 
 std::vector<Message> conversation(const std::string& peer) {
     if (!need_auth(nullptr) || peer.empty()) return {};
+    // Historique : coupe-circuit aussi (sinon 60 s de freeze a
+    // l'ouverture du fil quand le serveur est eteint). Hors verrou :
+    // server_down verrouille lui-meme.
+    const bool reachable = !server_down(nullptr);
     bool askHistory = false;
     {
         std::lock_guard<std::mutex> lk(lock());
@@ -589,7 +628,7 @@ std::vector<Message> conversation(const std::string& peer) {
                 f.unread = 0;
                 break;
             }
-        if (c.historyAsked.insert(peer).second) askHistory = true;
+        if (reachable && c.historyAsked.insert(peer).second) askHistory = true;
     }
     if (askHistory) {
         const auto r = api_call("GET", "/api/messages/" + peer + "?limit=50",
@@ -631,6 +670,7 @@ std::vector<Message> conversation(const std::string& peer) {
 bool send(const std::string& peer, const std::string& text,
           std::string* errOut) {
     if (!need_auth(errOut)) return false;
+    if (server_down(errOut)) return false;
     if (peer.empty() || text.empty()) {
         if (errOut) *errOut = "Message vide.";
         return false;
@@ -789,6 +829,7 @@ bool call_start(const std::string& peer, std::string* errOut) {
 
 bool call_accept(std::string* errOut) {
     if (!need_auth(errOut)) return false;
+    if (server_down(errOut)) return false;
     if (!social::status().ready) {
         if (errOut)
             *errOut = "Lie aussi Discord pour la voix (l'audio passe par Discord).";
@@ -845,6 +886,7 @@ bool call_accept(std::string* errOut) {
 
 bool call_decline(std::string* errOut) {
     if (!need_auth(errOut)) return false;
+    if (server_down(errOut)) return false;
     std::string apiId;
     {
         std::lock_guard<std::mutex> lk(lock());
