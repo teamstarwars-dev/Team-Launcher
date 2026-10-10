@@ -52,6 +52,10 @@ struct Report {
 Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
                const std::string& mcVersion);
 
+// Instance Forge 1.12 ou anterieure : seul mcmod.info y fait foi (voir
+// modmeta::read_jar). « 1.12.2 » oui, « 1.13 » non, « latest » non.
+bool legacy_forge(const std::string& loader, const std::string& mcVersion);
+
 // Confort : lit le dossier puis analyse.
 Report scan(const std::filesystem::path& modsDir, const std::string& loader,
             const std::string& mcVersion);

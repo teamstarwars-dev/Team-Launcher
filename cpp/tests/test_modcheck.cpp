@@ -5,6 +5,7 @@
 // verifier que la lecture d'archive et l'ordre de priorite des manifestes
 // tiennent aussi.
 
+#include "miniz.h"
 #include "modcheck.hpp"
 #include "modmeta.hpp"
 #include "pack_import.hpp"
@@ -499,6 +500,107 @@ version="1.0"
             {mk("a.jar", "a", Loader::Forge, "1.0", "[1.12.2]")}, "Forge",
             "latest");
         CHECK_EQ(r.errors, 0);
+    }
+
+    // =====================================================================
+    // 13. Instances Forge 1.12 : faux positifs vecus sur « Jay'rp V1 »
+    // =====================================================================
+    CHECK(modcheck::legacy_forge("Forge", "1.12.2"));
+    CHECK(modcheck::legacy_forge("Forge", "1.7.10"));
+    CHECK(!modcheck::legacy_forge("Forge", "1.13"));
+    CHECK(!modcheck::legacy_forge("Forge", "1.20.1"));
+    CHECK(!modcheck::legacy_forge("Forge", "latest"));
+    CHECK(!modcheck::legacy_forge("Fabric", "1.12.2"));
+    CHECK(!modcheck::legacy_forge("NeoForge", "1.12.2"));
+
+    // mcmod.info « 1.12 » = toute la branche 1.12 (Chisels & Bits,
+    // CraftStudioAPI). Fabric, lui, l'entend au sens strict.
+    {
+        Mod a = mk("chisels.jar", "chiselsandbits", Loader::Forge, "14.33", "1.12");
+        a.source = "mcmod.info";
+        CHECK_EQ(modcheck::analyse({a}, "Forge", "1.12.2").errors, 0);
+        // Mais pas une autre branche.
+        CHECK_EQ(modcheck::analyse({a}, "Forge", "1.11.2").errors, 1);
+        Mod f = mk("fab.jar", "fab", Loader::Fabric, "1.0", "1.12");
+        f.source = "fabric.mod.json";
+        CHECK_EQ(modcheck::analyse({f}, "Fabric", "1.12.2").errors, 1);
+    }
+
+    // Manifeste que le chargeur ignore : avertissement, jamais blocage.
+    {
+        Mod o = mk("obfuscate-0.4.2-1.12.2.jar", "obfuscate", Loader::Forge,
+                   "0.4.2", "[1.15,1.16)");
+        o.source = "mods.toml";
+        o.foreign = true;
+        const auto r = modcheck::analyse({o}, "Forge", "1.12.2");
+        CHECK_EQ(r.errors, 0);
+        CHECK_EQ(r.warnings, 1);
+        CHECK(has_title(r, "Version non vérifiable"));
+    }
+
+    // « Forge@[14.23.5.2768,) » : le chargeur lui-meme, quelle que soit la
+    // casse — WorldEdit reclamait « Forge » dans une instance Forge.
+    {
+        Mod w = mk("worldedit.jar", "worldedit", Loader::Forge, "6.1.10", "1.12.2");
+        w.source = "mcmod.info";
+        w.deps.push_back(Dep{"Forge", true, "[14.23.5.2768,)"});
+        const auto r = modcheck::analyse({w}, "Forge", "1.12.2");
+        CHECK_EQ(r.errors, 0);
+    }
+
+    // Jar sans manifeste : normal en Forge 1.12 (coremods, Essential…),
+    // suspect ailleurs.
+    {
+        Mod c;
+        c.file = "BetterFps-1.4.8.jar";
+        c.name = c.file;
+        c.readError = "aucun manifeste de mod dans l'archive";
+        auto r = modcheck::analyse({c}, "Forge", "1.12.2");
+        CHECK_EQ(r.warnings, 0);
+        CHECK_EQ(r.infos, 1);
+        CHECK(has_title(r, "Sans fiche de mod"));
+        r = modcheck::analyse({c}, "Fabric", "1.20.1");
+        CHECK_EQ(r.warnings, 1);
+        CHECK(has_title(r, "Métadonnées illisibles"));
+    }
+
+    // Jar a DOUBLE manifeste, reconstitue comme entityculling-1.12.2 :
+    // mcmod.info pour 1.12.2, et un mods.toml pour 1.17.1+. Lu en mode
+    // Forge 1.12, c'est mcmod.info qui doit faire foi.
+    {
+        std::error_code ec;
+        const fs::path dir = fs::temp_directory_path() / "tl_test_legacy";
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir / "mods", ec);
+        const fs::path jar = dir / "mods" / "entityculling-1.12.2-1.6.3.jar";
+        mz_zip_archive z{};
+        if (mz_zip_writer_init_file(&z, jar.string().c_str(), 0)) {
+            const std::string info =
+                R"J([{"modid":"entityculling","name":"EntityCulling",)J"
+                R"J("version":"1.6.3","mcversion":"1.12.2"}])J";
+            const std::string toml =
+                "modLoader=\"javafml\"\nloaderVersion=\"[36,)\"\n"
+                "[[mods]]\nmodId=\"entityculling\"\nversion=\"1.6.3\"\n"
+                "[[dependencies.entityculling]]\nmodId=\"minecraft\"\n"
+                "mandatory=true\nversionRange=\"[1.17.1,)\"\n";
+            mz_zip_writer_add_mem(&z, "mcmod.info", info.data(), info.size(),
+                                  MZ_DEFAULT_COMPRESSION);
+            mz_zip_writer_add_mem(&z, "META-INF/mods.toml", toml.data(),
+                                  toml.size(), MZ_DEFAULT_COMPRESSION);
+            mz_zip_writer_finalize_archive(&z);
+            mz_zip_writer_end(&z);
+        }
+        // Lecture normale : le mods.toml l'emporte (c'est voulu en 1.13+).
+        CHECK_EQ(read_jar(jar).source, std::string("mods.toml"));
+        // Mode Forge 1.12 : mcmod.info, et aucune erreur de version.
+        const Mod lj = read_jar(jar, true);
+        CHECK_EQ(lj.source, std::string("mcmod.info"));
+        CHECK(!lj.foreign);
+        CHECK_EQ(lj.mcRange, std::string("1.12.2"));
+        const auto r = modcheck::scan(dir / "mods", "Forge", "1.12.2");
+        CHECK(!has_title(r, "Version de Minecraft incompatible"));
+        CHECK_EQ(r.errors, 0);
+        fs::remove_all(dir, ec);
     }
 
     // =====================================================================

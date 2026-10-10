@@ -619,7 +619,7 @@ Mod parse_mods_toml(const std::string& text, bool neoforge) {
 // Lecture d'archive
 // ---------------------------------------------------------------------------
 
-Mod read_jar(const fs::path& jar) {
+Mod read_jar(const fs::path& jar, bool legacyForge) {
     Mod m;
     m.file = jar.filename().string();
     m.disabled = m.file.size() >= 9 &&
@@ -639,19 +639,36 @@ Mod read_jar(const fs::path& jar) {
         const char* entry;
         Mod (*parse)(const std::string&);
     };
-    if (auto s = zip_read_entry(jar, "META-INF/neoforge.mods.toml")) {
+    // Forge 1.12 et anterieur : mcmod.info est le SEUL manifeste qu'il lit.
+    std::optional<std::string> legacyInfo;
+    if (legacyForge) legacyInfo = zip_read_entry(jar, "mcmod.info");
+
+    if (legacyInfo) {
+        m = parse_mcmod_info(*legacyInfo);
+        m.source = "mcmod.info";
+    } else if (auto s = zip_read_entry(jar, "META-INF/neoforge.mods.toml")) {
         m = parse_mods_toml(*s, /*neoforge=*/true);
+        m.source = "neoforge.mods.toml";
     } else if (auto q = zip_read_entry(jar, "quilt.mod.json")) {
         m = parse_quilt(*q);
+        m.source = "quilt.mod.json";
     } else if (auto f = zip_read_entry(jar, "fabric.mod.json")) {
         m = parse_fabric(*f);
+        m.source = "fabric.mod.json";
     } else if (auto t = zip_read_entry(jar, "META-INF/mods.toml")) {
         m = parse_mods_toml(*t, /*neoforge=*/false);
+        m.source = "mods.toml";
     } else if (auto o = zip_read_entry(jar, "mcmod.info")) {
         m = parse_mcmod_info(*o);
+        m.source = "mcmod.info";
     } else {
         m.readError = "aucun manifeste de mod dans l'archive";
     }
+    // Pas de mcmod.info dans une instance Forge 1.12 : ce qu'on a lu est
+    // un format que ce chargeur ignore. Le mod peut tres bien fonctionner
+    // (Forge 1.12 decouvre les mods par leurs annotations), on ne peut
+    // simplement rien conclure de ce manifeste-la.
+    if (legacyForge && !legacyInfo && !m.source.empty()) m.foreign = true;
 
     m.file = jar.filename().string();
     m.disabled = m.file.size() >= 9 &&
@@ -660,7 +677,7 @@ Mod read_jar(const fs::path& jar) {
     return m;
 }
 
-std::vector<Mod> read_dir(const fs::path& modsDir) {
+std::vector<Mod> read_dir(const fs::path& modsDir, bool legacyForge) {
     std::vector<Mod> out;
     std::error_code ec;
     if (!fs::is_directory(modsDir, ec)) return out;
@@ -672,7 +689,7 @@ std::vector<Mod> read_dir(const fs::path& modsDir) {
         const bool off = n.size() > 13 &&
                          n.compare(n.size() - 13, 13, ".jar.disabled") == 0;
         if (!jar && !off) continue;
-        out.push_back(read_jar(e.path()));
+        out.push_back(read_jar(e.path(), legacyForge));
     }
     std::sort(out.begin(), out.end(),
               [](const Mod& a, const Mod& b) { return a.file < b.file; });

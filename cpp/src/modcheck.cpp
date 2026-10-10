@@ -1,6 +1,7 @@
 #include "modcheck.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <set>
 
@@ -16,7 +17,34 @@ bool is_platform_id(const std::string& id) {
         "minecraft", "java", "forge", "neoforge", "fabricloader",
         "fabric-loader", "quilt_loader", "quilt_base", "mcp",
     };
-    return kPlatform.count(id) != 0;
+    // Insensible a la casse : mcmod.info ecrit volontiers « Forge@[14.23,) ».
+    // Compare tel quel, « Forge » n'etait pas reconnu comme le chargeur
+    // lui-meme, et WorldEdit reclamait une « dependance manquante : Forge »
+    // dans une instance… Forge.
+    std::string low;
+    for (char c : id)
+        low.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    return kPlatform.count(low) != 0;
+}
+
+// La version du jeu satisfait-elle la contrainte du mod ? Comme
+// version_matches, a une nuance pres : dans mcmod.info, le champ
+// « mcversion » est informel, et « 1.12 » y designe toute la branche 1.12
+// — c'est ainsi que l'ecrivaient Chisels & Bits ou CraftStudioAPI, prevus
+// pour 1.12.2. Fabric, lui, entend « 1.12 » au sens strict.
+bool mc_matches(const modmeta::Mod& m, const std::string& version) {
+    if (m.source == "mcmod.info") {
+        const std::string& r = m.mcRange;
+        bool bare = !r.empty() && r.size() <= 8;
+        int dots = 0;
+        for (char c : r) {
+            if (c == '.') ++dots;
+            else if (!std::isdigit(static_cast<unsigned char>(c))) bare = false;
+        }
+        if (bare && dots == 1)
+            return version == r || version.rfind(r + ".", 0) == 0;
+    }
+    return modmeta::version_matches(version, m.mcRange);
 }
 
 void add(Report& r, Severity sev, const std::string& file,
@@ -97,10 +125,27 @@ Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
 
         // --- Archive illisible ---------------------------------------------
         if (!m.readError.empty()) {
-            add(r, Severity::Warning, m.file, "Métadonnées illisibles",
-                m.readError +
-                    ". Le fichier n'est peut-être pas un mod, ou le "
-                    "téléchargement est incomplet.");
+            // En Forge 1.12, un jar SANS manifeste est courant : coremods,
+            // tweakers et bibliotheques (BetterFps, Essential,
+            // MixinBootstrap…) sont decouverts par leur MANIFEST.MF ou leurs
+            // annotations, pas par mcmod.info. Leur annoncer un
+            // « telechargement incomplet » etait faux et inquietant. On le
+            // signale a titre d'information seulement.
+            //
+            // Une archive reellement ILLISIBLE, elle, reste un avertissement
+            // quelle que soit la version.
+            const bool noManifest =
+                m.readError.find("aucun manifeste") != std::string::npos;
+            if (noManifest && legacy_forge(loader, mcVersion))
+                add(r, Severity::Info, m.file, "Sans fiche de mod",
+                    "Pas de mcmod.info dans ce jar : c'est courant en Forge "
+                    "1.12 (coremod, tweaker, bibliothèque). Sa compatibilité "
+                    "ne peut pas être vérifiée, rien d'anormal pour autant.");
+            else
+                add(r, Severity::Warning, m.file, "Métadonnées illisibles",
+                    m.readError +
+                        ". Le fichier n'est peut-être pas un mod, ou le "
+                        "téléchargement est incomplet.");
             continue;
         }
 
@@ -135,11 +180,24 @@ Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
         }
 
         // --- Version de Minecraft -------------------------------------------
-        if (checkVersions && !m.mcRange.empty() &&
-            !modmeta::version_matches(mcVersion, m.mcRange)) {
-            add(r, Severity::Error, m.file, "Version de Minecraft incompatible",
-                "Le mod déclare fonctionner avec « " + m.mcRange +
-                    " », or l'instance est en " + mcVersion + ".");
+        if (checkVersions && !m.mcRange.empty() && !mc_matches(m, mcVersion)) {
+            if (m.foreign)
+                // Le manifeste lu n'est pas celui que le chargeur de
+                // l'instance consulte : il ne prouve rien. Un mod 1.12.2
+                // embarquant un mods.toml oublie fonctionne tres bien ; un
+                // vrai mod 1.15 echouerait. On ne peut pas trancher, donc
+                // on avertit sans bloquer.
+                add(r, Severity::Warning, m.file,
+                    "Version non vérifiable",
+                    "Ce mod ne déclare sa version (« " + m.mcRange +
+                        " ») que dans " + m.source +
+                        ", un format que Forge " + mcVersion +
+                        " ignore. Vérifiez qu'il est bien prévu pour " +
+                        mcVersion + ".");
+            else
+                add(r, Severity::Error, m.file, "Version de Minecraft incompatible",
+                    "Le mod déclare fonctionner avec « " + m.mcRange +
+                        " », or l'instance est en " + mcVersion + ".");
         }
 
         // --- Dependances -----------------------------------------------------
@@ -214,9 +272,27 @@ Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
     return r;
 }
 
+// Forge 1.12 ou anterieur : ces versions ne lisent que mcmod.info.
+bool legacy_forge(const std::string& loader, const std::string& mcVersion) {
+    if (modmeta::loader_from_string(loader) != modmeta::Loader::Forge) return false;
+    if (mcVersion.rfind("1.", 0) != 0) return false;
+    std::size_t i = 2;
+    int minor = 0;
+    bool any = false;
+    while (i < mcVersion.size() &&
+           std::isdigit(static_cast<unsigned char>(mcVersion[i]))) {
+        minor = minor * 10 + (mcVersion[i] - '0');
+        any = true;
+        if (minor > 99) return false;
+        ++i;
+    }
+    return any && minor <= 12;
+}
+
 Report scan(const std::filesystem::path& modsDir, const std::string& loader,
             const std::string& mcVersion) {
-    return analyse(modmeta::read_dir(modsDir), loader, mcVersion);
+    return analyse(modmeta::read_dir(modsDir, legacy_forge(loader, mcVersion)),
+                   loader, mcVersion);
 }
 
 } // namespace tl::modcheck

@@ -45,15 +45,32 @@ struct Mod {
     std::vector<Dep> deps;
     bool disabled = false;   // .jar.disabled
     std::string readError;   // non vide = archive illisible ou sans manifeste
+    // Manifeste effectivement lu : « neoforge.mods.toml », « quilt.mod.json »,
+    // « fabric.mod.json », « mods.toml » ou « mcmod.info ». Sa semantique
+    // compte : dans mcmod.info, « 1.12 » designe toute la branche 1.12.
+    std::string source;
+    // Le manifeste lu n'est PAS un format que le chargeur de l'instance
+    // sait lire (ex. un mods.toml dans une instance Forge 1.12, qui ne
+    // connait que mcmod.info). Ce qu'il declare n'engage donc rien.
+    bool foreign = false;
 };
 
 // Lit le .jar (ou .jar.disabled). Ne lance jamais : une archive corrompue
 // ressort avec `readError` renseigne, et l'appelant decide quoi en dire.
-Mod read_jar(const std::filesystem::path& jar);
+//
+// `legacyForge` : l'instance est en Forge 1.12 ou anterieur. Ces versions
+// ne lisent QUE mcmod.info (mods.toml n'existe que depuis 1.13). Or de
+// nombreux jars 1.12.2 embarquent aussi un mods.toml pour une version
+// plus recente — le lire en priorite faisait declarer « incompatible »
+// un mod parfaitement prevu pour l'instance. En mode legacyForge,
+// mcmod.info passe donc en premier, et un jar qui n'en a pas est marque
+// `foreign`.
+Mod read_jar(const std::filesystem::path& jar, bool legacyForge = false);
 
 // Tous les mods d'un dossier, actifs et desactives, tries par nom de
 // fichier. Dossier absent = liste vide.
-std::vector<Mod> read_dir(const std::filesystem::path& modsDir);
+std::vector<Mod> read_dir(const std::filesystem::path& modsDir,
+                          bool legacyForge = false);
 
 // --- Analyseurs purs -------------------------------------------------------
 // Chacun renseigne ce qu'il trouve et laisse le reste vide. `readError` est
