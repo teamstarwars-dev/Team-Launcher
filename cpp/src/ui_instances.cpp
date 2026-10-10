@@ -1,6 +1,7 @@
 #include "ui_internal.hpp"
 
 #include "icons.hpp"
+#include "modmeta.hpp" // is_mc_version : controle de la version saisie
 
 #include "util_str.hpp" // strCaseCmp (tri insensible à la casse)
 
@@ -632,6 +633,30 @@ void instance_modals() {
             label(tr("Version"));
             ImGui::SetNextItemWidth(-1);
             ImGui::InputText("##iver", g.instVer, sizeof(g.instVer));
+            // Controle de la version AVANT d'enregistrer. Le champ etait libre
+            // et « 112.2 » (point oublie) passait sans un mot : la
+            // verification d'avant-lancement signalait ensuite chaque mod
+            // comme incompatible, et l'installation aurait echoue chez Mojang.
+            const std::string verTyped = trimmed(g.instVer);
+            const bool verOk = verTyped.empty() || modmeta::is_mc_version(verTyped);
+            if (!verOk) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
+                ImGui::TextWrapped(
+                    tr("« %s » n'est pas une version de Minecraft (ex. 1.20.1, "
+                       "26.1, latest).",
+                       "\"%s\" is not a Minecraft version (e.g. 1.20.1, 26.1, "
+                       "latest)."),
+                    verTyped.c_str());
+                ImGui::PopStyleColor();
+                if (const auto fix = modmeta::suggest_mc_version(verTyped);
+                    !fix.empty()) {
+                    const std::string lbl =
+                        tr("Utiliser ", "Use ") + fix + "##verfix";
+                    if (ImGui::SmallButton(lbl.c_str()))
+                        std::snprintf(g.instVer, sizeof(g.instVer), "%s",
+                                      fix.c_str());
+                }
+            }
             ImGui::Spacing();
             const std::string name = trimmed(g.instName);
             if (name.empty()) {
@@ -639,9 +664,11 @@ void instance_modals() {
                 ImGui::TextUnformatted(tr("Le nom est requis."));
                 ImGui::PopStyleColor();
             }
-            if (accent_button(creating ? tr("Créer") : tr("Enregistrer"),
-                              ImVec2(130, 36)) &&
-                !name.empty()) {
+            ImGui::BeginDisabled(!verOk);
+            const bool save = accent_button(
+                creating ? tr("Créer") : tr("Enregistrer"), ImVec2(130, 36));
+            ImGui::EndDisabled();
+            if (save && verOk && !name.empty()) {
                 std::string ver = trimmed(g.instVer);
                 if (ver.empty()) ver = "latest";
                 if (creating) {

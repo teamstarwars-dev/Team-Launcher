@@ -87,4 +87,30 @@ int compare_versions(const std::string& a, const std::string& b);
 // sur une syntaxe exotique serait pire que ne rien dire.
 bool version_matches(const std::string& version, const std::string& range);
 
+// --- Identifiant de version de Minecraft ---------------------------------
+//
+// La version d'une instance etait un champ texte libre, enregistre tel
+// quel. « 112.2 » (point oublie) passait donc sans un mot : la
+// verification d'avant-lancement signalait ensuite chacun des 39 mods
+// comme incompatible, et l'installation aurait echoue chez Mojang.
+//
+// Controle de FORME, hors ligne : on ne fait pas d'appel reseau a chaque
+// enregistrement d'un formulaire. Formes acceptees :
+//   latest                      — derniere version
+//   1.21  1.21.4                — versions historiques
+//   26.1  26.1.2                — numerotation par annee (depuis 2026)
+//   1.21-pre1  1.20.5-rc1       — pre-versions
+//   26.1-snapshot-3             — instantanes au nouveau format
+//   24w14a                      — instantanes hebdomadaires
+//   b1.7.3  a1.0.4  c0.0.13a    — anciennes alpha / beta / classic
+//   rd-132211  inf-20100618     — pre-classic, infdev
+// L'annee doit etre plausible (25 a 99) : « 112.2 » n'est ni une version
+// historique ni une annee.
+bool is_mc_version(const std::string& v);
+
+// Correction probable d'une saisie invalide, ou vide si on n'en voit pas.
+// Vise la faute la plus courante : le point oublie apres le « 1 » initial
+// (« 112.2 » -> « 1.12.2 », « 1201 » -> rien : trop ambigu).
+std::string suggest_mc_version(const std::string& v);
+
 } // namespace tl::modmeta

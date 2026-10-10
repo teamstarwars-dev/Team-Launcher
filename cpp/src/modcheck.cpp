@@ -58,6 +58,26 @@ Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
     }
     r.analysed = static_cast<int>(active.size());
 
+    // --- Version de l'instance elle-meme ----------------------------------
+    // Une version mal saisie (« 112.2 ») faisait signaler CHAQUE mod comme
+    // incompatible : 39 lignes rouges pour une seule faute de frappe, et
+    // aucune ne nommait la vraie cause. On la signale une fois, et l'on
+    // saute la comparaison mod par mod, qui n'aurait aucun sens.
+    //
+    // « latest » n'est pas une erreur, mais on ne peut pas savoir hors
+    // ligne a quelle version il correspond : comparer serait inventer.
+    bool checkVersions = !mcVersion.empty() && mcVersion != "latest";
+    if (checkVersions && !modmeta::is_mc_version(mcVersion)) {
+        const std::string fix = modmeta::suggest_mc_version(mcVersion);
+        add(r, Severity::Error, "", "Version de Minecraft invalide",
+            "L'instance est réglée sur « " + mcVersion +
+                " », qui n'est pas une version de Minecraft" +
+                (fix.empty() ? std::string(".")
+                             : " — vouliez-vous « " + fix + " » ?") +
+                " Corrigez-la dans les paramètres de l'instance.");
+        checkVersions = false;
+    }
+
     // --- Cas ou l'instance n'a pas de chargeur -----------------------------
     // Sans chargeur, Minecraft ignore purement et simplement le dossier
     // mods/. Le dire une fois vaut mieux que de signaler quarante mods
@@ -115,7 +135,7 @@ Report analyse(const std::vector<modmeta::Mod>& mods, const std::string& loader,
         }
 
         // --- Version de Minecraft -------------------------------------------
-        if (!mcVersion.empty() && !m.mcRange.empty() &&
+        if (checkVersions && !m.mcRange.empty() &&
             !modmeta::version_matches(mcVersion, m.mcRange)) {
             add(r, Severity::Error, m.file, "Version de Minecraft incompatible",
                 "Le mod déclare fonctionner avec « " + m.mcRange +

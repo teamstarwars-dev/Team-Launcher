@@ -69,6 +69,90 @@ const char* loader_name(Loader l) {
     }
 }
 
+namespace {
+
+bool all_digits(const std::string& s, std::size_t b, std::size_t e) {
+    if (b >= e) return false;
+    for (std::size_t i = b; i < e; ++i)
+        if (!std::isdigit(static_cast<unsigned char>(s[i]))) return false;
+    return true;
+}
+
+// « N.N » ou « N.N.N », chiffres seulement ; rend le premier nombre.
+bool dotted(const std::string& s, int* first) {
+    std::size_t parts = 0, b = 0;
+    for (std::size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || s[i] == '.') {
+            if (!all_digits(s, b, i)) return false;
+            if (parts == 0) {
+                if (i - b > 3) return false;
+                *first = std::stoi(s.substr(b, i - b));
+            }
+            ++parts;
+            b = i + 1;
+        }
+    }
+    return parts == 2 || parts == 3;
+}
+
+bool starts(const std::string& s, const char* p) {
+    return s.rfind(p, 0) == 0;
+}
+
+} // namespace
+
+bool is_mc_version(const std::string& v) {
+    if (v == "latest") return true;
+    if (v.empty() || v.size() > 40) return false;
+
+    // Instantane hebdomadaire : 24w14a
+    if (v.size() >= 6 && all_digits(v, 0, 2) && v[2] == 'w' &&
+        all_digits(v, 3, 5) && std::isalpha(static_cast<unsigned char>(v[5])) &&
+        v.size() == 6)
+        return true;
+
+    // Anciennes branches : prefixe puis version pointee ou numero.
+    for (const char* p : {"b1.", "a1.", "a0.", "c0."})
+        if (starts(v, p)) return v.size() > 3;
+    for (const char* p : {"rd-", "inf-"})
+        if (starts(v, p)) return all_digits(v, std::string(p).size(), v.size());
+
+    // Base pointee, suivie d'un suffixe de pre-version eventuel.
+    std::string base = v, suffix;
+    if (const auto d = v.find('-'); d != std::string::npos) {
+        base = v.substr(0, d);
+        suffix = v.substr(d + 1);
+    }
+    int first = 0;
+    if (!dotted(base, &first)) return false;
+    const bool historic = first == 1;
+    const bool yearly = first >= 25 && first <= 99;
+    if (!historic && !yearly) return false;
+    if (suffix.empty()) return true;
+    if (starts(suffix, "pre") && all_digits(suffix, 3, suffix.size())) return true;
+    if (starts(suffix, "rc") && all_digits(suffix, 2, suffix.size())) return true;
+    if (starts(suffix, "snapshot-") && all_digits(suffix, 9, suffix.size()))
+        return true;
+    return false;
+}
+
+std::string suggest_mc_version(const std::string& v) {
+    if (v.empty() || is_mc_version(v)) return {};
+    // Point oublie apres le « 1 » : « 112.2 » -> « 1.12.2 », « 120.1 » ->
+    // « 1.20.1 », « 18 » -> « 1.8 ». On n'invente rien d'autre : une
+    // suggestion fausse est pire qu'aucune.
+    if (v[0] == '1' && v.size() >= 2 && v[1] != '.' &&
+        std::isdigit(static_cast<unsigned char>(v[1]))) {
+        const std::string fixed = "1." + v.substr(1);
+        if (is_mc_version(fixed)) return fixed;
+    }
+    // Virgule au lieu du point : « 1,20,1 ».
+    std::string commas = v;
+    std::replace(commas.begin(), commas.end(), ',', '.');
+    if (commas != v && is_mc_version(commas)) return commas;
+    return {};
+}
+
 Loader loader_from_string(const std::string& s) {
     std::string t;
     for (char c : s) t.push_back(static_cast<char>(std::tolower(

@@ -3,6 +3,7 @@
 #include "presets.hpp"
 #include "social.hpp"
 #include "util_image.hpp" // image::from_path : rendu de l'image de fond
+#include "pack_import.hpp" // detect_folder : import d'un dossier d'instance
 
 #include "account.hpp"
 #include "apievents.hpp"
@@ -394,12 +395,21 @@ void import_folder() {
     const auto src = pick_folder("Importer un dossier comme instance");
 #endif
     if (!src) return;
-    nlohmann::json inst = make_instance(
-        std::filesystem::path(*src).filename().string(), "vanilla", "latest");
+    // Ce que le dossier dit de lui-meme. L'instance etait creee en dur en
+    // Vanilla « latest » : une instance CurseForge Forge 1.12.2 avec 39
+    // mods devenait inutilisable, et rien ne disait pourquoi.
+    const auto info = packs::detect_folder(std::filesystem::path(*src));
+    const std::string name = info.name.empty()
+                                 ? std::filesystem::path(*src).filename().string()
+                                 : info.name;
+    nlohmann::json inst = make_instance(name, info.loader, info.mcVersion);
     const std::filesystem::path destDir =
         DataStore::instancesRoot() / inst.value("Id", "");
     std::error_code ec;
-    std::filesystem::copy(*src, destDir,
+    // info.gameDir, pas *src : pour Prism / MultiMC, les fichiers du jeu
+    // sont dans .minecraft/ ; copier la racine aurait range mods/ un niveau
+    // trop bas, la ou Minecraft ne le cherche pas.
+    std::filesystem::copy(info.gameDir, destDir,
                           std::filesystem::copy_options::recursive |
                               std::filesystem::copy_options::overwrite_existing,
                           ec);
@@ -410,7 +420,14 @@ void import_folder() {
     inst_array().push_back(std::move(inst));
     DataStore::save();
     g.countsDirty = true;
-    notify_log(tr("Import terminé : instance importée."));
+    std::string what = info.loader + " " + info.mcVersion;
+    if (info.source == "mods")
+        what += tr(" (estimé d'après les mods — à vérifier)",
+                   " (estimated from the mods — please check)");
+    else if (!info.source.empty())
+        what += tr(" (déclaré par ", " (declared by ") + info.source + ")";
+    notify_log(tr("Import terminé : « ", "Import complete: \"") + name +
+               tr(" », ", "\", ") + what + ".");
 }
 
 void export_zip(const nlohmann::json& inst) {

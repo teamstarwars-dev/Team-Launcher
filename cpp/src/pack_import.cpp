@@ -4,10 +4,15 @@
 #include "datastore.hpp"
 #include "game_launcher.hpp" // log_line
 #include "http_win.hpp"
+#include "modmeta.hpp"       // detect_folder : estimation d'apres les mods
 #include "util_zip.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <fstream>
+#include <map>
+#include <optional>
+#include <sstream>
 
 namespace fs = std::filesystem;
 using nlohmann::json;
@@ -255,6 +260,144 @@ Result import_any(const fs::path& archive, const Progress& progress,
         return res;
     }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dossier d'instance existant
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::optional<json> read_json(const fs::path& p) {
+    std::error_code ec;
+    if (!fs::is_regular_file(p, ec)) return std::nullopt;
+    std::ifstream in(p, std::ios::binary);
+    if (!in) return std::nullopt;
+    std::stringstream ss;
+    ss << in.rdbuf();
+    json j = json::parse(ss.str(), nullptr, false);
+    if (j.is_discarded() || !j.is_object()) return std::nullopt;
+    return j;
+}
+
+std::string str_of(const json& j, const char* key) {
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+}
+
+// « Vanilla » si le texte ne nomme aucun chargeur connu.
+std::string loader_label(const std::string& s) {
+    const auto l = modmeta::loader_from_string(s);
+    return l == modmeta::Loader::Unknown ? std::string("Vanilla")
+                                         : std::string(modmeta::loader_name(l));
+}
+
+// Premiere version de Minecraft concrete dans une contrainte de mod :
+// « [1.20.1,1.21) » -> 1.20.1, « ~1.20.1 » -> 1.20.1, « >=1.19 » -> 1.19.
+// Vide si la contrainte ne cite aucune version (« * », « [47,) »…).
+std::string first_mc_version(const std::string& range) {
+    for (std::size_t i = 0; i < range.size(); ++i) {
+        if (range[i] != '1' || (i > 0 && std::isdigit(static_cast<unsigned char>(range[i - 1]))))
+            continue;
+        std::size_t j = i + 1;
+        if (j >= range.size() || range[j] != '.') continue;
+        std::string v = "1.";
+        ++j;
+        while (j < range.size() &&
+               (std::isdigit(static_cast<unsigned char>(range[j])) || range[j] == '.'))
+            v.push_back(range[j++]);
+        while (!v.empty() && v.back() == '.') v.pop_back();
+        if (v.size() > 2) return v;
+    }
+    return {};
+}
+
+} // namespace
+
+FolderInfo detect_folder(const fs::path& dir) {
+    FolderInfo f;
+    f.gameDir = dir;
+    std::error_code ec;
+
+    // 1. CurseForge : minecraftinstance.json, a la racine du jeu.
+    //    baseModLoader.name vaut « forge-14.23.5.2859 », « fabric-0.16.9-1.21.1 »…
+    if (const auto j = read_json(dir / "minecraftinstance.json")) {
+        f.source = "CurseForge";
+        f.name = str_of(*j, "name");
+        if (const auto v = str_of(*j, "gameVersion"); !v.empty()) f.mcVersion = v;
+        if (const auto b = j->find("baseModLoader"); b != j->end() && b->is_object())
+            f.loader = loader_label(str_of(*b, "name"));
+        return f;
+    }
+
+    // 2. Prism Launcher / MultiMC : mmc-pack.json liste les composants, le
+    //    nom est dans instance.cfg, et les fichiers du jeu vivent dans un
+    //    sous-dossier — copier la racine aurait range mods/ un niveau trop
+    //    bas, ou Minecraft ne le trouverait pas.
+    if (const auto j = read_json(dir / "mmc-pack.json")) {
+        f.source = "Prism";
+        if (const auto c = j->find("components"); c != j->end() && c->is_array())
+            for (const auto& comp : *c) {
+                if (!comp.is_object()) continue;
+                const std::string uid = str_of(comp, "uid");
+                const std::string ver = str_of(comp, "version");
+                if (uid == "net.minecraft" && !ver.empty()) f.mcVersion = ver;
+                else if (uid == "net.minecraftforge") f.loader = "Forge";
+                else if (uid == "net.neoforged") f.loader = "NeoForge";
+                else if (uid == "net.fabricmc.fabric-loader") f.loader = "Fabric";
+                else if (uid == "org.quiltmc.quilt-loader") f.loader = "Quilt";
+            }
+        std::ifstream cfg(dir / "instance.cfg");
+        for (std::string line; std::getline(cfg, line);)
+            if (line.rfind("name=", 0) == 0) {
+                f.name = line.substr(5);
+                if (!f.name.empty() && f.name.back() == '\r') f.name.pop_back();
+                break;
+            }
+        for (const char* sub : {".minecraft", "minecraft"})
+            if (fs::is_directory(dir / sub, ec)) {
+                f.gameDir = dir / sub;
+                break;
+            }
+        return f;
+    }
+
+    // 3. Modrinth App : profile.json (format des versions 0.x).
+    if (const auto j = read_json(dir / "profile.json")) {
+        if (const auto m = j->find("metadata"); m != j->end() && m->is_object()) {
+            f.source = "Modrinth";
+            f.name = str_of(*m, "name");
+            if (const auto v = str_of(*m, "game_version"); !v.empty()) f.mcVersion = v;
+            f.loader = loader_label(str_of(*m, "loader"));
+            return f;
+        }
+    }
+
+    // 4. Aucun manifeste : estimation d'apres les mods eux-memes. Le
+    //    chargeur majoritaire l'emporte, et la version de Minecraft la plus
+    //    citee en borne basse des contraintes. C'est une ESTIMATION, signalee
+    //    comme telle — mais elle vaut mieux que Vanilla pour un dossier qui
+    //    contient des dizaines de mods Forge.
+    const auto mods = modmeta::read_dir(f.gameDir / "mods");
+    std::map<std::string, int> loaders, versions;
+    for (const auto& m : mods) {
+        if (m.disabled || m.loader == modmeta::Loader::Unknown) continue;
+        ++loaders[modmeta::loader_name(m.loader)];
+        if (const auto v = first_mc_version(m.mcRange); !v.empty()) ++versions[v];
+    }
+    auto top = [](const std::map<std::string, int>& m) {
+        std::string best;
+        int n = 0;
+        for (const auto& [k, c] : m)
+            if (c > n) { best = k; n = c; }
+        return best;
+    };
+    if (const auto l = top(loaders); !l.empty()) {
+        f.source = "mods";
+        f.loader = l;
+        if (const auto v = top(versions); !v.empty()) f.mcVersion = v;
+    }
+    return f;
 }
 
 } // namespace tl::packs

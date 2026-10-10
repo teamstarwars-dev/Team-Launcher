@@ -7,6 +7,7 @@
 
 #include "modcheck.hpp"
 #include "modmeta.hpp"
+#include "pack_import.hpp"
 #include "util_zip.hpp"
 
 #include <cstdio>
@@ -444,6 +445,132 @@ version="1.0"
         CHECK(read_dir(tmp / "nexistepas").empty());
 
         fs::remove_all(tmp, ec);
+    }
+
+    // =====================================================================
+    // 10. Identifiant de version de Minecraft
+    // =====================================================================
+    // Defaut vecu : « 112.2 » (point oublie) etait enregistre tel quel, et
+    // chacun des 39 mods de l'instance etait ensuite declare incompatible.
+    {
+        for (const char* ok : {"latest", "1.21", "1.21.4", "1.12.2", "1.8",
+                               "26.1", "26.1.2", "1.21-pre1", "1.20.5-rc1",
+                               "26.1-snapshot-3", "24w14a", "b1.7.3",
+                               "a1.0.4", "c0.0.13a", "rd-132211",
+                               "inf-20100618"})
+            CHECK(is_mc_version(ok));
+        // 112 n'est ni le « 1 » historique ni une annee plausible.
+        for (const char* ko : {"112.2", "1", "1.", "1..2", "2.0", "100.1",
+                               "1.20.1.5", "1.20-beta", "24w1a", "abc", "",
+                               "1.20 ", "1,20,1"})
+            CHECK(!is_mc_version(ko));
+
+        CHECK_EQ(suggest_mc_version("112.2"), std::string("1.12.2"));
+        CHECK_EQ(suggest_mc_version("120.1"), std::string("1.20.1"));
+        CHECK_EQ(suggest_mc_version("1,20,1"), std::string("1.20.1"));
+        // Pas de suggestion pour une version deja valide ni pour un texte
+        // sans rapport : une suggestion fausse est pire qu'aucune.
+        CHECK(suggest_mc_version("1.20.1").empty());
+        CHECK(suggest_mc_version("abc").empty());
+    }
+
+    // =====================================================================
+    // 11. Version d'instance invalide : UNE erreur, pas une par mod
+    // =====================================================================
+    {
+        const auto r = modcheck::analyse(
+            {mk("a.jar", "a", Loader::Forge, "1.0", "[1.12.2]"),
+             mk("b.jar", "b", Loader::Forge, "1.0", "[1.12.2]"),
+             mk("c.jar", "c", Loader::Forge, "1.0", "[1.12.2]")},
+            "Forge", "112.2");
+        CHECK_EQ(r.errors, 1);
+        CHECK(has_title(r, "Version de Minecraft invalide"));
+        CHECK(!has_title(r, "Version de Minecraft incompatible"));
+        // La correction est proposee dans le message.
+        bool suggested = false;
+        for (const auto& is : r.issues)
+            if (is.detail.find("1.12.2") != std::string::npos) suggested = true;
+        CHECK(suggested);
+    }
+    // « latest » : on ne sait pas, hors ligne, a quoi il correspond.
+    // Comparer reviendrait a inventer un verdict.
+    {
+        const auto r = modcheck::analyse(
+            {mk("a.jar", "a", Loader::Forge, "1.0", "[1.12.2]")}, "Forge",
+            "latest");
+        CHECK_EQ(r.errors, 0);
+    }
+
+    // =====================================================================
+    // 12. Import d'un dossier d'instance d'un autre launcher
+    // =====================================================================
+    // Defaut vecu : « Importer un dossier » creait l'instance en Vanilla
+    // « latest » sans lire son contenu. Une instance CurseForge Forge 1.12.2
+    // de 39 mods devenait inutilisable.
+    {
+        std::error_code ec;
+        const fs::path base = fs::temp_directory_path() / "tl_test_detect";
+        fs::remove_all(base, ec);
+        auto write = [&](const fs::path& p, const std::string& s) {
+            fs::create_directories(p.parent_path(), ec);
+            std::ofstream(p, std::ios::binary) << s;
+        };
+
+        // CurseForge
+        write(base / "cf" / "minecraftinstance.json",
+              R"J({"name":"Jay'rp V1","gameVersion":"1.12.2",)J"
+              R"J("baseModLoader":{"name":"forge-14.23.5.2859"}})J");
+        auto f = packs::detect_folder(base / "cf");
+        CHECK_EQ(f.source, std::string("CurseForge"));
+        CHECK_EQ(f.loader, std::string("Forge"));
+        CHECK_EQ(f.mcVersion, std::string("1.12.2"));
+        CHECK_EQ(f.name, std::string("Jay'rp V1"));
+        CHECK(f.gameDir == base / "cf");
+
+        // CurseForge, Fabric : le nom porte aussi la version du jeu
+        write(base / "cf2" / "minecraftinstance.json",
+              R"J({"gameVersion":"1.21.1",)J"
+              R"J("baseModLoader":{"name":"fabric-0.16.9-1.21.1"}})J");
+        f = packs::detect_folder(base / "cf2");
+        CHECK_EQ(f.loader, std::string("Fabric"));
+        CHECK_EQ(f.mcVersion, std::string("1.21.1"));
+
+        // Prism / MultiMC : les fichiers du jeu sont dans .minecraft/
+        write(base / "prism" / "mmc-pack.json",
+              R"J({"components":[{"uid":"net.minecraft","version":"1.20.1"},)J"
+              R"J({"uid":"net.neoforged","version":"47.1.0"}]})J");
+        write(base / "prism" / "instance.cfg", "InstanceType=OneSix\r\nname=Mon Pack\r\n");
+        fs::create_directories(base / "prism" / ".minecraft" / "mods", ec);
+        f = packs::detect_folder(base / "prism");
+        CHECK_EQ(f.source, std::string("Prism"));
+        CHECK_EQ(f.loader, std::string("NeoForge"));
+        CHECK_EQ(f.mcVersion, std::string("1.20.1"));
+        CHECK_EQ(f.name, std::string("Mon Pack")); // sans le \r de fin
+        CHECK(f.gameDir == base / "prism" / ".minecraft");
+
+        // Modrinth App
+        write(base / "mr" / "profile.json",
+              R"J({"metadata":{"name":"Survie","game_version":"1.21.4",)J"
+              R"J("loader":"quilt"}})J");
+        f = packs::detect_folder(base / "mr");
+        CHECK_EQ(f.source, std::string("Modrinth"));
+        CHECK_EQ(f.loader, std::string("Quilt"));
+        CHECK_EQ(f.mcVersion, std::string("1.21.4"));
+
+        // Aucun manifeste, aucun mod : on retombe sur Vanilla, sans rien
+        // inventer.
+        fs::create_directories(base / "vide", ec);
+        f = packs::detect_folder(base / "vide");
+        CHECK(f.source.empty());
+        CHECK_EQ(f.loader, std::string("Vanilla"));
+        CHECK_EQ(f.mcVersion, std::string("latest"));
+
+        // Manifeste illisible : ne lance pas, retombe proprement.
+        write(base / "casse" / "minecraftinstance.json", "{pas du json");
+        f = packs::detect_folder(base / "casse");
+        CHECK_EQ(f.loader, std::string("Vanilla"));
+
+        fs::remove_all(base, ec);
     }
 
     if (g_failures == 0) {

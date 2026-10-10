@@ -28,6 +28,31 @@ struct Result {
 enum class Kind { Unknown, CurseForge, Modrinth };
 Kind detect(const std::filesystem::path& archive);
 
+// --- Dossier d'instance existant ---------------------------------------
+//
+// Ce qu'un dossier d'instance venu d'un autre launcher dit de lui-meme.
+//
+// « Importer un dossier » creait l'instance en dur en Vanilla « latest »,
+// sans regarder son contenu. Une instance CurseForge Forge 1.12.2 avec 39
+// mods devenait donc une instance Vanilla de la derniere version : Minecraft
+// ignorait le dossier mods/, et la verification d'avant-lancement le
+// signalait — a juste titre, mais trop tard pour que l'utilisateur
+// comprenne d'ou venait l'erreur.
+struct FolderInfo {
+    std::string name;              // vide = inconnu (l'appelant prend le dossier)
+    std::string loader = "Vanilla"; // memes libelles que kInstanceLoaders
+    std::string mcVersion = "latest";
+    std::filesystem::path gameDir; // racine du jeu a copier (Prism : .minecraft/)
+    std::string source;            // « CurseForge », « Prism », « Modrinth »,
+                                   // « mods » (estimation), ou vide
+};
+
+// Lit, dans l'ordre : minecraftinstance.json (CurseForge), mmc-pack.json +
+// instance.cfg (Prism / MultiMC), profile.json (Modrinth App). A defaut,
+// estime chargeur et version d'apres les manifestes des mods. Ne lance
+// jamais ; un dossier sans rien d'exploitable rend Vanilla « latest ».
+FolderInfo detect_folder(const std::filesystem::path& dir);
+
 // Importe le modpack. N'ecrit PAS dans le config : l'appelant ajoute
 // `result.instance` et appelle DataStore::save() (le C# le faisait dedans).
 Result import_curseforge(const std::filesystem::path& zip, const Progress& progress,
