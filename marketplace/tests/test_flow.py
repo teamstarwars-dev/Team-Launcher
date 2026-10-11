@@ -225,8 +225,9 @@ def test_reviewer_is_not_admin(env):
 
 def test_review_page_and_security_headers(env):
     c = env["client"]
+    assert c.get("/panel").status_code == 200
     r = c.get("/review")
-    assert r.status_code == 200 and "Review des plugins" in r.text
+    assert r.status_code == 200 and "Panel de la marketplace" in r.text
     csp = r.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert "unsafe-inline" not in csp

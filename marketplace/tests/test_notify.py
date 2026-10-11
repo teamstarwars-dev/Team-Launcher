@@ -48,7 +48,7 @@ def test_alert_sent_on_submission(env, captured):
     assert body["allowed_mentions"] == {"parse": []}  # personne n'est mentionné
     text = body["content"]
     assert "Nouveau plugin en attente" in text and "`hello`" in text and "`1.0.0`" in text
-    assert "https://panel.example.org/review" in text
+    assert "https://panel.example.org/panel" in text
     assert "](" not in text and "https://x.y" not in text  # pas de lien injecté
 
 

@@ -55,7 +55,7 @@ def new_submission(webhook: str, panel_url: str, kind: str, slug: str, name: str
              f"{_clean(name)} — `{slug}` version `{version}`",
              f"Soumis par {_clean(developer, 64)}"]
     if panel_url:
-        lines.append(f"Relire : {panel_url.rstrip('/')}/review")
+        lines.append(f"Relire : {panel_url.rstrip('/')}/panel")
     body = json.dumps({"content": "\n".join(lines), "allowed_mentions": {"parse": []}}).encode()
     send = _sender or _post
     threading.Thread(target=send, args=(webhook, body), daemon=True).start()

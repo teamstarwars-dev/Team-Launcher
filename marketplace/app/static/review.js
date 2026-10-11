@@ -271,6 +271,7 @@ function selectTab(name) {
   $("#security-view").hidden = name !== "security";
   $("#detail").hidden = true;
   if (name === "security") loadKeys();
+  if (name === "admin") loadTelemetry();
   if (name === "queue") loadQueue();
   if (name === "projects") loadProjects();
 }
@@ -488,3 +489,27 @@ $("#key-form").addEventListener("submit", async (ev) => {
            e.name === "InvalidStateError" ? "Cette clé est déjà enregistrée sur ce compte." : e.message, true);
   }
 });
+
+
+// --- Administration : incidents des plugins ---------------------------------------
+
+const INCIDENT_TEXT = {
+  rate_abuse: "débit abusif (arrêté)", permission_probe: "permissions sondées (arrêté)",
+  invalid_requests: "requêtes invalides (arrêté)", bad_frame: "trame invalide (arrêté)",
+  killed_other: "arrêté d'office", denied: "appel refusé", start_failed: "démarrage raté",
+  exited: "service terminé",
+};
+
+async function loadTelemetry() {
+  let data;
+  try { data = await api("GET", "/v1/admin/telemetry?days=7"); } catch (e) { return status(e.message, true); }
+  const tb = $("#telemetry tbody");
+  tb.replaceChildren();
+  for (const r of data.rows) {
+    const tr = el("tr");
+    tr.append(el("td", r.plugin), el("td", r.version), el("td", INCIDENT_TEXT[r.kind] || r.kind),
+              el("td", r.count));
+    tb.append(tr);
+  }
+  $("#telemetry-empty").hidden = data.rows.length > 0;
+}

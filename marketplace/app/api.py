@@ -131,8 +131,11 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+    # Le panel : développeurs, relecteurs et administrateurs, chacun selon
+    # ses droits. /review reste servi pour les liens déjà partagés.
+    @app.get("/panel", include_in_schema=False)
     @app.get("/review", include_in_schema=False)
-    def review_page():
+    def panel_page():
         return FileResponse(STATIC_DIR / "review.html")
 
     def db() -> Iterator[DbSession]:

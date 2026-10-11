@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Review — Team Launcher</title>
+<title>Panel Team Launcher</title>
 <link rel="stylesheet" href="/static/review.css">
 <script src="/static/vendor/qrcode-1.4.4.js" defer></script>
 <script src="/static/review.js" defer></script>
 </head>
 <body>
 <header>
-  <h1>Review des plugins et mods</h1>
+  <h1>Panel de la marketplace</h1>
   <span id="who"></span>
   <button id="logout" class="ghost" hidden>Se déconnecter</button>
 </header>
@@ -149,6 +149,15 @@
     </div>
 
     <div id="admin-view" hidden>
+      <div class="card">
+        <h3>Incidents des plugins (7 derniers jours)</h3>
+        <p class="muted small-text">Statistiques anonymes envoyées par les launchers qui l'ont accepté :
+          un plugin qui accumule les arrêts d'office ou les appels refusés mérite une relecture, voire une
+          révocation.</p>
+        <table id="telemetry"><thead><tr><th>Plugin</th><th>Version</th><th>Incident</th><th>Nombre</th></tr></thead>
+          <tbody></tbody></table>
+        <p id="telemetry-empty" class="muted" hidden>Aucun incident remonté.</p>
+      </div>
       <div class="card">
         <h3>Arrêt d'urgence (kill-switch)</h3>
         <p>Publie une nouvelle liste de révocation qui arrête <strong>tous</strong> les plugins sur tous les launchers à leur prochaine synchronisation.</p>
