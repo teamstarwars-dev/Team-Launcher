@@ -73,14 +73,12 @@ async function start() {
   $("#who").textContent = me.displayName;
   if (!me.totpEnabled) return setupMfa();
   if (!me.mfaOk) { $("#mfa-setup").hidden = true; return show("mfa"); }
-  if (!me.reviewer && !me.admin) {
-    show("app");
-    $("#queue-view").hidden = true;
-    return status("Ce compte n'a pas le rôle de relecteur.", true);
-  }
+  // Chacun voit les espaces de ses droits : tout compte (2FA) a ses
+  // projets ; la relecture et l'administration selon les rôles.
+  $("#tab-queue").hidden = !me.reviewer;
   $("#tab-admin").hidden = !me.admin;
   show("app");
-  loadQueue();
+  selectTab(me.reviewer ? "queue" : "projects");
 }
 
 // QR code dessiné module par module sur le canvas : aucune image data: (la
@@ -260,15 +258,109 @@ $("#back").addEventListener("click", loadQueue);
 
 // --- Onglets et administration -------------------------------------------------
 
-for (const t of document.querySelectorAll(".tab")) {
-  t.addEventListener("click", () => {
-    for (const o of document.querySelectorAll(".tab")) o.classList.toggle("active", o === t);
-    const admin = t.dataset.tab === "admin";
-    $("#admin-view").hidden = !admin;
-    $("#detail").hidden = true;
-    $("#queue-view").hidden = admin;
-    if (!admin) loadQueue();
+function selectTab(name) {
+  for (const o of document.querySelectorAll(".tab")) o.classList.toggle("active", o.dataset.tab === name);
+  $("#projects-view").hidden = name !== "projects";
+  $("#queue-view").hidden = name !== "queue";
+  $("#admin-view").hidden = name !== "admin";
+  $("#detail").hidden = true;
+  if (name === "queue") loadQueue();
+  if (name === "projects") loadProjects();
+}
+
+for (const t of document.querySelectorAll(".tab"))
+  t.addEventListener("click", () => selectTab(t.dataset.tab));
+
+// --- Espace développeur ---------------------------------------------------------
+
+const STATUS_TEXT = { pending: "en attente de relecture", approved: "approuvée et signée",
+                      rejected: "refusée", revoked: "révoquée" };
+
+async function apiForm(path, form) {
+  const r = await fetch(path, { method: "POST", headers: { Authorization: "Bearer " + token }, body: form });
+  let data = null;
+  try { data = await r.json(); } catch { }
+  if (!r.ok) {
+    const d = data && data.detail;
+    throw new Error(typeof d === "string" ? d : `erreur ${r.status}`);
+  }
+  return data;
+}
+
+$("#project-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  try {
+    await api("POST", "/v1/projects", { kind: f.get("kind"), slug: String(f.get("slug")).trim(),
+                                         name: String(f.get("name")).trim() });
+    ev.target.reset();
+    status("Projet créé. Envoyez maintenant sa première version.");
+    loadProjects();
+  } catch (e) { status(e.message, true); }
+});
+
+async function loadProjects() {
+  let projects;
+  try { projects = await api("GET", "/v1/projects/mine"); } catch (e) { return status(e.message, true); }
+  const list = $("#projects-list");
+  list.replaceChildren();
+  $("#projects-empty").hidden = projects.length > 0;
+  for (const p of projects) list.append(await projectCard(p));
+}
+
+async function projectCard(p) {
+  const card = el("div", undefined, "card proj");
+  const h = el("h3");
+  h.append(el("span", p.name), el("span", `${p.kind === "plugin" ? "Plugin" : "Mod"} · ${p.slug}`, "muted"));
+  if (p.banned) h.append(el("span", "suspendu", "st-rejected"));
+  card.append(h);
+
+  let rows = [];
+  try { rows = await api("GET", `/v1/projects/${p.kind}/${p.slug}/submissions`); } catch { }
+  if (rows.length) {
+    const t = el("table", undefined, "versions");
+    const head = el("tr");
+    for (const c of ["Version", "État", "Envoyée le", "Note de relecture"]) head.append(el("th", c));
+    t.append(head);
+    for (const r of rows) {
+      const tr = el("tr");
+      tr.append(el("td", r.version), el("td", STATUS_TEXT[r.status] || r.status, "st-" + r.status),
+                el("td", date(r.submittedAt)), el("td", r.note || "—"));
+      t.append(tr);
+    }
+    card.append(t);
+  } else {
+    card.append(el("p", "Aucune version envoyée.", "muted"));
+  }
+
+  // Envoi d'une version : archive + sources, toujours les deux.
+  const form = el("form", undefined, "upload");
+  const ver = el("input"); ver.name = "version"; ver.required = true; ver.maxLength = 32;
+  ver.placeholder = "version (ex. 1.0.0)";
+  const lv = el("label", "Version"); lv.append(ver);
+  const bin = el("input"); bin.type = "file"; bin.name = "binary"; bin.accept = ".zip"; bin.required = true;
+  const lb = el("label", p.kind === "plugin" ? "Archive du plugin (.zip, avec plugin.json)"
+                                             : "Archive du mod (.zip, des .jar à la racine)");
+  lb.append(bin);
+  const src = el("input"); src.type = "file"; src.name = "source"; src.accept = ".zip"; src.required = true;
+  const ls = el("label", "Sources (.zip)"); ls.append(src);
+  const send = el("button", "Envoyer cette version");
+  form.append(lv, lb, ls, send);
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    send.disabled = true;
+    status("Envoi en cours…");
+    try {
+      await apiForm(`/v1/projects/${p.kind}/${p.slug}/submissions`, new FormData(form));
+      status(`Version ${ver.value} envoyée : l'équipe est prévenue et va la relire.`);
+      loadProjects();
+    } catch (e) {
+      status(e.message, true);
+      send.disabled = false;
+    }
   });
+  card.append(form);
+  return card;
 }
 
 async function kill(on) {

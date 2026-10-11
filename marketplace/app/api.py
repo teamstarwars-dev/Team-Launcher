@@ -322,6 +322,19 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
         rows = s.scalars(select(m.Project).where(m.Project.owner_id == dev.id)).all()
         return [{"kind": p.kind, "slug": p.slug, "name": p.name, "banned": p.banned} for p in rows]
 
+    @dev_r.get("/projects/{kind}/{slug}/submissions")
+    def project_submissions(kind: str, slug: str, dev: Mfa, s: Db):
+        """Historique des versions d'un projet, pour son propriétaire : état
+        et motif d'un refus."""
+        p = s.scalar(select(m.Project).where(m.Project.kind == kind, m.Project.slug == slug))
+        if p is None or p.owner_id != dev.id:
+            raise HTTPException(404, "projet introuvable")
+        rows = s.scalars(select(m.Submission).where(m.Submission.project_id == p.id)
+                         .order_by(m.Submission.created_at.desc(), m.Submission.id.desc())).all()
+        return [{"id": x.id, "version": x.version, "status": x.status,
+                 "submittedAt": x.created_at, "reviewedAt": x.reviewed_at or None,
+                 "note": x.review_note} for x in rows]
+
     async def _read_capped(f: UploadFile, cap: int) -> bytes:
         data = await f.read(cap + 1)
         if len(data) > cap:

@@ -61,11 +61,31 @@
 
   <section id="app" hidden>
     <nav>
-      <button data-tab="queue" class="tab active">File d'attente</button>
+      <button data-tab="projects" class="tab" id="tab-projects">Mes projets</button>
+      <button data-tab="queue" class="tab" id="tab-queue" hidden>File d'attente</button>
       <button data-tab="admin" class="tab" id="tab-admin" hidden>Administration</button>
     </nav>
 
-    <div id="queue-view">
+    <!-- Espace développeur : ses projets, ses versions, leur état. -->
+    <div id="projects-view" hidden>
+      <div class="card">
+        <h3>Nouveau projet</h3>
+        <form id="project-form" class="row wrap">
+          <select name="kind" aria-label="Type">
+            <option value="plugin">Plugin</option>
+            <option value="mod">Mod</option>
+          </select>
+          <input name="slug" placeholder="identifiant (minuscules, chiffres, - _ .)" pattern="[a-z0-9_\-][a-z0-9._\-]{0,63}" required>
+          <input name="name" placeholder="nom affiché" minlength="2" maxlength="128" required>
+          <button>Créer</button>
+        </form>
+        <p class="muted small-text">L'identifiant d'un plugin est aussi le nom de son dossier dans le launcher : il ne change plus ensuite.</p>
+      </div>
+      <div id="projects-list"></div>
+      <p id="projects-empty" class="muted" hidden>Aucun projet pour l'instant.</p>
+    </div>
+
+    <div id="queue-view" hidden>
       <table id="queue">
         <thead><tr><th>Projet</th><th>Type</th><th>Version</th><th>Soumis le</th><th></th></tr></thead>
         <tbody></tbody>

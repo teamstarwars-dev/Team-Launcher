@@ -244,3 +244,15 @@ def test_mod_package_only_root_jars(env):
     for bad in ({"lib/x.jar": b"PK"}, {"x.jar": b"PK", "install.bat": b"del *"}):
         assert submit(dev, "coolmod", "1.0", make_zip(bad), kind="mod").status_code == 400
     assert submit(dev, "coolmod", "1.0", make_zip({"x.jar": b"PK"}), kind="mod").status_code == 201
+
+
+def test_project_history_for_owner_only(env):
+    dev, rv = _setup(env)
+    s1 = submit(dev, "hello", "1.0.0", plugin_zip()).json()["id"]
+    rv.post(f"/v1/review/submissions/{s1}/reject", json={"note": "permissions trop larges"})
+    submit(dev, "hello", "1.0.1", plugin_zip(version="1.0.1"))
+    h = dev.get("/v1/projects/plugin/hello/submissions").json()
+    assert [(x["version"], x["status"]) for x in h] == [("1.0.1", "pending"), ("1.0.0", "rejected")]
+    assert h[1]["note"] == "permissions trop larges"
+    other = Account(env["client"], "other@ex.org")
+    assert other.get("/v1/projects/plugin/hello/submissions").status_code == 404
