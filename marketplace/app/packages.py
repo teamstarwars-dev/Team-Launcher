@@ -115,6 +115,14 @@ def inspect_zip(data: bytes, *, max_files: int, max_unpacked: int,
     return Inspected(files=files, manifest=manifest, total_bytes=total)
 
 
+def check_mod_files(files: dict[str, str]) -> None:
+    """Un paquet de mod ne contient que des .jar à sa racine : c'est tout
+    ce que le launcher acceptera d'installer dans le dossier mods."""
+    for name in files:
+        if "/" in name or not name.lower().endswith(".jar"):
+            raise PackageError(f"un paquet de mod ne contient que des .jar à la racine ({name})")
+
+
 def check_plugin_manifest(manifest: dict, slug: str, version: str) -> None:
     """Cohérence entre ce que dit le manifeste et ce qui est soumis."""
     if not SLUG_RE.match(slug):

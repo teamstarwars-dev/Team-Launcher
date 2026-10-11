@@ -191,7 +191,8 @@ void ensure_settings_hosts() {
     std::call_once(g_settings_once, [] {
         const tl::AppSettings& s = tl::DataStore::settings;
         const std::string* urls[] = {&s.adminServerUrl, &s.updateUrl, &s.newsUrl,
-                                     &s.discordTelemetryWebhook, &s.vpsUrl};
+                                     &s.discordTelemetryWebhook, &s.vpsUrl,
+                                     &s.marketplaceUrl};
         for (const std::string* u : urls)
             if (u && !u->empty()) allow_host(host_from_url(*u));
         if (s.pteroHosts.is_array()) {

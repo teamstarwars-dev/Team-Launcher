@@ -100,6 +100,13 @@ Verdict verify_plugin_dir(const std::filesystem::path& dir, const std::string& p
                           const std::string& version, const Roots& roots,
                           const Revocations* revs, std::int64_t now);
 
+// Même vérification pour une publication de la marketplace, plugin ou mod.
+// Un mod est signé en « tl-mod-release » par une clé d'usage « mod ».
+enum class Kind { Plugin, Mod };
+Verdict verify_release_dir(const std::filesystem::path& dir, Kind kind, const std::string& id,
+                           const std::string& version, const Roots& roots,
+                           const Revocations* revs, std::int64_t now);
+
 // --- Utilitaires exposés pour les tests et l'outillage ---------------------
 
 std::optional<std::string> sha512_file_hex(const std::filesystem::path& p);

@@ -1507,7 +1507,7 @@ void settings_page() {
     if (fBig) ImGui::PopFont();
     ImGui::Spacing();
 
-    // TL_AUTO_TAB : selection d'onglet pour les tests (0..3), lue une fois.
+    // TL_AUTO_TAB : selection d'onglet pour les tests (0..4), lue une fois.
     static int autoTab = -2;
     if (autoTab == -2) {
         const char* v = std::getenv("TL_AUTO_TAB");
@@ -1548,6 +1548,12 @@ void settings_page() {
         if (ImGui::BeginTabItem(tr("Avancé"), nullptr, forced(3))) {
             ImGui::BeginChild("##tadv");
             tab_advanced();
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(tr("Marketplace"), nullptr, forced(4))) {
+            ImGui::BeginChild("##tmk");
+            marketplace_panel();
             ImGui::EndChild();
             ImGui::EndTabItem();
         }

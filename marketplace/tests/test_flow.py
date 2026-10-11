@@ -236,3 +236,11 @@ def test_review_page_and_security_headers(env):
     assert c.get("/v1/public/catalog").headers["x-content-type-options"] == "nosniff"
     # Pas de documentation publique de l'API.
     assert c.get("/docs").status_code == 404
+
+
+def test_mod_package_only_root_jars(env):
+    dev = Account(env["client"], "dev@ex.org")
+    dev.post("/v1/projects", json={"kind": "mod", "slug": "coolmod", "name": "Cool"})
+    for bad in ({"lib/x.jar": b"PK"}, {"x.jar": b"PK", "install.bat": b"del *"}):
+        assert submit(dev, "coolmod", "1.0", make_zip(bad), kind="mod").status_code == 400
+    assert submit(dev, "coolmod", "1.0", make_zip({"x.jar": b"PK"}), kind="mod").status_code == 201

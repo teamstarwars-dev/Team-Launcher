@@ -328,8 +328,10 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
                                        expect_manifest=(kind == "plugin"))
             if kind == "plugin":
                 packages.check_plugin_manifest(ins.manifest, slug, version)
-            elif not packages.VERSION_RE.match(version):
-                raise packages.PackageError("version invalide")
+            else:
+                if not packages.VERSION_RE.match(version):
+                    raise packages.PackageError("version invalide")
+                packages.check_mod_files(ins.files)
             # Les sources sont relues par un humain : on les inspecte aussi,
             # pour qu'un relecteur n'ouvre jamais une bombe ZIP.
             packages.inspect_zip(src_data, max_files=settings.max_files * 4,

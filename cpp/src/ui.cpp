@@ -1391,6 +1391,7 @@ void phase8_pump(SDL_Window* window) {
     }
 
     plugin_services_pump();
+    marketplace_pump();
 }
 
 } // namespace
@@ -1822,6 +1823,7 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: localapi_stop\n");
     localapi::stop();
     pluginhost::stop();
+    marketplace_stop();
     // Compteurs d'usage des clés : écrits une fois, pas à chaque appel.
     apikeys::flush();
     // Événements sortants : vider la file et joindre le fil.

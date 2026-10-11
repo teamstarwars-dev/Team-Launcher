@@ -3,7 +3,7 @@
     python -m tools.interop_fixture ../cpp/tests/interop
 
 Produit, par le MÊME chemin que le serveur (inspect_zip puis Signer), un
-plugin signé et deux listes de révocation. cpp/tests/test_signing.cpp les
+plugin signé, un mod signé et deux listes de révocation. cpp/tests/test_signing.cpp les
 fait vérifier par le code du launcher ; tests/test_interop.py exige que
 ce script les reproduise à l'octet près. Une dérive de format, d'un côté
 comme de l'autre, casse donc un des deux tests.
@@ -42,28 +42,38 @@ FILES: dict[str, bytes] = {
     "données/lisez-moi.txt": "Fichier au nom accentué.\n".encode(),
 }
 
+MOD_ID, MOD_VERSION = "coolmod", "1.0"
+MOD_FILES: dict[str, bytes] = {"coolmod-1.0.jar": b"PK faux jar signe par le serveur\n"}
+
 
 def _signer(tmp: Path) -> Signer:
     root = SigningKey(b"\x01" * 32)
     inter = SigningKey(b"\x02" * 32)
-    cert = make_cert(root, inter.verify_key, "py-int-1", ["plugin", "revocation"],
+    cert = make_cert(root, inter.verify_key, "py-int-1", ["plugin", "mod", "revocation"],
                      1000, 4_000_000_000)
     write_secret_file(tmp / "k", bytes(inter).hex())
     (tmp / "c").write_text(json.dumps(cert))
     return Signer.load(tmp / "k", tmp / "c")
 
 
-def build() -> dict[str, bytes]:
-    """Chemin relatif -> contenu, pour tout ce qui va dans le dossier."""
+def _files(content: dict[str, bytes], manifest: bool) -> dict[str, str]:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        for name, data in FILES.items():
+        for name, data in content.items():
             z.writestr(name, data)
-    files = inspect_zip(buf.getvalue(), max_files=10, max_unpacked=1 << 20).files
+    return inspect_zip(buf.getvalue(), max_files=10, max_unpacked=1 << 20,
+                       expect_manifest=manifest).files
+
+
+def build() -> dict[str, bytes]:
+    """Chemin relatif -> contenu, pour tout ce qui va dans le dossier."""
+    files = _files(FILES, True)
 
     with tempfile.TemporaryDirectory() as t:
         signer = _signer(Path(t))
         sig = signer.sign_release(PLUGIN_ID, VERSION, files, SIGNED_AT)
+        mod_sig = signer.sign_release(MOD_ID, MOD_VERSION, _files(MOD_FILES, False), SIGNED_AT,
+                                      kind="mod")
         base = {"keyIds": [], "fileHashes": ["00" * 64], "killAll": False}
         rev7 = signer.sign_revocations({**base, "seq": 7, "issuedAt": SIGNED_AT,
                                         "releases": [{"id": "autre", "version": "2.0"}]})
@@ -73,6 +83,8 @@ def build() -> dict[str, bytes]:
 
     out = {f"plugin/{k}": v for k, v in FILES.items()}
     out["plugin/signature.json"] = sig.encode()
+    out.update({f"mod/{k}": v for k, v in MOD_FILES.items()})
+    out["mod/signature.json"] = mod_sig.encode()
     out["revocations-7.json"] = rev7.encode()
     out["revocations-8.json"] = rev8.encode()
     return out

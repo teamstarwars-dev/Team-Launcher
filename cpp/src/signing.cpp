@@ -275,6 +275,13 @@ bool install_revocations(const std::string& text, std::int64_t now, std::string*
 Verdict verify_plugin_dir(const fs::path& dir, const std::string& pluginId,
                           const std::string& version, const Roots& roots,
                           const Revocations* revs, std::int64_t now) {
+    return verify_release_dir(dir, Kind::Plugin, pluginId, version, roots, revs, now);
+}
+
+Verdict verify_release_dir(const fs::path& dir, Kind kind, const std::string& pluginId,
+                           const std::string& version, const Roots& roots,
+                           const Revocations* revs, std::int64_t now) {
+    const bool isMod = kind == Kind::Mod;
     Verdict v;
     auto invalid = [&](const std::string& why) {
         v.status = Status::Invalid;
@@ -324,7 +331,12 @@ Verdict verify_plugin_dir(const fs::path& dir, const std::string& pluginId,
         }
         return invalid(err);
     }
-    if (!cert->usages.count("plugin")) return invalid("certificat non habilité à signer des plugins");
+    // Usage ET type distincts pour les mods : la signature d'un mod ne doit
+    // jamais pouvoir passer pour celle d'un plugin, qui tourne sous d'autres
+    // garde-fous — et inversement.
+    if (!cert->usages.count(isMod ? "mod" : "plugin"))
+        return invalid(isMod ? "certificat non habilité à signer des mods"
+                             : "certificat non habilité à signer des plugins");
     v.keyId = cert->keyId;
     if (revs && revs->keyIds.count(cert->keyId)) {
         v.status = Status::Revoked;
@@ -335,7 +347,7 @@ Verdict verify_plugin_dir(const fs::path& dir, const std::string& pluginId,
     const auto payload = open_signed(doc["release"], cert->pub);
     if (!payload) return invalid("signature de publication invalide");
     const json rel = parse_obj(*payload);
-    if (rel.is_null() || rel.value("type", "") != "tl-plugin-release" || rel.value("v", 0) != 1)
+    if (rel.is_null() || rel.value("type", "") != (isMod ? "tl-mod-release" : "tl-plugin-release") || rel.value("v", 0) != 1)
         return invalid("publication mal formée");
     if (rel.value("pluginId", "") != pluginId)
         return invalid("signature émise pour un autre plugin (« " + rel.value("pluginId", "") + " »)");

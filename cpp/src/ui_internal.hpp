@@ -237,6 +237,11 @@ std::string plugin_service_state(const std::string& id);
 // avant le prochain lancement du launcher.
 void plugin_kill_switch();
 bool plugin_kill_switch_active();
+// V8 — marketplace (ui_marketplace.cpp) : panneau de la page Paramètres,
+// synchronisation périodique de la liste de révocation (chaque image), arrêt.
+void marketplace_panel();
+void marketplace_pump();
+void marketplace_stop();
 void poll_state(SDL_Window* window);
 
 // widgets

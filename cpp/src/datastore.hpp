@@ -125,6 +125,12 @@ struct AppSettings {
     // tester le sien avant de le soumettre. Désactivé par défaut. N'ouvre
     // jamais la porte à un plugin révoqué ou à signature fausse.
     bool pluginDevMode = false;
+    // V8 : adresse du serveur de la marketplace (catalogue, téléchargements,
+    // liste de révocation). HTTPS obligatoire, sauf 127.0.0.1/localhost
+    // pour tester un serveur local. Vide = marketplace désactivée.
+    std::string marketplaceUrl;
+    // Dernière liste de révocation récupérée avec succès (Unix).
+    long long lastRevocationSyncUnix = 0;
     // Clés d'application de l'API (apikeys.hpp). On n'y range que des
     // EMPREINTES de secrets, jamais les secrets : lire ce fichier ne doit
     // pas permettre de s'authentifier.
