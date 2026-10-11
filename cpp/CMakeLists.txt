@@ -224,6 +224,8 @@ set(TL_CORE_SOURCES
   src/jvmwarm.cpp
   src/plugins.cpp
   src/plugin_proto.cpp
+  src/pipe_child.cpp
+  src/plugin_host_client.cpp
   src/apikeys.cpp
   src/apievents.cpp
   src/diagapi.cpp
@@ -382,6 +384,32 @@ tl_release_flags(imgui)
 # pures. Les lier a tl_core trainerait la SDL, le SDK Discord, libcurl,
 # le stockage de configuration et le reste — pour rien, et avec une
 # surface d'attaque sans rapport avec ce qu'il fait.
+# ---- Hote de plugins (V8) ---------------------------------------------
+# Processus intermediaire entre le launcher et les plugins : c'est LUI qui
+# lit les octets ecrits par du code tiers. Il ne lie volontairement PAS
+# tl_core — ni jeton, ni secret, ni authentification dans son espace
+# memoire —, seulement le protocole et le lanceur de processus.
+add_executable(tl_plugin_host
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin_host_main.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin_proto.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/pipe_child.cpp
+)
+target_include_directories(tl_plugin_host PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/single_include
+)
+if(MSVC)
+  target_compile_options(tl_plugin_host PRIVATE /EHsc)
+  target_compile_definitions(tl_plugin_host PRIVATE _CRT_SECURE_NO_WARNINGS)
+  # Programme console sans fenetre : il n'est jamais vu par l'utilisateur.
+  target_link_options(tl_plugin_host PRIVATE /SUBSYSTEM:CONSOLE)
+else()
+  find_package(Threads REQUIRED)
+  target_link_libraries(tl_plugin_host PRIVATE Threads::Threads)
+endif()
+# Meme durcissement que le launcher : CFG, CET, canari, RELRO complet.
+tl_release_flags(tl_plugin_host)
+
 option(TL_BUILD_DIAGD "Build the standalone diagnostic service" ON)
 if(TL_BUILD_DIAGD)
   add_executable(tl_diagd
@@ -424,11 +452,13 @@ endif()
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto apikeys apievents diagapi localapi startup support social account)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto pipe_child plugin_host_client apikeys apievents diagapi localapi startup support social account)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
-# diagd_main.cpp a son propre `main` : il n'a rien a faire dans le launcher.
+# diagd_main.cpp et plugin_host_main.cpp ont leur propre `main` : ils
+# n'ont rien a faire dans le launcher.
 list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/diagd_main.cpp)
+list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/plugin_host_main.cpp)
 # Ressources Win32 (icone + bloc de version). Le .rc n'existe que sous
 # Windows : la cible Linux prendra un .desktop a la place.
 if(WIN32)
@@ -565,6 +595,7 @@ if(TL_BUILD_TESTS)
     "tests/test_diagapi.cpp|TLTestDiagApi"
     "tests/test_gamesession.cpp|TLTestGameSession"
     "tests/test_plugin_proto.cpp|TLTestPluginProto"
+    "tests/test_plugin_host.cpp|TLTestPluginHost"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")
@@ -578,6 +609,21 @@ if(TL_BUILD_TESTS)
     endif()
     tl_release_flags(${ttgt})
   endforeach()
+
+  # Faux plugin pour TLTestPluginHost : parle le protocole V8, avec des
+  # modes hostiles (trame mensongere, permissions sondees, rafale…).
+  add_executable(tl_test_plugin
+    tests/fake_plugin.cpp
+    src/plugin_proto.cpp
+    src/pipe_child.cpp)
+  target_include_directories(tl_test_plugin PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/single_include)
+  if(MSVC)
+    target_compile_options(tl_test_plugin PRIVATE /EHsc)
+  endif()
+  # Le test lance le VRAI hote et ce faux plugin : ils doivent exister.
+  add_dependencies(TLTestPluginHost tl_plugin_host tl_test_plugin)
 
   # ---- Harnais de fuzzing (optionnel) -------------------------------
   # -DTL_FUZZ=ON dans un dossier de build SEPARE. Les sanitizers doivent
