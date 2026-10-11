@@ -6,3 +6,6 @@ storage/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Archive a deposer sur le serveur (generee)
+dist/
