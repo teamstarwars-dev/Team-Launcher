@@ -46,6 +46,23 @@ class Settings:
     max_files: int = 4096
 
 
+def database_url() -> str:
+    """TL_MARKET_DB_URL, avec le mot de passe de TL_MARKET_DB_PASSWORD s'il
+    est fourni. Le mot de passe y est pris TEL QUEL : aucun encodage à faire,
+    même avec @, :, / ou % dedans (sinon il faudrait l'écrire %40, etc.)."""
+    url = _required("TL_MARKET_DB_URL")
+    password = os.environ.get("TL_MARKET_DB_PASSWORD", "")
+    if not password:
+        return url
+    from sqlalchemy.engine import make_url
+
+    try:
+        parsed = make_url(url)
+    except Exception as exc:
+        raise ConfigError("TL_MARKET_DB_URL illisible") from exc
+    return parsed.set(password=password).render_as_string(hide_password=False)
+
+
 def load() -> Settings:
     key_hex = _required("TL_MARKET_TOTP_KEY")
     try:
@@ -55,7 +72,7 @@ def load() -> Settings:
     if len(key) != 32:
         raise ConfigError("TL_MARKET_TOTP_KEY doit faire 32 octets (64 caractères hex)")
     return Settings(
-        database_url=_required("TL_MARKET_DB_URL"),
+        database_url=database_url(),
         storage_dir=Path(_required("TL_MARKET_STORAGE")),
         signing_key_path=Path(_required("TL_MARKET_SIGNING_KEY")),
         signing_cert_path=Path(_required("TL_MARKET_SIGNING_CERT")),
