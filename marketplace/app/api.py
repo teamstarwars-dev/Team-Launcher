@@ -30,6 +30,9 @@ from sqlalchemy.orm import Session as DbSession, sessionmaker
 
 from . import models as m
 from . import notify, packages, security
+# Importé ici, au chargement : la table doit exister dans les métadonnées
+# AVANT la création des tables au démarrage.
+from .models_webauthn import WebAuthnCredential
 from .config import Settings
 from .signing import Signer
 
@@ -282,6 +285,150 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
         s.commit()
         return {"ok": True}
 
+    # --- WebAuthn : Windows Hello, clés de sécurité FIDO2 -------------------
+    #
+    # Second facteur PLUS COMMODE que le code, pas à sa place : la 2FA par
+    # code reste obligatoire (c'est le secours si la clé est perdue). Une
+    # clé ne s'ajoute que depuis une session déjà validée par la 2FA.
+    from urllib.parse import urlparse
+
+    import webauthn
+    from webauthn.helpers import bytes_to_base64url
+    from webauthn.helpers.structs import (AuthenticatorSelectionCriteria,
+                                          PublicKeyCredentialDescriptor,
+                                          ResidentKeyRequirement,
+                                          UserVerificationRequirement)
+
+
+    rp_origin = settings.public_url
+    rp_id = urlparse(rp_origin).hostname or ""
+    challenges: dict[str, tuple[bytes, str, float]] = {}  # session -> (défi, usage, échéance)
+
+    def _need_rp():
+        if not rp_id:
+            raise HTTPException(400, "WebAuthn indisponible : TL_MARKET_PUBLIC_URL non configurée")
+
+    def _put_challenge(sess: m.Session, purpose: str, ch: bytes):
+        now_f = time.monotonic()
+        for k in [k for k, v in challenges.items() if v[2] < now_f]:
+            del challenges[k]
+        challenges[sess.token_hash] = (ch, purpose, now_f + 300)
+
+    def _take_challenge(sess: m.Session, purpose: str) -> bytes:
+        # Usage unique : retiré dès qu'il est lu, valable 5 minutes.
+        item = challenges.pop(sess.token_hash, None)
+        if item is None or item[1] != purpose or item[2] < time.monotonic():
+            raise HTTPException(400, "défi absent ou expiré : recommencez")
+        return item[0]
+
+    class KeyNameIn(BaseModel):
+        name: str = Field(min_length=1, max_length=64)
+        credential: dict
+
+    class AssertionIn(BaseModel):
+        credential: dict
+
+    @auth_r.post("/webauthn/register/options")
+    def webauthn_register_options(dev: Mfa, auth: Auth, s: Db):
+        _need_rp()
+        existing = s.scalars(select(WebAuthnCredential)
+                             .where(WebAuthnCredential.developer_id == dev.id)).all()
+        if len(existing) >= 10:
+            raise HTTPException(409, "10 clés au plus par compte")
+        opts = webauthn.generate_registration_options(
+            rp_id=rp_id, rp_name="Team Launcher", user_id=str(dev.id).encode(),
+            user_name=dev.email or dev.display_name, user_display_name=dev.display_name,
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                resident_key=ResidentKeyRequirement.DISCOURAGED,
+                user_verification=UserVerificationRequirement.PREFERRED),
+            exclude_credentials=[PublicKeyCredentialDescriptor(id=webauthn.base64url_to_bytes(c.credential_id))
+                                 for c in existing])
+        _put_challenge(auth[0], "register", opts.challenge)
+        return json.loads(webauthn.options_to_json(opts))
+
+    @auth_r.post("/webauthn/register/verify", status_code=201)
+    def webauthn_register_verify(body: KeyNameIn, dev: Mfa, auth: Auth, s: Db):
+        _need_rp()
+        ch = _take_challenge(auth[0], "register")
+        try:
+            v = webauthn.verify_registration_response(credential=body.credential,
+                                                      expected_challenge=ch,
+                                                      expected_rp_id=rp_id,
+                                                      expected_origin=rp_origin)
+        except Exception as exc:
+            raise HTTPException(400, f"clé refusée : {exc}") from exc
+        cid = bytes_to_base64url(v.credential_id)
+        if s.scalar(select(WebAuthnCredential).where(WebAuthnCredential.credential_id == cid)):
+            raise HTTPException(409, "cette clé est déjà enregistrée")
+        s.add(WebAuthnCredential(developer_id=dev.id, credential_id=cid,
+                                 public_key=bytes_to_base64url(v.credential_public_key),
+                                 sign_count=v.sign_count, name=body.name.strip(),
+                                 created_at=security.now()))
+        audit(s, dev.id, "webauthn_add", body.name.strip()[:128])
+        s.commit()
+        return {"ok": True}
+
+    @auth_r.get("/webauthn/credentials")
+    def webauthn_list(dev: Mfa, s: Db):
+        rows = s.scalars(select(WebAuthnCredential)
+                         .where(WebAuthnCredential.developer_id == dev.id)
+                         .order_by(WebAuthnCredential.created_at)).all()
+        return [{"id": c.id, "name": c.name, "createdAt": c.created_at,
+                 "lastUsedAt": c.last_used_at or None} for c in rows]
+
+    @auth_r.post("/webauthn/credentials/{cid}/delete")
+    def webauthn_delete(cid: int, dev: Mfa, s: Db):
+        c = s.get(WebAuthnCredential, cid)
+        if c is None or c.developer_id != dev.id:
+            raise HTTPException(404, "clé introuvable")
+        audit(s, dev.id, "webauthn_remove", c.name[:128])
+        s.delete(c)
+        s.commit()
+        return {"ok": True}
+
+    @auth_r.post("/webauthn/login/options")
+    def webauthn_login_options(auth: Auth, s: Db):
+        _need_rp()
+        row, dev = auth
+        creds = s.scalars(select(WebAuthnCredential)
+                          .where(WebAuthnCredential.developer_id == dev.id)).all()
+        if not creds:
+            raise HTTPException(404, "aucune clé enregistrée sur ce compte")
+        opts = webauthn.generate_authentication_options(
+            rp_id=rp_id,
+            allow_credentials=[PublicKeyCredentialDescriptor(id=webauthn.base64url_to_bytes(c.credential_id))
+                               for c in creds],
+            user_verification=UserVerificationRequirement.PREFERRED)
+        _put_challenge(row, "login", opts.challenge)
+        return json.loads(webauthn.options_to_json(opts))
+
+    @auth_r.post("/webauthn/login/verify")
+    def webauthn_login_verify(body: AssertionIn, auth: Auth, s: Db):
+        _need_rp()
+        row, dev = auth
+        ch = _take_challenge(row, "login")
+        cid = str(body.credential.get("rawId") or body.credential.get("id") or "")
+        c = s.scalar(select(WebAuthnCredential).where(WebAuthnCredential.credential_id == cid,
+                                                      WebAuthnCredential.developer_id == dev.id))
+        if c is None:
+            raise HTTPException(401, "clé inconnue pour ce compte")
+        try:
+            v = webauthn.verify_authentication_response(
+                credential=body.credential, expected_challenge=ch, expected_rp_id=rp_id,
+                expected_origin=rp_origin,
+                credential_public_key=webauthn.base64url_to_bytes(c.public_key),
+                credential_current_sign_count=c.sign_count)
+        except Exception as exc:
+            audit(s, dev.id, "webauthn_fail", c.name[:128])
+            s.commit()
+            raise HTTPException(401, "vérification de la clé refusée") from exc
+        c.sign_count = v.new_sign_count
+        c.last_used_at = security.now()
+        row.mfa_ok = True
+        audit(s, dev.id, "webauthn_login", c.name[:128])
+        s.commit()
+        return {"ok": True}
+
     @auth_r.post("/logout")
     def logout(auth: Auth, s: Db):
         row, _ = auth
@@ -296,11 +443,13 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
     dev_r = APIRouter(prefix="/v1")
 
     @dev_r.get("/me")
-    def me(auth: Auth):
+    def me(auth: Auth, s: Db):
         row, dev = auth
         return {"id": dev.id, "email": dev.email, "displayName": dev.display_name,
                 "totpEnabled": dev.totp_enabled, "mfaOk": row.mfa_ok,
-                "reviewer": dev.is_reviewer, "admin": dev.is_admin}
+                "reviewer": dev.is_reviewer, "admin": dev.is_admin,
+                "webauthn": s.scalar(select(func.count()).select_from(WebAuthnCredential)
+                                     .where(WebAuthnCredential.developer_id == dev.id))}
 
     @dev_r.post("/projects", status_code=201)
     def create_project(body: ProjectIn, dev: Mfa, s: Db):

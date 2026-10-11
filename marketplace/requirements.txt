@@ -8,6 +8,7 @@ PyNaCl==1.6.2           # Ed25519 (signature) et SecretBox (secrets 2FA au repos
 PyOTP==2.10.0           # 2FA TOTP
 argon2-cffi==25.1.0     # hachage des mots de passe
 python-multipart==0.0.32
+webauthn==3.0.1         # Windows Hello et clés FIDO2 (Duo Labs, BSD)
 
 # Tests seulement
 pytest==9.1.1

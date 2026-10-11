@@ -53,6 +53,10 @@
       <code id="mfa-secret" class="secret"></code>
       <code id="mfa-uri" class="secret small"></code>
     </div>
+    <div id="mfa-key" hidden>
+      <button type="button" id="mfa-key-btn">Utiliser Windows Hello ou une clé de sécurité</button>
+      <p class="muted small-text switch">ou entrez le code de votre application :</p>
+    </div>
     <form id="mfa-form">
       <label>Code à 6 chiffres <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
       <button>Valider</button>
@@ -64,7 +68,24 @@
       <button data-tab="projects" class="tab" id="tab-projects">Mes projets</button>
       <button data-tab="queue" class="tab" id="tab-queue" hidden>File d'attente</button>
       <button data-tab="admin" class="tab" id="tab-admin" hidden>Administration</button>
+      <button data-tab="security" class="tab" id="tab-security">Sécurité</button>
     </nav>
+
+    <!-- Clés de connexion : Windows Hello, Touch ID, clés FIDO2. -->
+    <div id="security-view" hidden>
+      <div class="card">
+        <h3>Windows Hello et clés de sécurité</h3>
+        <p class="muted small-text">Connectez-vous sans taper de code : Windows Hello (visage, empreinte, code
+          PIN du PC), Touch ID, ou une clé de sécurité FIDO2 (YubiKey…). La double authentification par code
+          reste active : c'est votre secours si vous perdez la clé.</p>
+        <ul id="keys" class="keys"></ul>
+        <p id="keys-empty" class="muted" hidden>Aucune clé enregistrée.</p>
+        <form id="key-form" class="row wrap">
+          <input name="name" placeholder="nom de la clé (ex. PC du salon, YubiKey)" maxlength="64" required>
+          <button>Ajouter une clé</button>
+        </form>
+      </div>
+    </div>
 
     <!-- Espace développeur : ses projets, ses versions, leur état. -->
     <div id="projects-view" hidden>

@@ -72,7 +72,12 @@ async function start() {
   } catch { return; }
   $("#who").textContent = me.displayName;
   if (!me.totpEnabled) return setupMfa();
-  if (!me.mfaOk) { $("#mfa-setup").hidden = true; return show("mfa"); }
+  if (!me.mfaOk) {
+    $("#mfa-setup").hidden = true;
+    // Windows Hello / clé FIDO proposé en premier quand le compte en a une.
+    $("#mfa-key").hidden = !(me.webauthn > 0 && window.PublicKeyCredential);
+    return show("mfa");
+  }
   // Chacun voit les espaces de ses droits : tout compte (2FA) a ses
   // projets ; la relecture et l'administration selon les rôles.
   $("#tab-queue").hidden = !me.reviewer;
@@ -263,7 +268,9 @@ function selectTab(name) {
   $("#projects-view").hidden = name !== "projects";
   $("#queue-view").hidden = name !== "queue";
   $("#admin-view").hidden = name !== "admin";
+  $("#security-view").hidden = name !== "security";
   $("#detail").hidden = true;
+  if (name === "security") loadKeys();
   if (name === "queue") loadQueue();
   if (name === "projects") loadProjects();
 }
@@ -387,3 +394,97 @@ $("#revoke-form").addEventListener("submit", async (ev) => {
 });
 
 start();
+
+
+// --- WebAuthn : Windows Hello, clés de sécurité ---------------------------------
+//
+// Le serveur envoie ses options en JSON (champs binaires en base64url) ; le
+// navigateur veut des ArrayBuffer. Et dans l'autre sens pour la réponse.
+
+function b64uToBuf(s) {
+  const b = atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4));
+  return Uint8Array.from(b, (c) => c.charCodeAt(0)).buffer;
+}
+
+function bufToB64u(buf) {
+  let s = "";
+  for (const b of new Uint8Array(buf)) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function creationOptions(o) {
+  return { ...o, challenge: b64uToBuf(o.challenge), user: { ...o.user, id: b64uToBuf(o.user.id) },
+           excludeCredentials: (o.excludeCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })) };
+}
+
+function requestOptions(o) {
+  return { ...o, challenge: b64uToBuf(o.challenge),
+           allowCredentials: (o.allowCredentials || []).map((c) => ({ ...c, id: b64uToBuf(c.id) })) };
+}
+
+function credentialJson(cred) {
+  const r = cred.response, out = { id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+                                    response: { clientDataJSON: bufToB64u(r.clientDataJSON) },
+                                    clientExtensionResults: cred.getClientExtensionResults() };
+  if (r.attestationObject) {
+    out.response.attestationObject = bufToB64u(r.attestationObject);
+    if (r.getTransports) out.response.transports = r.getTransports();
+  } else {
+    out.response.authenticatorData = bufToB64u(r.authenticatorData);
+    out.response.signature = bufToB64u(r.signature);
+    out.response.userHandle = r.userHandle ? bufToB64u(r.userHandle) : null;
+  }
+  return out;
+}
+
+$("#mfa-key-btn").addEventListener("click", async () => {
+  try {
+    const o = await api("POST", "/v1/auth/webauthn/login/options");
+    const cred = await navigator.credentials.get({ publicKey: requestOptions(o) });
+    await api("POST", "/v1/auth/webauthn/login/verify", { credential: credentialJson(cred) });
+    status("");
+    start();
+  } catch (e) {
+    status(e.name === "NotAllowedError" ? "Opération annulée ou délai dépassé." : e.message, true);
+  }
+});
+
+async function loadKeys() {
+  let keys;
+  try { keys = await api("GET", "/v1/auth/webauthn/credentials"); } catch (e) { return status(e.message, true); }
+  const ul = $("#keys");
+  ul.replaceChildren();
+  $("#keys-empty").hidden = keys.length > 0;
+  for (const k of keys) {
+    const li = el("li");
+    const info = el("span");
+    info.append(el("strong", k.name), " ",
+                el("span", `ajoutée le ${date(k.createdAt)}` +
+                           (k.lastUsedAt ? `, utilisée le ${date(k.lastUsedAt)}` : ", jamais utilisée"), "muted"));
+    const rm = el("button", "Retirer", "ghost");
+    rm.addEventListener("click", async () => {
+      if (!confirm(`Retirer la clé « ${k.name} » ?`)) return;
+      try { await api("POST", `/v1/auth/webauthn/credentials/${k.id}/delete`); loadKeys(); }
+      catch (e) { status(e.message, true); }
+    });
+    li.append(info, rm);
+    ul.append(li);
+  }
+}
+
+$("#key-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!window.PublicKeyCredential) return status("Ce navigateur ne gère pas les clés de sécurité.", true);
+  const name = String(new FormData(ev.target).get("name")).trim();
+  try {
+    const o = await api("POST", "/v1/auth/webauthn/register/options");
+    const cred = await navigator.credentials.create({ publicKey: creationOptions(o) });
+    await api("POST", "/v1/auth/webauthn/register/verify", { name, credential: credentialJson(cred) });
+    ev.target.reset();
+    status(`Clé « ${name} » ajoutée. Vous pourrez l'utiliser à la prochaine connexion.`);
+    loadKeys();
+  } catch (e) {
+    status(e.name === "NotAllowedError" ? "Opération annulée ou délai dépassé." :
+           e.name === "InvalidStateError" ? "Cette clé est déjà enregistrée sur ce compte." : e.message, true);
+  }
+});

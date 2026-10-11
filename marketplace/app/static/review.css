@@ -66,4 +66,8 @@ select { padding: 8px; border: 1px solid var(--line); border-radius: 6px;
 .upload { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px;
           align-items: end; margin-top: 8px; }
 .upload label { margin: 0; font-size: 13px; }
+.keys { list-style: none; padding: 0; margin: 8px 0; }
+.keys li { display: flex; gap: 8px; align-items: center; justify-content: space-between;
+           padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#mfa-key button { width: 100%; }
 canvas.qr { display: block; margin: 8px auto 12px; border-radius: 6px; }
