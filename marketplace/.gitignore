@@ -1,0 +1,8 @@
+# JAMAIS dans le dépôt : il est public.
+*.key
+keys/
+.env
+storage/
+__pycache__/
+*.pyc
+.pytest_cache/

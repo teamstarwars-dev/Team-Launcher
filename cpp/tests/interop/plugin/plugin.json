@@ -1,0 +1,1 @@
+{"name": "Interopérabilité", "version": "1.0.0", "api": 1, "permissions": ["instances:read"], "service": {"run": "app/service.exe"}}

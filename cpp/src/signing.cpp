@@ -371,7 +371,11 @@ Verdict verify_plugin_dir(const fs::path& dir, const std::string& pluginId,
         if (t == fs::file_type::directory) continue;
         if (t != fs::file_type::regular)
             return invalid("lien ou entrée spéciale dans le dossier du plugin");
-        const std::string rel_ = fs::relative(it->path(), dir, ec).generic_string();
+        // UTF-8, PAS generic_string() : sous Windows, celle-ci convertit dans la
+        // page de code ANSI — un nom accentué ne correspondrait plus à celui
+        // signé par le serveur, et un caractère hors page de code lèverait.
+        const auto u8 = fs::relative(it->path(), dir, ec).generic_u8string();
+        const std::string rel_(u8.begin(), u8.end());
         if (ec || rel_.empty()) return invalid("chemin illisible");
         if (rel_ == "signature.json") continue;
         if (present.size() >= kMaxFiles) return invalid("trop de fichiers");

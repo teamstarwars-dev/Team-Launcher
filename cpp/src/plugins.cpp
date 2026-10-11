@@ -51,6 +51,14 @@ std::string fingerprint(const std::string& text) {
 // Entree de la liste des autorisations : « id:empreinte ».
 std::string allow_key(const Plugin& p) { return p.id + ":" + p.manifestHash; }
 
+// Chemin -> UTF-8. Jamais path::string() : sous Windows, elle convertit dans
+// la page de code ANSI (accents perdus, exception sur un caractère hors page),
+// alors que tout le reste du launcher — et to_w() — parle UTF-8.
+std::string u8(const fs::path& p, bool generic = false) {
+    const auto s = generic ? p.generic_u8string() : p.u8string();
+    return std::string(s.begin(), s.end());
+}
+
 #ifdef _WIN32
 std::wstring to_w(const std::string& s) {
     if (s.empty()) return {};
@@ -268,7 +276,7 @@ std::string dir_fingerprint(const fs::path& dir, const signing::Revocations& r) 
         const auto mt = fs::last_write_time(it->path(), ec).time_since_epoch().count();
         std::uintmax_t sz = 0;
         if (st.type() == fs::file_type::regular) sz = fs::file_size(it->path(), ec);
-        parts.push_back(it->path().generic_string() + ":" +
+        parts.push_back(u8(it->path(), true) + ":" +
                         std::to_string(static_cast<int>(st.type())) + ":" +
                         std::to_string(sz) + ":" + std::to_string(mt));
     }
@@ -319,7 +327,7 @@ std::vector<Plugin> list() {
         if (!in) continue;
         const std::string text((std::istreambuf_iterator<char>(in)),
                                std::istreambuf_iterator<char>());
-        Plugin p = parse_manifest(text, e.path().filename().string());
+        Plugin p = parse_manifest(text, u8(e.path().filename()));
         p.dir = e.path();
         if (p.error.empty()) apply_trust(p);
         p.enabled = std::find(allowed.begin(), allowed.end(), allow_key(p)) !=
@@ -434,7 +442,7 @@ bool run(const Plugin& p, const Action& a, const Context& ctx,
     args.reserve(a.args.size());
     for (const auto& x : a.args) args.push_back(expand(x, ctx));
     const std::string work =
-        a.workDir.empty() ? p.dir.string() : expand(a.workDir, ctx);
+        a.workDir.empty() ? u8(p.dir) : expand(a.workDir, ctx);
 
 #ifdef _WIN32
     // Pas de shell : CreateProcessW reçoit le programme et une ligne dont

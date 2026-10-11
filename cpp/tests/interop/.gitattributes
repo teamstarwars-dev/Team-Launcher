@@ -1,0 +1,3 @@
+# Fichiers signes par le serveur : aucun octet ne doit changer (fins de
+# ligne comprises), sinon les empreintes ne correspondent plus.
+* -text

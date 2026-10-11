@@ -17,6 +17,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 using nlohmann::json;
@@ -313,6 +314,44 @@ int main() {
         json doc = json::parse(t);
         doc["list"]["payload"] = b64(R"({"type":"tl-revocations","v":1,"seq":99,"issuedAt":2000000000,"killAll":true})");
         CHECK(!signing::parse_revocations(doc.dump(), roots, kNow, -1, &err));
+    }
+
+    // =====================================================================
+    // 5. Interopérabilité : ce que signe le SERVEUR (Python, PyNaCl)
+    // =====================================================================
+    // tests/interop est produit par marketplace/tools/interop_fixture.py,
+    // racine = make_key(1). Le test Python exige que le serveur le
+    // reproduise à l'octet près ; ici, que le launcher l'accepte.
+    {
+        const fs::path src = fs::path(TL_INTEROP_DIR);
+        const fs::path d = base / "interop";
+        fs::copy(src / "plugin", d, fs::copy_options::recursive, ec);
+        CHECK(!ec);
+        const auto v = signing::verify_plugin_dir(d, "interop", "1.0.0", roots, nullptr, kNow);
+        CHECK(v.status == Status::Valid);
+        if (v.status != Status::Valid) std::printf("  interop : %s\n", v.detail.c_str());
+        CHECK(v.keyId == "py-int-1");
+
+        auto slurp = [](const fs::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        };
+        std::string err;
+        const auto r7 = signing::parse_revocations(slurp(src / "revocations-7.json"), roots, kNow,
+                                                   -1, &err);
+        CHECK(r7 && r7->seq == 7 && !r7->killAll && r7->fileHashes.size() == 1);
+        if (!r7) std::printf("  interop rev7 : %s\n", err.c_str());
+        const auto r8 = signing::parse_revocations(slurp(src / "revocations-8.json"), roots, kNow,
+                                                   7, &err);
+        CHECK(r8 && r8->seq == 8);
+        // Pas de retour en arrière vers la 7 une fois la 8 acceptée.
+        CHECK(!signing::parse_revocations(slurp(src / "revocations-7.json"), roots, kNow, 8, &err));
+        if (r7)
+            CHECK(signing::verify_plugin_dir(d, "interop", "1.0.0", roots, &*r7, kNow).status ==
+                  Status::Valid);
+        if (r8)
+            CHECK(signing::verify_plugin_dir(d, "interop", "1.0.0", roots, &*r8, kNow).status ==
+                  Status::Revoked);
     }
 
     fs::remove_all(base, ec);

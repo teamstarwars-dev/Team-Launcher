@@ -632,6 +632,10 @@ if(TL_BUILD_TESTS)
   # Le test lance le VRAI hote et ce faux plugin : ils doivent exister.
   add_dependencies(TLTestPluginHost tl_plugin_host tl_test_plugin)
 
+  # Fichiers signes par le serveur de la marketplace (interoperabilite).
+  target_compile_definitions(TLTestSigning PRIVATE
+    TL_INTEROP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/interop")
+
   # ---- Harnais de fuzzing (optionnel) -------------------------------
   # -DTL_FUZZ=ON dans un dossier de build SEPARE. Les sanitizers doivent
   # couvrir tl_core aussi, pas seulement le harnais : c'est DANS les

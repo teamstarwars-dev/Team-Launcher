@@ -1,0 +1,14 @@
+# Backend de la marketplace Team Launcher (V8). Versions ÉPINGLÉES : une
+# mise à jour se fait volontairement, après lecture des notes de version.
+fastapi==0.143.0
+uvicorn==0.54.0
+SQLAlchemy==2.1.4
+PyMySQL==1.2.3          # pilote MariaDB en pur Python, sans bibliothèque C
+PyNaCl==1.6.2           # Ed25519 (signature) et SecretBox (secrets 2FA au repos)
+PyOTP==2.10.0           # 2FA TOTP
+argon2-cffi==25.1.0     # hachage des mots de passe
+python-multipart==0.0.32
+
+# Tests seulement
+pytest==9.1.1
+httpx==0.28.1
