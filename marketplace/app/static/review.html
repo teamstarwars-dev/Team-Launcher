@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review — Team Launcher</title>
 <link rel="stylesheet" href="/static/review.css">
+<script src="/static/vendor/qrcode-1.4.4.js" defer></script>
 <script src="/static/review.js" defer></script>
 </head>
 <body>
@@ -46,7 +47,9 @@
   <section id="mfa" class="card narrow" hidden>
     <h2>Double authentification</h2>
     <div id="mfa-setup" hidden>
-      <p>Ajoutez ce compte à votre application d'authentification (clé à saisir ou lien otpauth) :</p>
+      <p>Scannez ce QR code avec votre application d'authentification :</p>
+      <canvas id="mfa-qr" class="qr" width="232" height="232"></canvas>
+      <p class="muted small-text">Ou saisissez cette clé à la main :</p>
       <code id="mfa-secret" class="secret"></code>
       <code id="mfa-uri" class="secret small"></code>
     </div>

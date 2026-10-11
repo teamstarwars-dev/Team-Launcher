@@ -83,8 +83,30 @@ async function start() {
   loadQueue();
 }
 
+// QR code dessiné module par module sur le canvas : aucune image data: (la
+// CSP l'interdit) et aucun HTML inséré. Fond blanc et marge de 4 modules,
+// sans lesquels certains téléphones ne lisent pas le code en mode sombre.
+function drawQr(canvas, text) {
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!text || typeof qrcode !== "function") return;
+  const qr = qrcode(0, "M");
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), quiet = 4;
+  const cell = Math.floor(canvas.width / (n + 2 * quiet));
+  const offset = Math.floor((canvas.width - cell * n) / 2);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#000000";
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < n; c++)
+      if (qr.isDark(r, c)) ctx.fillRect(offset + c * cell, offset + r * cell, cell, cell);
+}
+
 async function setupMfa() {
   const r = await api("POST", "/v1/auth/totp/setup");
+  drawQr($("#mfa-qr"), r.uri);
   $("#mfa-secret").textContent = r.secret;
   $("#mfa-uri").textContent = r.uri;
   $("#mfa-setup").hidden = false;
@@ -133,6 +155,7 @@ $("#mfa-form").addEventListener("submit", async (ev) => {
     ev.target.reset();
     $("#mfa-setup").hidden = true;
     $("#mfa-secret").textContent = $("#mfa-uri").textContent = "";
+    drawQr($("#mfa-qr"), ""); // le secret ne reste pas affiché
     status("");
     start();
   } catch (e) { status(e.message, true); }
