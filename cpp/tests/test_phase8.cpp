@@ -605,6 +605,69 @@ int main() {
         CHECK(second < 5000);
     }
 
+    // =====================================================================
+    // V8 : manifeste à service, permissions, confiance
+    // =====================================================================
+    {
+        using plugins::parse_manifest;
+        const auto ok = parse_manifest(
+            R"({"name":"Svc","api":1,"permissions":["instances:read","ui:notify",)"
+            R"("ui:notify"],"service":{"run":"prog","args":["--x"]}})",
+            "mon-plugin");
+        CHECK(ok.error.empty());
+        CHECK(ok.hasService);
+        CHECK_EQ(ok.api, 1);
+        CHECK_EQ(ok.permissions.size(), std::size_t{2}); // doublon retiré
+        CHECK_EQ(ok.service.program, std::string("prog"));
+
+        // Permission inconnue : jamais ignorée.
+        CHECK(!parse_manifest(R"({"api":1,"permissions":["accounts:read"],)"
+                              R"("service":{"run":"p"}})",
+                              "x")
+                   .error.empty());
+        // Permissions sans service : un accord qui ne sert à rien.
+        CHECK(!parse_manifest(R"({"permissions":["ui:notify"],)"
+                              R"("actions":[{"label":"A","run":"p"}]})",
+                              "x")
+                   .error.empty());
+        // Service sans version d'API, ou version inconnue.
+        CHECK(!parse_manifest(R"({"service":{"run":"p"}})", "x").error.empty());
+        CHECK(!parse_manifest(R"({"api":2,"service":{"run":"p"}})", "x").error.empty());
+        // Nom de dossier refusé par le host : dit dès l'analyse.
+        CHECK(!parse_manifest(R"({"api":1,"service":{"run":"p"}})", "Mon Plugin")
+                   .error.empty());
+        CHECK(parse_manifest(R"({"api":1,"service":{"run":"p"}})", "mon_plugin.2")
+                  .error.empty());
+        // Une ligne de shell n'est pas un programme.
+        CHECK(!parse_manifest(R"({"api":1,"service":{"run":"a && b"}})", "x")
+                   .error.empty());
+        // Ancien format (commandes seules) : inchangé.
+        CHECK(parse_manifest(R"({"actions":[{"label":"A","run":"p"}]})", "Ancien Nom")
+                  .error.empty());
+
+        // Ajouter une permission change l'empreinte, donc fait tomber
+        // l'autorisation : l'utilisateur doit réapprouver ce nouveau droit.
+        const auto a = parse_manifest(
+            R"({"api":1,"permissions":["ui:notify"],"service":{"run":"p"}})", "x");
+        const auto b = parse_manifest(
+            R"({"api":1,"permissions":["ui:notify","game:launch"],"service":{"run":"p"}})",
+            "x");
+        CHECK(a.manifestHash != b.manifestHash);
+
+        // Confiance.
+        plugins::Plugin p;
+        p.trust = plugins::Trust::Unsigned;
+        CHECK(!plugins::runnable(p, false));
+        CHECK(plugins::runnable(p, true));
+        p.trust = plugins::Trust::Signed;
+        CHECK(plugins::runnable(p, false));
+        // Révoqué ou falsifié : JAMAIS, même en mode développeur.
+        p.trust = plugins::Trust::Revoked;
+        CHECK(!plugins::runnable(p, true));
+        p.trust = plugins::Trust::Invalid;
+        CHECK(!plugins::runnable(p, true));
+    }
+
     localapi::stop();
     DataStore::shutdown();
     fs::remove_all(tmp, ec);

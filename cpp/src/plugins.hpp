@@ -60,6 +60,14 @@ struct Action {
     std::string workDir;             // vide = dossier du plugin
 };
 
+// Confiance accordée au plugin, d'après sa signature (V8).
+//   Unsigned : aucune signature — ne tourne QU'EN mode développeur.
+//   Signed   : signature valide, chaîne de confiance jusqu'à la clé racine.
+//   Invalid  : signature présente mais fausse — ne tourne JAMAIS, même en
+//              mode développeur : un fichier modifié après signature.
+//   Revoked  : sur la liste de révocation — ne tourne JAMAIS.
+enum class Trust { Unsigned, Signed, Invalid, Revoked };
+
 struct Plugin {
     std::string id;          // nom du dossier : ce qui identifie le plugin
     std::string name;
@@ -71,7 +79,25 @@ struct Plugin {
     std::string manifestHash; // SHA-1 du plugin.json lu
     std::string error;        // non vide = manifeste refusé, voir le texte
     bool enabled = false;     // autorisé ET empreinte inchangée
+
+    // --- V8 ---
+    // Version de l'API IPC que le plugin attend (0 = plugin à commandes
+    // seulement, sans service).
+    int api = 0;
+    // Permissions déclarées. Elles font partie du manifeste, donc de son
+    // empreinte : en ajouter une remet le plugin en attente d'accord.
+    std::vector<std::string> permissions;
+    // Processus persistant qui parle au host par l'API IPC.
+    bool hasService = false;
+    Action service;
+    Trust trust = Trust::Unsigned;
+    std::string trustDetail; // pourquoi ce statut, à afficher
 };
+
+// Le plugin peut-il tourner ? Signé, ou non signé ET mode développeur.
+// Jamais s'il est révoqué ou si sa signature est fausse.
+bool runnable(const Plugin& p, bool devMode);
+const char* trust_label(Trust t);
 
 // Dossier des plugins (<données>/plugins). Créé à la demande.
 std::filesystem::path dir();

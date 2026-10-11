@@ -418,6 +418,7 @@ static json serialize(const AppSettings& s) {
         {"LocalApiPort", s.localApiPort},
         {"LocalApiToken", secrets::encrypt_value(s.localApiToken)},
         {"EnabledPlugins", s.enabledPlugins},
+        {"PluginDevMode", s.pluginDevMode},
         {"ApiKeys", s.apiKeys},
         {"EventHooks", s.eventHooks},
     };
@@ -549,6 +550,7 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getI64("LastUpdateCheckUnix", s.lastUpdateCheckUnix);
     getS("HelpDiscordUrl", s.helpDiscordUrl);
     getB("JvmPreload", s.jvmPreload);
+    getB("PluginDevMode", s.pluginDevMode);
     getI("LocalApiPort", s.localApiPort);
     getSec("LocalApiToken", s.localApiToken);
     getA("ApiKeys", s.apiKeys);

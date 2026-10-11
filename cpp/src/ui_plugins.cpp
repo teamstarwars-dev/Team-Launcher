@@ -5,6 +5,7 @@
 #include "http_win.hpp" // redact_url : une URL d'abonnement porte un secret
 #include "localapi.hpp"
 #include "jvmwarm.hpp"
+#include "plugin_proto.hpp" // libellés des permissions (V8)
 #include "plugins.hpp"
 
 #include <ctime>
@@ -60,21 +61,65 @@ void plugins_panel() {
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     ImGui::TextWrapped(
         "%s",
-        tr("Un plugin est un dossier contenant « plugin.json », qui déclare "
-           "des commandes. Elles tournent comme des programmes séparés, "
-           "avec vos droits et sans bac à sable : lisez la commande avant "
-           "d'autoriser. Modifier un plugin autorisé le remet "
-           "automatiquement en attente.",
-           "A plugin is a folder holding a \"plugin.json\" that declares "
-           "commands. They run as separate programs, with your rights and "
-           "with no sandbox: read the command before allowing it. Editing "
-           "an allowed plugin puts it back on hold automatically."));
+        tr("Un plugin est un dossier contenant « plugin.json ». Il peut "
+           "déclarer des commandes, et un service qui dialogue avec le "
+           "launcher — uniquement dans la limite des permissions affichées, "
+           "que vous accordez en l'autorisant. Il tourne comme un programme "
+           "séparé, avec vos droits : lisez ce qu'il demande avant de "
+           "l'autoriser. Seuls les plugins signés tournent hors mode "
+           "développeur. Modifier un plugin autorisé, ou ses permissions, le "
+           "remet en attente.",
+           "A plugin is a folder holding a \"plugin.json\". It may declare "
+           "commands, and a service that talks to the launcher — only within "
+           "the permissions shown, which you grant by allowing it. It runs as "
+           "a separate program, with your rights: read what it asks before "
+           "allowing it. Only signed plugins run outside developer mode. "
+           "Editing an allowed plugin, or its permissions, puts it back on "
+           "hold."));
     ImGui::PopStyleColor();
     ImGui::Spacing();
     if (ImGui::Button(tr("Ouvrir le dossier des plugins",
                          "Open the plugins folder"),
                       ImVec2(280, 30)))
         open_in_explorer(plugins::dir());
+    ImGui::SameLine();
+    // Arrêt d'urgence : tous les plugins, tout de suite, et rien ne
+    // redémarre avant le prochain lancement du launcher.
+    ImGui::BeginDisabled(plugin_kill_switch_active());
+    if (danger_button(plugin_kill_switch_active()
+                          ? tr("Plugins arrêtés", "Plugins stopped")
+                          : tr("Arrêter tous les plugins", "Stop all plugins"),
+                      ImVec2(220, 30)))
+        plugin_kill_switch();
+    ImGui::EndDisabled();
+
+    // --- Mode développeur -------------------------------------------
+    ImGui::Spacing();
+    bool dev = DataStore::settings.pluginDevMode;
+    if (ImGui::Checkbox(tr("Mode développeur (autoriser les plugins non signés)",
+                           "Developer mode (allow unsigned plugins)"),
+                        &dev)) {
+        DataStore::settings.pluginDevMode = dev;
+        DataStore::save();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped(
+        "%s",
+        tr("Pour tester votre propre plugin avant de le soumettre. Un plugin "
+           "non signé n'a été relu par personne. Un plugin révoqué ou dont la "
+           "signature est fausse reste bloqué, même ici.",
+           "To test your own plugin before submitting it. An unsigned plugin "
+           "has not been reviewed by anyone. A revoked plugin, or one with a "
+           "forged signature, stays blocked even here."));
+    ImGui::PopStyleColor();
+    if (DataStore::settings.pluginDevMode) {
+        ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+        ImGui::TextWrapped("%s", tr("Mode développeur actif : des plugins non "
+                                    "vérifiés peuvent tourner sur ce PC.",
+                                    "Developer mode is on: unverified plugins "
+                                    "may run on this PC."));
+        ImGui::PopStyleColor();
+    }
 
     const auto list = plugins::list();
     if (list.empty()) {
@@ -112,10 +157,53 @@ void plugins_panel() {
             ImGui::PopStyleColor();
         }
 
+        // --- Confiance (V8) ---
+        const bool canRun = plugins::runnable(p, DataStore::settings.pluginDevMode);
+        const bool blocked = p.trust == plugins::Trust::Invalid ||
+                             p.trust == plugins::Trust::Revoked;
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              p.trust == plugins::Trust::Signed ? kDim
+                              : blocked                         ? kDanger
+                                                                : hex(0xE0A030));
+        std::string trustLine = plugins::trust_label(p.trust);
+        if (!p.trustDetail.empty()) trustLine += " — " + p.trustDetail;
+        if (p.trust == plugins::Trust::Unsigned && !canRun)
+            trustLine += tr(" : ne tournera qu'en mode développeur.",
+                            ": will only run in developer mode.");
+        ImGui::TextWrapped("%s", trustLine.c_str());
+        ImGui::PopStyleColor();
+
+        // --- Permissions, lues AVANT d'autoriser ---
+        if (p.hasService) {
+            ImGui::TextUnformatted(tr("Ce plugin demande :", "This plugin asks to:"));
+            if (p.permissions.empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+                ImGui::TextUnformatted(tr("    aucune permission", "    no permission"));
+                ImGui::PopStyleColor();
+            }
+            for (const auto& perm : p.permissions) {
+                ImGui::Bullet();
+                // game:launch est la plus sensible : on la signale.
+                if (perm == "game:launch") ImGui::PushStyleColor(ImGuiCol_Text, hex(0xE0A030));
+                ImGui::TextUnformatted(pluginproto::permission_label(perm).c_str());
+                if (perm == "game:launch") ImGui::PopStyleColor();
+            }
+        }
+
         bool on = p.enabled;
         if (ImGui::Checkbox(tr("Autoriser ce plugin", "Allow this plugin"),
                             &on))
             plugins::set_enabled(p, on);
+        if (p.hasService) {
+            const std::string st = plugin_service_state(p.id);
+            ImGui::SameLine();
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::Text("%s %s", tr("Service :", "Service:"),
+                        st.empty() ? (p.enabled && canRun ? tr("démarrage…", "starting…")
+                                                          : tr("arrêté", "stopped"))
+                                   : st.c_str());
+            ImGui::PopStyleColor();
+        }
 
         // Les commandes, toujours visibles — autorisé ou non.
         for (const auto& a : p.actions) {
@@ -127,7 +215,7 @@ void plugins_panel() {
             ImGui::PopStyleColor();
             const bool needsInst = a.where == plugins::Where::Instance;
             ImGui::PushID(a.label.c_str());
-            ImGui::BeginDisabled(!p.enabled || (needsInst && !inst));
+            ImGui::BeginDisabled(!p.enabled || !canRun || (needsInst && !inst));
             ImGui::SameLine();
             if (ImGui::SmallButton(tr("Exécuter", "Run"))) {
                 std::string err;

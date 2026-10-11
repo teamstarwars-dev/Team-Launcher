@@ -229,6 +229,14 @@ void import_folder();
 void export_zip(const nlohmann::json& inst);
 void duplicate_instance(const nlohmann::json& inst);
 void start_worker();
+
+// V8 — plugins à service, pour la page Paramètres.
+// Texte d'état du service (vide = jamais démarré dans cette session).
+std::string plugin_service_state(const std::string& id);
+// Kill-switch local : arrête TOUS les plugins, et plus rien ne redémarre
+// avant le prochain lancement du launcher.
+void plugin_kill_switch();
+bool plugin_kill_switch_active();
 void poll_state(SDL_Window* window);
 
 // widgets

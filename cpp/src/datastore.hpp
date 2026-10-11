@@ -121,6 +121,10 @@ struct AppSettings {
     // programmes ; il ne peut donc jamais etre actif par defaut du seul
     // fait d'avoir ete depose dans le dossier.
     std::vector<std::string> enabledPlugins;
+    // V8 : autorise les plugins NON signés, pour qu'un développeur puisse
+    // tester le sien avant de le soumettre. Désactivé par défaut. N'ouvre
+    // jamais la porte à un plugin révoqué ou à signature fausse.
+    bool pluginDevMode = false;
     // Clés d'application de l'API (apikeys.hpp). On n'y range que des
     // EMPREINTES de secrets, jamais les secrets : lire ce fichier ne doit
     // pas permettre de s'authentifier.

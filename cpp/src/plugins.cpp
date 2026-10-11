@@ -1,6 +1,7 @@
 #include "plugins.hpp"
 
 #include "datastore.hpp"
+#include "plugin_proto.hpp" // permissions et version d'API (V8)
 #include "util_hash.hpp"
 
 #include <algorithm>
@@ -122,11 +123,87 @@ Plugin parse_manifest(const std::string& text, const std::string& id) {
     p.description = j.value("description", std::string{});
     p.author = j.value("author", std::string{});
 
-    auto acts = j.find("actions");
-    if (acts == j.end() || !acts->is_array() || acts->empty()) {
-        p.error = "plugin.json : aucune action déclarée.";
+    // --- V8 : API, permissions, service ------------------------------
+    if (const auto api = j.find("api"); api != j.end()) {
+        if (!api->is_number_integer() || api->get<int>() < 1 ||
+            api->get<int>() > pluginproto::kApiVersion) {
+            p.error = "plugin.json : « api » non prise en charge (ce launcher "
+                      "connaît la version " +
+                      std::to_string(pluginproto::kApiVersion) + ").";
+            return p;
+        }
+        p.api = api->get<int>();
+    }
+    if (const auto perms = j.find("permissions"); perms != j.end()) {
+        if (!perms->is_array()) {
+            p.error = "plugin.json : « permissions » doit être une liste.";
+            return p;
+        }
+        for (const auto& v : *perms) {
+            // Une permission inconnue n'est jamais ignorée : c'est soit une
+            // faute de frappe, soit une tentative de deviner une API cachée.
+            if (!v.is_string() || !pluginproto::is_known_permission(v.get<std::string>())) {
+                p.error = "plugin.json : permission inconnue « " +
+                          (v.is_string() ? v.get<std::string>() : v.dump()) + " ».";
+                return p;
+            }
+            const auto s = v.get<std::string>();
+            if (std::find(p.permissions.begin(), p.permissions.end(), s) ==
+                p.permissions.end())
+                p.permissions.push_back(s);
+        }
+    }
+    if (const auto svc = j.find("service"); svc != j.end()) {
+        if (!svc->is_object() || !(*svc)["run"].is_string()) {
+            p.error = "plugin.json : « service » doit déclarer « run ».";
+            return p;
+        }
+        if (p.api == 0) {
+            p.error = "plugin.json : un « service » exige « api » (version de "
+                      "l'API IPC attendue).";
+            return p;
+        }
+        // Le host n'accepte que ce format d'identifiant, et c'est le nom du
+        // dossier : mieux vaut le dire ici que de voir le plugin refusé au
+        // lancement sans explication.
+        bool okId = !id.empty() && id.size() <= 64 && id[0] != '.';
+        for (const char c : id)
+            okId = okId && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                            c == '-' || c == '_' || c == '.');
+        if (!okId) {
+            p.error = "plugin.json : un plugin à service doit vivre dans un "
+                      "dossier au nom en minuscules, chiffres, « - », « _ » "
+                      "ou « . » (64 caractères au plus).";
+            return p;
+        }
+        p.service.label = "service";
+        p.service.program = (*svc)["run"].get<std::string>();
+        p.service.workDir = svc->value("workDir", std::string{});
+        if (const auto ar = svc->find("args"); ar != svc->end() && ar->is_array())
+            for (const auto& v : *ar)
+                if (v.is_string()) p.service.args.push_back(v.get<std::string>());
+        if (p.service.program.empty() ||
+            p.service.program.find_first_of("&|<>;\n") != std::string::npos) {
+            p.error = "plugin.json : « run » du service doit être un programme, "
+                      "pas une ligne de commande.";
+            return p;
+        }
+        p.hasService = true;
+    } else if (!p.permissions.empty()) {
+        // Des permissions sans service n'accordent rien : seul un service
+        // parle à l'API. Les déclarer quand même, c'est demander à
+        // l'utilisateur un accord qui ne sert à rien — on refuse.
+        p.error = "plugin.json : des « permissions » sans « service » ne "
+                  "servent à rien.";
         return p;
     }
+
+    auto acts = j.find("actions");
+    if ((acts == j.end() || !acts->is_array() || acts->empty()) && !p.hasService) {
+        p.error = "plugin.json : aucune action ni service déclaré.";
+        return p;
+    }
+    if (acts != j.end() && acts->is_array())
     for (const auto& a : *acts) {
         if (!a.is_object()) continue;
         Action x;
@@ -149,7 +226,7 @@ Plugin parse_manifest(const std::string& text, const std::string& id) {
         }
         p.actions.push_back(std::move(x));
     }
-    if (p.actions.empty() && p.error.empty())
+    if (p.actions.empty() && !p.hasService && p.error.empty())
         p.error = "plugin.json : aucune action exploitable (il faut « label » "
                   "et « run »).";
     return p;
@@ -238,12 +315,40 @@ std::string preview(const Action& a, const Context& ctx) {
     return out;
 }
 
+bool runnable(const Plugin& p, bool devMode) {
+    switch (p.trust) {
+    case Trust::Signed: return true;
+    case Trust::Unsigned: return devMode;
+    case Trust::Invalid:
+    case Trust::Revoked: return false;
+    }
+    return false;
+}
+
+const char* trust_label(Trust t) {
+    switch (t) {
+    case Trust::Signed: return "Signé";
+    case Trust::Unsigned: return "Non signé";
+    case Trust::Invalid: return "Signature invalide";
+    case Trust::Revoked: return "Révoqué";
+    }
+    return "?";
+}
+
 bool run(const Plugin& p, const Action& a, const Context& ctx,
          std::string* errOut) {
     auto fail = [&](const std::string& m) {
         if (errOut) *errOut = m;
         return false;
     };
+    // V8 : la confiance d'abord. Comme l'autorisation juste en dessous, le
+    // contrôle vit ICI et pas seulement dans l'interface.
+    if (!runnable(p, DataStore::settings.pluginDevMode))
+        return fail(p.trust == Trust::Unsigned
+                        ? "Plugin non signé : il ne peut tourner qu'en mode "
+                          "développeur (Paramètres → Plugins)."
+                        : std::string("Plugin bloqué : ") + trust_label(p.trust) +
+                              (p.trustDetail.empty() ? "" : " — " + p.trustDetail));
     // Le contrôle est refait ici, et pas seulement dans l'interface : un
     // appel venu d'ailleurs (API locale, test) doit buter sur la même
     // règle.

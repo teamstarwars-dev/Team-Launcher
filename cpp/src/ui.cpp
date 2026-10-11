@@ -11,6 +11,10 @@
 #include "gamesession.hpp"
 #include "jvmwarm.hpp"
 #include "localapi.hpp"
+#include "modmeta.hpp"            // mods.list (API des plugins)
+#include "plugin_host_client.hpp" // V8 : plugins à service
+#include "plugin_proto.hpp"
+#include "plugins.hpp"
 #include "modcheck.hpp"
 #include "startup.hpp"
 #include "support.hpp"
@@ -1135,6 +1139,198 @@ void init(SDL_Window*) {
 // pendant que l'interface le modifie serait un comportement indéfini.
 namespace {
 
+// Projection PUBLIQUE d'une instance : ces sept champs, et rien d'autre.
+// Partagée par l'API locale et par l'API des plugins, pour que les deux ne
+// divergent jamais — et pour que ce qu'on ajoutera plus tard à une
+// instance (jetons compris) ne fuie pas sans qu'on y ait repensé.
+nlohmann::json public_instance(const nlohmann::json& e) {
+    return {
+        {"id", e.value("Id", "")},
+        {"name", e.value("Name", "")},
+        {"loader", e.value("Loader", "")},
+        {"mcVersion", e.value("McVersion", "")},
+        {"launches", e.value("Launches", 0)},
+        {"playSeconds", e.value("PlaySeconds", 0)},
+        {"lastPlayed", e.value("LastPlayed", "")},
+    };
+}
+
+// --- Plugins à service (V8) -----------------------------------------------
+
+struct SvcState {
+    std::string name;  // nom affichable, pour préfixer ses notifications
+    std::string state; // texte pour la page Paramètres
+};
+std::map<std::string, SvcState> g_svc; // services dont on a demandé le démarrage
+Uint32 g_svcLastScan = 0;
+Uint32 g_svcHostRetry = 0;
+bool g_svcKilled = false; // kill-switch actionné : plus rien ne démarre
+
+void svc_trace(const std::string& m) {
+    push_log(m);
+    log_line(m);
+}
+
+// Exécute un appel DÉJÀ validé deux fois (par le host, puis par
+// plugin_host_client). Fil de l'interface : accès direct à l'état.
+nlohmann::json plugin_call(const pluginhost::Call& c, int* code, std::string* msg) {
+    namespace pp = pluginproto;
+    const auto sv = g_svc.find(c.plugin);
+    const std::string pname = sv != g_svc.end() ? sv->second.name : c.plugin;
+
+    if (c.method == "instances.list") {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& e : inst_array())
+            if (e.is_object()) arr.push_back(public_instance(e));
+        return {{"instances", arr}};
+    }
+    if (c.method == "instances.get") {
+        const auto* e = find_instance(c.params["instanceId"].get<std::string>());
+        if (!e) {
+            *code = pp::kInvalidParams;
+            *msg = "instance inconnue";
+            return {};
+        }
+        return {{"instance", public_instance(*e)}};
+    }
+    if (c.method == "mods.list") {
+        const std::string id = c.params["instanceId"].get<std::string>();
+        if (!find_instance(id)) {
+            *code = pp::kInvalidParams;
+            *msg = "instance inconnue";
+            return {};
+        }
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& m : modmeta::read_dir(DataStore::instancesRoot() / id / "mods")) {
+            if (arr.size() >= 1000) break; // borne la réponse
+            arr.push_back({{"file", m.file},
+                           {"id", m.id},
+                           {"name", m.name},
+                           {"version", m.version},
+                           {"loader", modmeta::loader_name(m.loader)},
+                           {"disabled", m.disabled}});
+        }
+        return {{"mods", arr}};
+    }
+    if (c.method == "ui.notify") {
+        // Le titre porte TOUJOURS le nom du plugin : un plugin ne doit pas
+        // pouvoir afficher une notification qui passerait pour un message
+        // du launcher (« Mise à jour requise, cliquez ici… »).
+        notify_toast("Plugin « " + pname + " »",
+                     c.params["title"].get<std::string>() + " — " +
+                         c.params["message"].get<std::string>());
+        return nlohmann::json::object();
+    }
+    if (c.method == "game.launch") {
+        // Même chemin et mêmes contrôles que l'API locale.
+        const std::string id = c.params["instanceId"].get<std::string>();
+        if (g.phase != Phase::Idle)
+            return {{"accepted", false}, {"reason", "une partie est déjà en cours"}};
+        if (!find_instance(id)) {
+            *code = pp::kInvalidParams;
+            *msg = "instance inconnue";
+            return {};
+        }
+        svc_trace("Plugin « " + pname + " » : lancement de l'instance " + id + ".");
+        g.selInstId = id;
+        start_worker();
+        return {{"accepted", true}};
+    }
+    *code = pp::kMethodNotFound;
+    *msg = "méthode non servie";
+    return {};
+}
+
+void plugin_event(const pluginhost::Event& e) {
+    auto it = g_svc.find(e.plugin);
+    const std::string name = it != g_svc.end() ? it->second.name : e.plugin;
+    auto set = [&](const std::string& s) {
+        if (it != g_svc.end()) it->second.state = s;
+    };
+    if (e.kind == "started") {
+        set("en marche");
+    } else if (e.kind == "failed") {
+        set("échec : " + e.detail);
+        svc_trace("Plugin « " + name + " » : démarrage impossible (" + e.detail + ").");
+    } else if (e.kind == "exited") {
+        set("arrêté");
+        svc_trace("Plugin « " + name + " » : service terminé.");
+    } else if (e.kind == "killed") {
+        // Pas de redémarrage automatique : un plugin tué a abusé.
+        set("arrêté d'office : " + e.detail);
+        svc_trace("Plugin « " + name + " » arrêté d'office : " + e.detail + ".");
+        notify_toast(tr("Plugin arrêté", "Plugin stopped"), name + " — " + e.detail);
+    } else if (e.kind == "denied") {
+        log_line("Plugin « " + name + " » : appel refusé (" + e.detail + ").");
+    } else if (e.kind == "host_died") {
+        for (auto& [_, s] : g_svc) s.state = "arrêté (hôte de plugins terminé)";
+        svc_trace("Hôte de plugins terminé.");
+    }
+}
+
+void plugin_services_pump() {
+    const Uint32 now = SDL_GetTicks();
+    if (now - g_svcLastScan > 2000) {
+        g_svcLastScan = now;
+        std::map<std::string, plugins::Plugin> desired;
+        if (!g_svcKilled)
+            for (auto& p : plugins::list())
+                if (p.error.empty() && p.enabled && p.hasService &&
+                    plugins::runnable(p, DataStore::settings.pluginDevMode))
+                    desired.emplace(p.id, std::move(p));
+
+        for (auto it = g_svc.begin(); it != g_svc.end();) {
+            if (!desired.count(it->first)) {
+                pluginhost::stop_plugin(it->first);
+                it = g_svc.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        if (!desired.empty() && !pluginhost::running() && now >= g_svcHostRetry) {
+            std::string err;
+            g_svc.clear(); // hôte neuf : tout est à (re)démarrer
+            if (!pluginhost::start(pluginhost::default_host_path(), &err)) {
+                svc_trace("Hôte de plugins : " + err);
+                g_svcHostRetry = now + 30000; // ne pas réessayer à chaque scan
+            }
+        }
+        if (pluginhost::running()) {
+            std::error_code ec;
+            const auto logs = DataStore::dir() / "logs-plugins";
+            std::filesystem::create_directories(logs, ec);
+            for (const auto& [id, p] : desired) {
+                if (g_svc.count(id)) continue;
+                plugins::Context ctx;
+                ctx.dataDir = DataStore::dir().string();
+                ctx.pluginDir = p.dir.string();
+                pluginhost::Launch l;
+                l.id = id;
+                l.program = plugins::expand(p.service.program, ctx);
+                for (const auto& a : p.service.args) l.args.push_back(plugins::expand(a, ctx));
+                l.workDir = p.service.workDir.empty() ? p.dir.string()
+                                                      : plugins::expand(p.service.workDir, ctx);
+                l.permissions = p.permissions;
+                // Sortie d'erreur du service : utile au développeur, bornée
+                // pour ne pas remplir le disque.
+                const auto errLog = logs / (id + ".log");
+                if (std::filesystem::file_size(errLog, ec) > 1024 * 1024 && !ec) std::filesystem::remove(errLog, ec);
+                l.stderrPath = errLog.string();
+                std::string err;
+                if (pluginhost::start_plugin(l, &err)) {
+                    g_svc[id] = SvcState{p.name, "démarrage…"};
+                    svc_trace("Plugin « " + p.name + " » : service démarré.");
+                } else {
+                    svc_trace("Plugin « " + p.name + " » : " + err);
+                }
+            }
+            // Plus aucun service voulu : on ne garde pas un hôte inutile.
+            if (desired.empty()) pluginhost::stop();
+        }
+    }
+    if (pluginhost::running()) pluginhost::pump(plugin_call, plugin_event);
+}
+
 void phase8_pump(SDL_Window* window) {
     (void)window;
     const nlohmann::json* inst = selected_instance();
@@ -1163,21 +1359,8 @@ void phase8_pump(SDL_Window* window) {
                 {"playerName", DataStore::settings.playerName},
             };
             nlohmann::json arr = nlohmann::json::array();
-            for (const auto& e : inst_array()) {
-                if (!e.is_object()) continue;
-                // On ne publie QUE ces champs. Recopier l'instance entière
-                // exposerait tout ce qu'on y ajoutera plus tard sans y
-                // repenser, jetons compris.
-                arr.push_back({
-                    {"id", e.value("Id", "")},
-                    {"name", e.value("Name", "")},
-                    {"loader", e.value("Loader", "")},
-                    {"mcVersion", e.value("McVersion", "")},
-                    {"launches", e.value("Launches", 0)},
-                    {"playSeconds", e.value("PlaySeconds", 0)},
-                    {"lastPlayed", e.value("LastPlayed", "")},
-                });
-            }
+            for (const auto& e : inst_array())
+                if (e.is_object()) arr.push_back(public_instance(e)); // voir public_instance
             localapi::publish(st.dump(), arr.dump());
         }
 
@@ -1206,9 +1389,25 @@ void phase8_pump(SDL_Window* window) {
             break; // une seule par frame
         }
     }
+
+    plugin_services_pump();
 }
 
 } // namespace
+
+std::string plugin_service_state(const std::string& id) {
+    const auto it = g_svc.find(id);
+    return it == g_svc.end() ? std::string{} : it->second.state;
+}
+
+void plugin_kill_switch() {
+    g_svcKilled = true;
+    pluginhost::kill_all();
+    for (auto& [_, s] : g_svc) s.state = "arrêté (kill-switch)";
+    svc_trace("Kill-switch : tous les plugins ont été arrêtés.");
+}
+
+bool plugin_kill_switch_active() { return g_svcKilled; }
 
 // --- Image de fond ---------------------------------------------------
 //
@@ -1622,6 +1821,7 @@ void shutdown() {
     jvmwarm::stop();
     if (dbg) std::fprintf(stderr, "SH: localapi_stop\n");
     localapi::stop();
+    pluginhost::stop();
     // Compteurs d'usage des clés : écrits une fois, pas à chaque appel.
     apikeys::flush();
     // Événements sortants : vider la file et joindre le fil.
