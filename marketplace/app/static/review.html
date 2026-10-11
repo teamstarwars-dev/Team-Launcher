@@ -23,6 +23,24 @@
       <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
       <button>Continuer</button>
     </form>
+    <p class="switch">Pas encore de compte ? <button type="button" class="link" id="to-register">Créer un compte</button></p>
+  </section>
+
+  <!-- Inscription : la double authentification est posée juste après. -->
+  <section id="register" class="card narrow" hidden>
+    <h2>Créer un compte</h2>
+    <form id="register-form">
+      <label>Adresse <input name="email" type="email" autocomplete="email" maxlength="254" required></label>
+      <label>Nom affiché <input name="display_name" minlength="2" maxlength="64" autocomplete="nickname" required></label>
+      <label>Mot de passe (12 caractères au moins)
+        <input name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+      <label>Encore une fois
+        <input name="password2" type="password" minlength="12" maxlength="256" autocomplete="new-password" required></label>
+      <button>Créer le compte</button>
+    </form>
+    <p class="muted small-text">Juste après, vous configurerez la double authentification (application
+      comme Google Authenticator, Aegis ou 2FAS) : elle est obligatoire.</p>
+    <p class="switch">Déjà un compte ? <button type="button" class="link" id="to-login">Se connecter</button></p>
   </section>
 
   <section id="mfa" class="card narrow" hidden>

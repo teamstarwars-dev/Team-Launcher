@@ -48,8 +48,8 @@ async function api(method, path, body) {
 }
 
 function show(which) {
-  for (const id of ["login", "mfa", "app"]) $("#" + id).hidden = id !== which;
-  $("#logout").hidden = which === "login";
+  for (const id of ["login", "register", "mfa", "app"]) $("#" + id).hidden = id !== which;
+  $("#logout").hidden = which === "login" || which === "register";
 }
 
 function el(tag, text, cls) {
@@ -99,6 +99,27 @@ $("#login-form").addEventListener("submit", async (ev) => {
     saveToken(r.token);
     ev.target.reset();
     status("");
+    start();
+  } catch (e) { status(e.message, true); }
+});
+
+$("#to-register").addEventListener("click", () => { status(""); show("register"); });
+$("#to-login").addEventListener("click", () => { status(""); show("login"); });
+
+$("#register-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const email = String(f.get("email")).trim();
+  const password = String(f.get("password"));
+  if (password !== String(f.get("password2"))) return status("Les deux mots de passe diffèrent.", true);
+  try {
+    await api("POST", "/v1/auth/register",
+              { email, password, display_name: String(f.get("display_name")).trim() });
+    // Connexion immédiate, puis mise en place de la double authentification.
+    const r = await api("POST", "/v1/auth/login", { email, password });
+    saveToken(r.token);
+    ev.target.reset();
+    status("Compte créé. Configurez maintenant la double authentification.");
     start();
   } catch (e) { status(e.message, true); }
 });

@@ -258,6 +258,10 @@ void DataStore::loadDefaults() {
         d["LANGUAGE"] = "fr";
         d["FPS_COUNTER_ENABLED"] = "false";
     }
+    // Même sans default.env, la marketplace doit fonctionner : l'adresse
+    // n'est pas un secret, elle est publique par nature.
+    if (d.find("MARKETPLACE_URL") == d.end())
+        d["MARKETPLACE_URL"] = "https://team-launcher-api.pixelhorizons.fr";
 
     // Cle API CurseForge : injectee a la compilation (voir CMakeLists) et
     // obfusquee, jamais en clair sur le disque ni dans le depot. Elle ne
@@ -296,6 +300,12 @@ void DataStore::applyDefaults(bool applyBooleans) {
 
     if (settings.discordAppId.empty())
         if (const auto* v = get("DISCORD_APP_ID")) settings.discordAppId = *v;
+
+    // V8 : serveur de la marketplace, le même pour tout le monde. Chaque
+    // utilisateur l'a d'office, sans rien saisir ; il reste modifiable dans
+    // Paramètres > Marketplace (un serveur de test, par exemple).
+    if (settings.marketplaceUrl.empty())
+        if (const auto* v = get("MARKETPLACE_URL")) settings.marketplaceUrl = *v;
 
     if (applyBooleans) {
         if (!settings.discordEnabled)
