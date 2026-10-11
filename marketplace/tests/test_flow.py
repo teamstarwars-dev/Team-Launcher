@@ -221,3 +221,18 @@ def test_cannot_revoke_own_signing_key(env):
 def test_reviewer_is_not_admin(env):
     _, rv = _setup(env)
     assert rv.post("/v1/admin/killswitch", json={"on": True}).status_code == 403
+
+
+def test_review_page_and_security_headers(env):
+    c = env["client"]
+    r = c.get("/review")
+    assert r.status_code == 200 and "Review des plugins" in r.text
+    csp = r.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
+    assert "unsafe-inline" not in csp
+    assert r.headers["x-frame-options"] == "DENY"
+    assert c.get("/static/review.js").status_code == 200
+    # Les en-têtes s'appliquent aussi à l'API.
+    assert c.get("/v1/public/catalog").headers["x-content-type-options"] == "nosniff"
+    # Pas de documentation publique de l'API.
+    assert c.get("/docs").status_code == 404

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Review — Team Launcher</title>
+<link rel="stylesheet" href="/static/review.css">
+<script src="/static/review.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>Review des plugins et mods</h1>
+  <span id="who"></span>
+  <button id="logout" class="ghost" hidden>Se déconnecter</button>
+</header>
+
+<main>
+  <!-- Connexion : mot de passe, puis second facteur. -->
+  <section id="login" class="card narrow" hidden>
+    <h2>Connexion</h2>
+    <form id="login-form">
+      <label>Adresse <input name="email" type="email" autocomplete="username" required></label>
+      <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
+      <button>Continuer</button>
+    </form>
+  </section>
+
+  <section id="mfa" class="card narrow" hidden>
+    <h2>Double authentification</h2>
+    <div id="mfa-setup" hidden>
+      <p>Ajoutez ce compte à votre application d'authentification (clé à saisir ou lien otpauth) :</p>
+      <code id="mfa-secret" class="secret"></code>
+      <code id="mfa-uri" class="secret small"></code>
+    </div>
+    <form id="mfa-form">
+      <label>Code à 6 chiffres <input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required></label>
+      <button>Valider</button>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <nav>
+      <button data-tab="queue" class="tab active">File d'attente</button>
+      <button data-tab="admin" class="tab" id="tab-admin" hidden>Administration</button>
+    </nav>
+
+    <div id="queue-view">
+      <table id="queue">
+        <thead><tr><th>Projet</th><th>Type</th><th>Version</th><th>Soumis le</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p id="queue-empty" class="muted" hidden>Rien à relire.</p>
+    </div>
+
+    <div id="detail" hidden>
+      <button id="back" class="ghost">← Retour à la file</button>
+      <h2 id="d-title"></h2>
+      <p id="d-own" class="warn" hidden>C'est votre propre soumission : un autre relecteur doit statuer.</p>
+
+      <div class="grid">
+        <div class="card">
+          <h3>Permissions demandées</h3>
+          <ul id="d-perms"></ul>
+          <h3>Service</h3>
+          <code id="d-service"></code>
+          <details><summary>Manifeste complet</summary><pre id="d-manifest"></pre></details>
+        </div>
+        <div class="card">
+          <h3>Fichiers <span id="d-prev" class="muted"></span></h3>
+          <ul id="d-files" class="files"></ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Différences des sources</h3>
+        <pre id="d-diff" class="diff"></pre>
+      </div>
+
+      <div class="card" id="decision">
+        <h3>Décision</h3>
+        <textarea id="d-note" rows="3" maxlength="4000" placeholder="Note (obligatoire pour un refus) : ce que vous avez vérifié, ou ce qui bloque."></textarea>
+        <div class="row">
+          <button id="approve">Approuver et signer</button>
+          <button id="reject" class="danger">Refuser</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="admin-view" hidden>
+      <div class="card">
+        <h3>Arrêt d'urgence (kill-switch)</h3>
+        <p>Publie une nouvelle liste de révocation qui arrête <strong>tous</strong> les plugins sur tous les launchers à leur prochaine synchronisation.</p>
+        <input id="kill-note" maxlength="4000" placeholder="Motif (journalisé)">
+        <div class="row">
+          <button id="kill-on" class="danger">Activer</button>
+          <button id="kill-off" class="ghost">Désactiver</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Révoquer une version</h3>
+        <form id="revoke-form" class="row wrap">
+          <input name="id" placeholder="identifiant (slug)" required>
+          <input name="version" placeholder="version" required>
+          <input name="note" placeholder="motif" maxlength="4000" required>
+          <button class="danger">Révoquer</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <p id="status" role="status"></p>
+</main>
+</body>
+</html>

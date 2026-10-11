@@ -16,10 +16,13 @@ import io
 import json
 import re
 import zipfile
+from pathlib import Path
 from typing import Annotated, Iterator
 
 from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession, sessionmaker
@@ -28,6 +31,21 @@ from . import models as m
 from . import packages, security
 from .config import Settings
 from .signing import Signer
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+# L'interface de review affiche du contenu écrit par les développeurs
+# relus : aucun script en ligne, aucune ressource tierce, pas d'affichage
+# dans un cadre (clickjacking sur « Approuver »).
+SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; "
+                               "connect-src 'self'; img-src 'self'; form-action 'self'; "
+                               "base-uri 'none'; frame-ancestors 'none'",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
 
 EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,189}\.[^@\s]{2,}$")
 
@@ -79,6 +97,19 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
     app = FastAPI(title="Team Launcher — marketplace", version="8.0.0",
                   docs_url=None, redoc_url=None)  # pas de documentation publique
     settings.storage_dir.mkdir(parents=True, exist_ok=True)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        for k, v in SECURITY_HEADERS.items():
+            response.headers.setdefault(k, v)
+        return response
+
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/review", include_in_schema=False)
+    def review_page():
+        return FileResponse(STATIC_DIR / "review.html")
 
     def db() -> Iterator[DbSession]:
         s = session_factory()
