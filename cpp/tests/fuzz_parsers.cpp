@@ -17,8 +17,11 @@
 // Déterministe : la graine du générateur est fixe, donc un plantage se
 // reproduit à l'identique. L'entrée fautive est écrite sur le disque.
 
+#include "monocypher-ed25519.h"
 #include "nbt.hpp"
 #include "plugin_proto.hpp"
+#include "secrets.hpp"
+#include "signing.hpp"
 #include "plugins.hpp"
 #include "region.hpp"
 
@@ -473,6 +476,131 @@ void fuzz_ipc(int iterations) {
     }
 }
 
+// --- Signatures (V8) ------------------------------------------------------
+//
+// signature.json et la liste de révocation sont des documents reçus : le
+// premier vient avec un plugin téléchargé, la seconde du réseau. On part
+// de documents RÉELLEMENT signés — sans quoi tout serait refusé dès la
+// vérification et le code de lecture ne serait jamais atteint — puis on
+// les mute. Invariant : aucun document muté ne doit jamais être accepté
+// comme valide, sauf s'il est resté intact.
+void fuzz_signature(int iterations) {
+    auto key = [](std::uint8_t b, std::uint8_t sk[64], signing::PublicKey& pk) {
+        std::uint8_t seed[32];
+        std::memset(seed, b, 32);
+        crypto_ed25519_key_pair(sk, pk.data(), seed);
+    };
+    std::uint8_t rsk[64], isk[64];
+    signing::PublicKey rpk{}, ipk{};
+    key(7, rsk, rpk);
+    key(8, isk, ipk);
+    auto b64 = [](const std::string& s) {
+        return secrets::b64_encode(reinterpret_cast<const unsigned char*>(s.data()), s.size());
+    };
+    auto sign = [&](const std::string& payload, const std::uint8_t* sk) {
+        std::uint8_t sig[64];
+        crypto_ed25519_sign(sig, sk, reinterpret_cast<const std::uint8_t*>(payload.data()),
+                            payload.size());
+        return nlohmann::json{{"payload", b64(payload)}, {"sig", secrets::b64_encode(sig, 64)}};
+    };
+    const std::string ipub(reinterpret_cast<const char*>(ipk.data()), 32);
+    const auto cert = sign(nlohmann::json{{"type", "tl-key-cert"}, {"v", 1}, {"keyId", "int-f"},
+                                          {"publicKey", b64(ipub)},
+                                          {"usages", {"plugin", "revocation"}},
+                                          {"notBefore", 1000}, {"notAfter", 4000000000}}
+                               .dump(),
+                           rsk);
+    const signing::Roots roots{{rpk}};
+    const std::int64_t now = 2000000100;
+
+    // Graine 1 : liste de révocation.
+    const std::string revDoc =
+        nlohmann::json{{"v", 1}, {"cert", cert},
+                       {"list", sign(nlohmann::json{{"type", "tl-revocations"}, {"v", 1},
+                                                    {"seq", 3}, {"issuedAt", 2000000000},
+                                                    {"keyIds", {"x"}}}
+                                         .dump(),
+                                     isk)}}
+            .dump();
+
+    // Graine 2 : dossier de plugin signé.
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path() / "tl_fuzz_sig";
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    { std::ofstream(dir / "plugin.json", std::ios::binary) << "{\"name\":\"F\"}"; }
+    const auto h = signing::sha512_file_hex(dir / "plugin.json");
+    const std::string sigDoc =
+        nlohmann::json{{"v", 1}, {"cert", cert},
+                       {"release", sign(nlohmann::json{{"type", "tl-plugin-release"}, {"v", 1},
+                                                       {"pluginId", "f"}, {"version", "1"},
+                                                       {"keyId", "int-f"},
+                                                       {"signedAt", 2000000000},
+                                                       {"files", {{"plugin.json", *h}}}}
+                                            .dump(),
+                                        isk)}}
+            .dump();
+
+    // Contrôle : les graines intactes DOIVENT passer, sinon la cible est
+    // creuse et ne teste que le rejet le plus superficiel.
+    std::string err;
+    if (!signing::parse_revocations(revDoc, roots, now, -1, &err)) {
+        std::printf("\nECHEC : graine de révocation refusée (%s)\n", err.c_str());
+        std::exit(1);
+    }
+    { std::ofstream(dir / "signature.json", std::ios::binary) << sigDoc; }
+    if (signing::verify_plugin_dir(dir, "f", "1", roots, nullptr, now).status !=
+        signing::Status::Valid) {
+        std::printf("\nECHEC : graine de plugin refusée\n");
+        std::exit(1);
+    }
+
+    for (int i = 0; i < iterations; ++i) {
+        const bool rev = (i & 1) != 0;
+        const std::string& base = rev ? revDoc : sigDoc;
+        std::vector<std::uint8_t> b(base.begin(), base.end());
+        const int rounds = 1 + static_cast<int>(rnd(3));
+        for (int r = 0; r < rounds; ++r) mutate(b);
+        const std::string s(b.begin(), b.end());
+        g_cases++;
+        bool accepted;
+        if (rev) {
+            accepted = signing::parse_revocations(s, roots, now, -1, &err).has_value();
+        } else {
+            { std::ofstream(dir / "signature.json", std::ios::binary | std::ios::trunc) << s; }
+            accepted = signing::verify_plugin_dir(dir, "f", "1", roots, nullptr, now).status ==
+                       signing::Status::Valid;
+        }
+        // Une mutation peut retomber sur un document équivalent (espace
+        // ajouté hors des valeurs signées, par exemple) : ce n'est pas une
+        // faille. Ce qui en serait une : un document accepté dont la
+        // charge signée a changé. On le vérifie en relisant les champs
+        // signés du document muté.
+        if (accepted) {
+            const auto j = nlohmann::json::parse(s, nullptr, false);
+            const auto o = nlohmann::json::parse(base, nullptr, false);
+            const char* k = rev ? "list" : "release";
+            // Comparaison des charges DÉCODÉES : le décodeur base64 peut
+            // ignorer un caractère parasite ajouté par la mutation, ce qui
+            // laisse les octets signés identiques — accepté à raison.
+            auto dec = [](const nlohmann::json& x, const char* field) -> std::string {
+                if (!x.is_object() || !x.contains(field) || !x[field].is_object() ||
+                    !x[field].contains("payload") || !x[field]["payload"].is_string())
+                    return "absent";
+                const auto d = secrets::b64_decode(x[field]["payload"].get<std::string>());
+                return d ? *d : std::string("illisible");
+            };
+            if (dec(j, k) != dec(o, k) || dec(j, "cert") != dec(o, "cert")) {
+                std::printf("\nECHEC itération %d : document altéré accepté comme valide\n", i);
+                dump("sig", i, s);
+                std::exit(1);
+            }
+        }
+        if ((i % 2000) == 0) { std::printf("."); std::fflush(stdout); }
+    }
+    fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -488,6 +616,7 @@ int main(int argc, char** argv) {
     std::printf("Chunk     "); fuzz_chunk(n);           std::printf(" ok\n");
     std::printf("Manifeste "); fuzz_manifest(n);       std::printf(" ok\n");
     std::printf("IPC       "); fuzz_ipc(n);            std::printf(" ok\n");
+    std::printf("Signature "); fuzz_signature(n / 4 + 1); std::printf(" ok\n");
     std::printf("\n%lld cas traités, aucun plantage.\n", g_cases);
     std::printf("ALL TESTS PASSED\n");
     return 0;

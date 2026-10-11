@@ -238,11 +238,17 @@ set(TL_CORE_SOURCES
   third_party/miniz/miniz_tdef.c
   third_party/miniz/miniz_tinfl.c
   third_party/miniz/miniz_zip.c
+  # V8 : signature Ed25519 + SHA-512 des plugins (voir src/signing.hpp).
+  src/signing.cpp
+  third_party/monocypher/src/monocypher.c
+  third_party/monocypher/src/optional/monocypher-ed25519.c
 )
 add_library(tl_core STATIC ${TL_CORE_SOURCES})
 target_include_directories(tl_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/src/optional
 )
 # crypt32 : DPAPI + base64 (jetons MsAuth) ; shell32 : ouverture du navigateur
 # bcrypt : plus utilise pour SHA-1/MD5 (portables depuis l etape 5), mais
@@ -452,7 +458,7 @@ endif()
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto pipe_child plugin_host_client apikeys apievents diagapi localapi startup support social account)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto pipe_child plugin_host_client signing apikeys apievents diagapi localapi startup support social account)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 # diagd_main.cpp et plugin_host_main.cpp ont leur propre `main` : ils
@@ -596,6 +602,7 @@ if(TL_BUILD_TESTS)
     "tests/test_gamesession.cpp|TLTestGameSession"
     "tests/test_plugin_proto.cpp|TLTestPluginProto"
     "tests/test_plugin_host.cpp|TLTestPluginHost"
+    "tests/test_signing.cpp|TLTestSigning"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

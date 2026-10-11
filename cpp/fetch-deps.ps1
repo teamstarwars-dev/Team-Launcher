@@ -50,6 +50,13 @@ $deps = @(
   @{ Name = 'cpp-httplib';   Url = 'https://github.com/yhirose/cpp-httplib.git'; Tag = 'v0.60.1' }
   @{ Name = 'nlohmann_json'; Url = 'https://github.com/nlohmann/json.git';      Tag = 'v3.11.3' }
   @{ Name = 'miniz';         Url = 'https://github.com/richgel999/miniz.git';   Tag = '3.1.2' }
+  # V8 (11/10/2026) : signature des plugins et des mods de la marketplace.
+  # Ed25519 + SHA-512, a l'identique sous Windows et Linux — l'API
+  # cryptographique de Windows n'expose pas Ed25519, et Linux n'embarque
+  # rien. Petite bibliotheque C, auditee par Cure53 (2020), aucun avis de
+  # securite publie. On n'en compile que src/monocypher.c et
+  # src/optional/monocypher-ed25519.c.
+  @{ Name = 'monocypher';    Url = 'https://github.com/LoupVaillant/Monocypher.git'; Tag = '4.0.3' }
 )
 
 $failed = @()

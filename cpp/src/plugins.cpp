@@ -2,9 +2,14 @@
 
 #include "datastore.hpp"
 #include "plugin_proto.hpp" // permissions et version d'API (V8)
+#include "signing.hpp"      // confiance : signature et révocation (V8)
+
+#include <map>
+#include <mutex>
 #include "util_hash.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <cstdio>
 #include <fstream>
 #include <system_error>
@@ -232,6 +237,72 @@ Plugin parse_manifest(const std::string& text, const std::string& id) {
     return p;
 }
 
+namespace {
+
+// --- Confiance, avec cache -------------------------------------------------
+//
+// verify_plugin_dir hache TOUS les fichiers du plugin. Le refaire à chaque
+// balayage (toutes les deux secondes) coûterait cher pour un plugin qui
+// embarque un gros exécutable. On garde donc le verdict, avec une empreinte
+// du dossier faite de (chemin, taille, date de modification) de chaque
+// entrée, plus le numéro de la liste de révocation : le moindre changement
+// — fichier ajouté, retouché, liste mise à jour — relance la vérification
+// complète.
+struct TrustCache {
+    std::string fp;
+    signing::Verdict v;
+};
+std::mutex g_tcM;
+std::map<std::string, TrustCache> g_tc;
+
+std::string dir_fingerprint(const fs::path& dir, const signing::Revocations& r) {
+    std::string fp = std::to_string(r.seq) + (r.killAll ? "K" : "-") + "|" +
+                     std::to_string(signing::builtin_roots().keys.size()) + "|";
+    std::error_code ec;
+    std::vector<std::string> parts;
+    for (auto it = fs::recursive_directory_iterator(dir, fs::directory_options::none, ec);
+         it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) return fp + "ERR"; // illisible : on revérifiera
+        if (parts.size() > 8192) break;
+        const auto st = it->symlink_status(ec);
+        const auto mt = fs::last_write_time(it->path(), ec).time_since_epoch().count();
+        std::uintmax_t sz = 0;
+        if (st.type() == fs::file_type::regular) sz = fs::file_size(it->path(), ec);
+        parts.push_back(it->path().generic_string() + ":" +
+                        std::to_string(static_cast<int>(st.type())) + ":" +
+                        std::to_string(sz) + ":" + std::to_string(mt));
+    }
+    std::sort(parts.begin(), parts.end());
+    for (const auto& p : parts) fp += p + "\n";
+    return fp;
+}
+
+void apply_trust(Plugin& p) {
+    const signing::Revocations revs = signing::current_revocations();
+    const std::string fp = dir_fingerprint(p.dir, revs);
+    signing::Verdict v;
+    {
+        std::lock_guard<std::mutex> lk(g_tcM);
+        const auto it = g_tc.find(p.id);
+        if (it != g_tc.end() && it->second.fp == fp) {
+            v = it->second.v;
+        } else {
+            v = signing::verify_plugin_dir(p.dir, p.id, p.version, signing::builtin_roots(),
+                                           &revs, static_cast<std::int64_t>(std::time(nullptr)));
+            g_tc[p.id] = TrustCache{fp, v};
+        }
+    }
+    switch (v.status) {
+    case signing::Status::Valid: p.trust = Trust::Signed; break;
+    case signing::Status::Unsigned: p.trust = Trust::Unsigned; break;
+    case signing::Status::Invalid: p.trust = Trust::Invalid; break;
+    case signing::Status::Revoked: p.trust = Trust::Revoked; break;
+    }
+    p.trustDetail = v.detail;
+}
+
+} // namespace
+
 std::vector<Plugin> list() {
     std::vector<Plugin> out;
     const fs::path root = dir();
@@ -250,6 +321,7 @@ std::vector<Plugin> list() {
                                std::istreambuf_iterator<char>());
         Plugin p = parse_manifest(text, e.path().filename().string());
         p.dir = e.path();
+        if (p.error.empty()) apply_trust(p);
         p.enabled = std::find(allowed.begin(), allowed.end(), allow_key(p)) !=
                     allowed.end();
         out.push_back(std::move(p));
