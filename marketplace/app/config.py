@@ -44,6 +44,10 @@ class Settings:
     max_upload_bytes: int = 64 * 1024 * 1024
     max_unpacked_bytes: int = 256 * 1024 * 1024
     max_files: int = 4096
+    # Alerte Discord de l'équipe à chaque soumission (facultative, secrète).
+    discord_webhook: str = ""
+    # Adresse publique du panel, pour le lien de l'alerte.
+    public_url: str = ""
 
 
 def database_url() -> str:
@@ -77,4 +81,19 @@ def load() -> Settings:
         signing_key_path=Path(_required("TL_MARKET_SIGNING_KEY")),
         signing_cert_path=Path(_required("TL_MARKET_SIGNING_CERT")),
         totp_enc_key=key,
+        discord_webhook=_webhook(),
+        public_url=os.environ.get("TL_MARKET_PUBLIC_URL", "").strip().rstrip("/"),
     )
+
+
+def _webhook() -> str:
+    url = os.environ.get("TL_MARKET_DISCORD_WEBHOOK", "").strip()
+    if not url:
+        return ""
+    from .notify import valid_webhook
+
+    if not valid_webhook(url):
+        # Refus explicite plutôt qu'une alerte qui n'arrive jamais sans
+        # que personne ne le sache. L'adresse n'est pas affichée : secret.
+        raise ConfigError("TL_MARKET_DISCORD_WEBHOOK n'est pas une adresse de webhook Discord")
+    return url

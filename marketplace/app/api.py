@@ -29,7 +29,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession, sessionmaker
 
 from . import models as m
-from . import packages, security
+from . import notify, packages, security
 from .config import Settings
 from .signing import Signer
 
@@ -374,6 +374,8 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
         (d / "source.zip").write_bytes(src_data)
         audit(s, dev.id, "submit", f"{kind}:{slug}@{version}")
         s.commit()
+        notify.new_submission(settings.discord_webhook, settings.public_url, kind, slug, p.name,
+                              version, dev.display_name)
         return {"id": sub.id, "status": sub.status}
 
     @dev_r.get("/submissions/{sid}")
