@@ -45,6 +45,13 @@ std::vector<NewsEntry> parse_news_array(const std::string& text) {
 // par du texte car la police ImGui par defaut ne les couvre pas.
 std::vector<NewsEntry> default_changelog() {
     return {
+        {"Version 8 : marketplace et plugins sécurisés", "2026-10-11", "NOUVEAU",
+         "- Marketplace : plugins et mods relus par l'équipe (Paramètres > Marketplace)\n"
+         "- Chaque archive est vérifiée par sa signature avant d'être installée\n"
+         "- Plugins dans un processus séparé, en intégrité basse sous Windows\n"
+         "- Permissions affichées en clair, à accorder plugin par plugin\n"
+         "- Révocation et arrêt d'urgence décidés par l'équipe\n"
+         "- Statistiques anonymes sur les plugins, désactivées par défaut"},
         {"Sidebar compacte et minimaliste", "2026-08-27", "NOUVEAU",
          "- Sidebar reduite a 56px avec icones emoji\n"
          "- Profil au-dessus de Compte / Parametres\n"
@@ -92,8 +99,24 @@ std::vector<NewsEntry> load_changelog() {
                 }
         } catch (...) {}
     }
-    if (out.empty()) {
-        out = default_changelog();
+    // Entrées livrées avec une nouvelle version et absentes du fichier de
+    // l'utilisateur : ajoutées en tête. Sans cela, l'historique créé au
+    // premier lancement ne montrerait jamais les nouveautés suivantes.
+    bool merged = false;
+    if (!out.empty()) {
+        std::vector<NewsEntry> fresh;
+        for (const auto& d : default_changelog()) {
+            bool known = false;
+            for (const auto& e : out) known = known || e.title == d.title;
+            if (!known) fresh.push_back(d);
+        }
+        if (!fresh.empty()) {
+            out.insert(out.begin(), fresh.begin(), fresh.end());
+            merged = true;
+        }
+    }
+    if (out.empty() || merged) {
+        if (out.empty()) out = default_changelog();
         try {
             nlohmann::json arr = nlohmann::json::array();
             for (const auto& e : out)

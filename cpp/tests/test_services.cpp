@@ -305,7 +305,8 @@ int main() {
     // Prefixe « v » et suffixes ignores
     CHECK(updates::compare_versions("v6.0.1", "6.0.0") > 0);
     CHECK(updates::compare_versions("6.0.0-beta", "6.0.0") == 0);
-    CHECK(std::string(updates::current_version()).find("6.") == 0);
+    // La version courante est celle du projet (CMake), pas un numéro figé.
+    CHECK(std::string(updates::current_version()) == TL_VERSION_STRING);
 
     // Cas limites de compare_versions
     CHECK(updates::compare_versions("", "") == 0);

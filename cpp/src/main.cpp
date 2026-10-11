@@ -30,7 +30,7 @@
 #include "ui.hpp"
 
 #ifndef TL_VERSION_STRING
-#define TL_VERSION_STRING "6.0.1"
+#define TL_VERSION_STRING "8.0.0"
 #endif
 
 int main(int argc, char** argv) {

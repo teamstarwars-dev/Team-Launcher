@@ -40,7 +40,7 @@
   #define BuildDir "..\build"
 #endif
 #ifndef MyAppVersion
-  #define MyAppVersion "6.0.1"
+  #define MyAppVersion "8.0.0"
 #endif
 #ifndef OutDir
   #define OutDir "..\..\installer-output"
