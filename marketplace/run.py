@@ -70,7 +70,23 @@ def main() -> None:
 
     from app.main import build
 
-    app = build()  # refuse de démarrer si la configuration est incomplète
+    try:
+        app = build()  # refuse de démarrer si la configuration est incomplète
+    except Exception as exc:
+        if "Access denied" not in str(exc):
+            raise
+        # Diagnostic sans jamais afficher le mot de passe : longueur et début
+        # de son SHA-256, à comparer avec le même calcul fait ailleurs.
+        import hashlib
+
+        pw = os.environ.get("TL_MARKET_DB_PASSWORD", "")
+        print("\nLa base de données refuse le mot de passe.", flush=True)
+        if pw:
+            print(f"Mot de passe lu dans .env : {len(pw)} caractères, empreinte "
+                  f"{hashlib.sha256(pw.encode()).hexdigest()[:12]}", flush=True)
+        else:
+            print("TL_MARKET_DB_PASSWORD est vide ou absent du .env.", flush=True)
+        sys.exit(1)
     port = int(os.environ.get("SERVER_PORT") or os.environ.get("TL_MARKET_PORT") or "8300")
     cert = os.environ.get("TL_MARKET_TLS_CERT", "").strip()
     key = os.environ.get("TL_MARKET_TLS_KEY", "").strip()
