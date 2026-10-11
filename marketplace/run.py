@@ -1,0 +1,87 @@
+"""Démarrage sur un serveur Pterodactyl (œuf « Python » générique).
+
+Pterodactyl ne donne ni shell ni systemd : un seul processus, un seul port
+(SERVER_PORT), et une console qui écrit sur l'entrée standard. D'où :
+  - la configuration est lue dans le fichier .env, à côté de ce script
+    (droits gérés par le panneau) — les variables d'environnement déjà
+    posées gardent la priorité ;
+  - la console du panneau sert de console d'administration : les commandes
+    tapées (grant, revoke, reset-2fa, list) sont lues sur stdin ;
+  - HTTPS direct si TL_MARKET_TLS_CERT / TL_MARKET_TLS_KEY sont fournis
+    (certificat d'origine Cloudflare, par exemple).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import threading
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def load_dotenv(path: Path) -> None:
+    """Lecteur .env minimal : CLE=valeur, # commentaires, guillemets ôtés."""
+    if not path.is_file():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+HELP = """Commandes de la console :
+  list                         comptes et rôles
+  grant <email> reviewer|admin donner un rôle
+  revoke <email> reviewer|admin retirer un rôle
+  reset-2fa <email>            effacer la 2FA (après vérification d'identité)
+  help                         cette aide"""
+
+
+def console_loop() -> None:
+    from tools import admin
+
+    for line in sys.stdin:
+        argv = line.split()
+        if not argv:
+            continue
+        if argv[0] in ("help", "?"):
+            print(HELP, flush=True)
+            continue
+        try:
+            admin.main(argv)
+        except SystemExit:
+            pass
+        except Exception as exc:  # la console ne doit jamais tuer le serveur
+            print(f"erreur : {exc}", flush=True)
+        sys.stdout.flush()
+
+
+def main() -> None:
+    os.chdir(HERE)
+    load_dotenv(HERE / ".env")
+    import uvicorn
+
+    from app.main import build
+
+    app = build()  # refuse de démarrer si la configuration est incomplète
+    port = int(os.environ.get("SERVER_PORT") or os.environ.get("TL_MARKET_PORT") or "8300")
+    cert = os.environ.get("TL_MARKET_TLS_CERT", "").strip()
+    key = os.environ.get("TL_MARKET_TLS_KEY", "").strip()
+    tls = {"ssl_certfile": cert, "ssl_keyfile": key} if cert and key else {}
+
+    threading.Thread(target=console_loop, daemon=True).start()
+    print(f"Marketplace : port {port}, {'HTTPS' if tls else 'HTTP (sans TLS)'}. "
+          "Tapez « help » pour les commandes.", flush=True)
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info",
+                server_header=False, **tls)
+
+
+if __name__ == "__main__":
+    main()

@@ -54,6 +54,25 @@ Lancement, derrière un reverse proxy HTTPS :
 uvicorn app.main:app --host 127.0.0.1 --port 8300
 ```
 
+## Hébergement Pterodactyl (Pixel Horizon)
+
+Œuf « Python » générique. Pas de shell ni de systemd : `run.py` lit le
+`.env` posé à côté de lui, écoute sur `SERVER_PORT`, et la **console du
+panneau** sert de console d'administration (`help`, `list`,
+`grant <email> reviewer|admin`, `revoke …`, `reset-2fa <email>`).
+
+1. Image Docker : Python 3.12 ou plus récent. Variables de démarrage :
+   fichier `run.py`, requirements `requirements.txt`, pas de dépôt git.
+2. Onglet *Databases* : créer la base, reporter hôte, nom, utilisateur et
+   mot de passe dans `TL_MARKET_DB_URL`.
+3. Déposer (SFTP ou gestionnaire de fichiers) le contenu de `marketplace/`
+   **sans** `tests/`, puis `keys/` (intermédiaire, certificat d'origine) et
+   `.env` (modèle : `.env.example`).
+4. HTTPS : le launcher l'exige. Domaine sur Cloudflare, enregistrement A
+   proxifié vers l'IP du nœud, *Origin Rule* qui redirige vers le port
+   attribué, certificat d'origine Cloudflare dans `keys/origin.*`, mode SSL
+   *Full (strict)*.
+
 ## Cérémonie des clés (hors ligne)
 
 Sur une machine déconnectée, racine sur support amovible (deux copies) :
