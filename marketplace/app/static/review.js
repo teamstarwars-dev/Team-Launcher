@@ -473,22 +473,33 @@ async function loadKeys() {
   }
 }
 
-$("#key-form").addEventListener("submit", async (ev) => {
-  ev.preventDefault();
+async function addKey(kind) {
   if (!window.PublicKeyCredential) return status("Ce navigateur ne gère pas les clés de sécurité.", true);
-  const name = String(new FormData(ev.target).get("name")).trim();
+  if (kind === "platform") {
+    const ok = await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().catch(() => false);
+    if (!ok) return status("Windows Hello n'est pas configuré sur ce PC : Paramètres Windows > Comptes > " +
+                           "Options de connexion, puis réessayez.", true);
+    status("La fenêtre Windows Hello va s'ouvrir : entrez le code PIN de votre PC.");
+  } else {
+    status("Branchez votre clé de sécurité, entrez son code PIN, puis touchez-la.");
+  }
+  const name = $("#key-name").value.trim();
   try {
-    const o = await api("POST", "/v1/auth/webauthn/register/options");
+    const o = await api("POST", "/v1/auth/webauthn/register/options", { kind });
     const cred = await navigator.credentials.create({ publicKey: creationOptions(o) });
-    await api("POST", "/v1/auth/webauthn/register/verify", { name, credential: credentialJson(cred) });
-    ev.target.reset();
-    status(`Clé « ${name} » ajoutée. Vous pourrez l'utiliser à la prochaine connexion.`);
+    await api("POST", "/v1/auth/webauthn/register/verify", { kind, name, credential: credentialJson(cred) });
+    $("#key-name").value = "";
+    status(kind === "platform" ? "Windows Hello ajouté : vous pourrez l'utiliser à la prochaine connexion."
+                               : "Clé FIDO2 ajoutée : vous pourrez l'utiliser à la prochaine connexion.");
     loadKeys();
   } catch (e) {
     status(e.name === "NotAllowedError" ? "Opération annulée ou délai dépassé." :
            e.name === "InvalidStateError" ? "Cette clé est déjà enregistrée sur ce compte." : e.message, true);
   }
-});
+}
+
+$("#add-hello").addEventListener("click", () => addKey("platform"));
+$("#add-fido").addEventListener("click", () => addKey("security-key"));
 
 
 // --- Administration : incidents des plugins ---------------------------------------

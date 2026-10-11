@@ -80,10 +80,20 @@
           reste active : c'est votre secours si vous perdez la clé.</p>
         <ul id="keys" class="keys"></ul>
         <p id="keys-empty" class="muted" hidden>Aucune clé enregistrée.</p>
-        <form id="key-form" class="row wrap">
-          <input name="name" placeholder="nom de la clé (ex. PC du salon, YubiKey)" maxlength="64" required>
-          <button>Ajouter une clé</button>
-        </form>
+        <div class="key-add">
+          <div class="key-choice">
+            <button type="button" id="add-hello">Ajouter Windows Hello</button>
+            <p class="muted small-text">La fenêtre Windows Hello s'ouvre : entrez le code PIN de votre PC
+              (ou utilisez le visage, l'empreinte).</p>
+          </div>
+          <div class="key-choice">
+            <button type="button" id="add-fido">Ajouter une clé FIDO2</button>
+            <p class="muted small-text">Branchez votre clé sur un port USB (ou approchez-la en NFC), entrez
+              son code PIN, puis touchez-la.</p>
+          </div>
+        </div>
+        <label class="small-text">Nom de la clé (facultatif)
+          <input id="key-name" placeholder="ex. PC du salon, YubiKey bleue" maxlength="64"></label>
       </div>
     </div>
 

@@ -42,9 +42,10 @@ class SoftAuthenticator:
         return json.dumps({"type": typ, "challenge": challenge_b64u,
                            "origin": origin or self.origin, "crossOrigin": False}).encode()
 
-    def register(self, options: dict, origin: str | None = None) -> dict:
+    def register(self, options: dict, origin: str | None = None, uv: bool = True) -> dict:
         cd = self._client_data("webauthn.create", options["challenge"], origin)
-        auth_data = (hashlib.sha256(self.rp_id.encode()).digest() + bytes([0x45])  # UP|UV|AT
+        auth_data = (hashlib.sha256(self.rp_id.encode()).digest()
+                     + bytes([0x45 if uv else 0x41])  # UP|AT (+UV : code PIN saisi)
                      + struct.pack(">I", self.count) + b"\0" * 16
                      + struct.pack(">H", len(self.cred_id)) + self.cred_id + self._cose())
         att = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth_data})
@@ -52,10 +53,12 @@ class SoftAuthenticator:
                 "response": {"clientDataJSON": b64u(cd), "attestationObject": b64u(att)},
                 "clientExtensionResults": {}}
 
-    def assert_(self, options: dict, origin: str | None = None, replay_count: int | None = None) -> dict:
+    def assert_(self, options: dict, origin: str | None = None, replay_count: int | None = None,
+                uv: bool = True) -> dict:
         self.count = self.count + 1 if replay_count is None else replay_count
         cd = self._client_data("webauthn.get", options["challenge"], origin)
-        auth_data = (hashlib.sha256(self.rp_id.encode()).digest() + bytes([0x05])  # UP|UV
+        auth_data = (hashlib.sha256(self.rp_id.encode()).digest()
+                     + bytes([0x05 if uv else 0x01])  # UP (+UV : code PIN saisi)
                      + struct.pack(">I", self.count))
         sig = self.key.sign(auth_data + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
         return {"id": b64u(self.cred_id), "rawId": b64u(self.cred_id), "type": "public-key",

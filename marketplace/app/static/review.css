@@ -70,4 +70,7 @@ select { padding: 8px; border: 1px solid var(--line); border-radius: 6px;
 .keys li { display: flex; gap: 8px; align-items: center; justify-content: space-between;
            padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 #mfa-key button { width: 100%; }
+.key-add { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 12px 0; }
+.key-choice { border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.key-choice button { width: 100%; }
 canvas.qr { display: block; margin: 8px auto 12px; border-radius: 6px; }

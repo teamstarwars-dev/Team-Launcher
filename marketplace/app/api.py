@@ -297,8 +297,10 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
 
     import webauthn
     from webauthn.helpers import bytes_to_base64url
-    from webauthn.helpers.structs import (AuthenticatorSelectionCriteria,
+    from webauthn.helpers.structs import (AuthenticatorAttachment,
+                                          AuthenticatorSelectionCriteria,
                                           PublicKeyCredentialDescriptor,
+                                          PublicKeyCredentialHint,
                                           ResidentKeyRequirement,
                                           UserVerificationRequirement)
 
@@ -324,16 +326,33 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
             raise HTTPException(400, "défi absent ou expiré : recommencez")
         return item[0]
 
+    # Deux types de clés, deux boutons : Windows Hello (l'authentificateur
+    # du PC : code PIN, visage, empreinte) ou clé de sécurité USB/NFC. Dans
+    # les deux cas, la vérification de l'utilisateur est EXIGÉE (code PIN
+    # de Windows ou de la clé) : une clé volée, touchée sans son code, ne
+    # suffit pas.
+    KEY_KINDS = {
+        "platform": (AuthenticatorAttachment.PLATFORM, PublicKeyCredentialHint.CLIENT_DEVICE,
+                     "Windows Hello"),
+        "security-key": (AuthenticatorAttachment.CROSS_PLATFORM,
+                         PublicKeyCredentialHint.SECURITY_KEY, "Clé FIDO2"),
+    }
+
+    class KeyKindIn(BaseModel):
+        kind: str = Field(pattern="^(platform|security-key)$")
+
     class KeyNameIn(BaseModel):
-        name: str = Field(min_length=1, max_length=64)
+        kind: str = Field(pattern="^(platform|security-key)$")
+        name: str = Field(default="", max_length=64)
         credential: dict
 
     class AssertionIn(BaseModel):
         credential: dict
 
     @auth_r.post("/webauthn/register/options")
-    def webauthn_register_options(dev: Mfa, auth: Auth, s: Db):
+    def webauthn_register_options(body: KeyKindIn, dev: Mfa, auth: Auth, s: Db):
         _need_rp()
+        attachment, hint, _ = KEY_KINDS[body.kind]
         existing = s.scalars(select(WebAuthnCredential)
                              .where(WebAuthnCredential.developer_id == dev.id)).all()
         if len(existing) >= 10:
@@ -342,22 +361,26 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
             rp_id=rp_id, rp_name="Team Launcher", user_id=str(dev.id).encode(),
             user_name=dev.email or dev.display_name, user_display_name=dev.display_name,
             authenticator_selection=AuthenticatorSelectionCriteria(
+                authenticator_attachment=attachment,
                 resident_key=ResidentKeyRequirement.DISCOURAGED,
-                user_verification=UserVerificationRequirement.PREFERRED),
+                user_verification=UserVerificationRequirement.REQUIRED),
+            hints=[hint],
             exclude_credentials=[PublicKeyCredentialDescriptor(id=webauthn.base64url_to_bytes(c.credential_id))
                                  for c in existing])
-        _put_challenge(auth[0], "register", opts.challenge)
+        _put_challenge(auth[0], "register:" + body.kind, opts.challenge)
         return json.loads(webauthn.options_to_json(opts))
 
     @auth_r.post("/webauthn/register/verify", status_code=201)
     def webauthn_register_verify(body: KeyNameIn, dev: Mfa, auth: Auth, s: Db):
         _need_rp()
-        ch = _take_challenge(auth[0], "register")
+        ch = _take_challenge(auth[0], "register:" + body.kind)
+        name = body.name.strip() or KEY_KINDS[body.kind][2]
         try:
             v = webauthn.verify_registration_response(credential=body.credential,
                                                       expected_challenge=ch,
                                                       expected_rp_id=rp_id,
-                                                      expected_origin=rp_origin)
+                                                      expected_origin=rp_origin,
+                                                      require_user_verification=True)
         except Exception as exc:
             raise HTTPException(400, f"clé refusée : {exc}") from exc
         cid = bytes_to_base64url(v.credential_id)
@@ -365,9 +388,9 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
             raise HTTPException(409, "cette clé est déjà enregistrée")
         s.add(WebAuthnCredential(developer_id=dev.id, credential_id=cid,
                                  public_key=bytes_to_base64url(v.credential_public_key),
-                                 sign_count=v.sign_count, name=body.name.strip(),
+                                 sign_count=v.sign_count, name=name,
                                  created_at=security.now()))
-        audit(s, dev.id, "webauthn_add", body.name.strip()[:128])
+        audit(s, dev.id, "webauthn_add", name[:128])
         s.commit()
         return {"ok": True}
 
@@ -401,7 +424,7 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
             rp_id=rp_id,
             allow_credentials=[PublicKeyCredentialDescriptor(id=webauthn.base64url_to_bytes(c.credential_id))
                                for c in creds],
-            user_verification=UserVerificationRequirement.PREFERRED)
+            user_verification=UserVerificationRequirement.REQUIRED)
         _put_challenge(row, "login", opts.challenge)
         return json.loads(webauthn.options_to_json(opts))
 
@@ -420,7 +443,8 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
                 credential=body.credential, expected_challenge=ch, expected_rp_id=rp_id,
                 expected_origin=rp_origin,
                 credential_public_key=webauthn.base64url_to_bytes(c.public_key),
-                credential_current_sign_count=c.sign_count)
+                credential_current_sign_count=c.sign_count,
+                require_user_verification=True)
         except Exception as exc:
             audit(s, dev.id, "webauthn_fail", c.name[:128])
             s.commit()
