@@ -18,9 +18,11 @@
 // reproduit à l'identique. L'entrée fautive est écrite sur le disque.
 
 #include "nbt.hpp"
+#include "plugin_proto.hpp"
 #include "plugins.hpp"
 #include "region.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -389,6 +391,88 @@ void fuzz_manifest(int iterations) {
     }
 }
 
+// --- Protocole IPC des plugins (V8) -------------------------------------
+//
+// C'est le point d'entrée le plus exposé du plugin host : chaque octet
+// vient d'un plugin, donc de code tiers supposé hostile. On mute des
+// requêtes VALIDES de chaque méthode, on les découpe au hasard comme le
+// ferait le réseau, et on vérifie deux choses au-delà de l'absence de
+// plantage :
+//   - une requête acceptée porte TOUJOURS une méthode de la table et des
+//     paramètres conformes — sinon le host transmettrait au launcher un
+//     appel qu'il n'a pas su valider ;
+//   - la sérialisation des réponses ne lève jamais, même quand l'entrée
+//     contenait des octets UTF-8 invalides.
+void fuzz_ipc(int iterations) {
+    const std::string id32(32, 'c');
+    const std::string bases[] = {
+        R"J({"v":1,"id":1,"method":"host.hello","params":{"api":1}})J",
+        R"J({"v":1,"id":2,"method":"instances.list","params":{}})J",
+        R"J({"v":1,"id":3,"method":"instances.get","params":{"instanceId":")J" +
+            id32 + "\"}}",
+        R"J({"v":1,"id":4,"method":"mods.list","params":{"instanceId":")J" +
+            id32 + "\"}}",
+        R"J({"v":1,"id":5,"method":"ui.notify","params":{"title":"T","message":"M"}})J",
+        R"J({"v":1,"id":6,"method":"log.write","params":{"level":"info","message":"x"}})J",
+        R"J({"v":1,"id":7,"method":"game.launch","params":{"instanceId":")J" +
+            id32 + "\"}}",
+    };
+    long long accepted = 0;
+    for (int i = 0; i < iterations; ++i) {
+        const std::string& base = bases[rnd(7)];
+        std::vector<std::uint8_t> b(base.begin(), base.end());
+        const int rounds = static_cast<int>(rnd(4)); // 0 = requete intacte
+        for (int r = 0; r < rounds; ++r) mutate(b);
+        const std::string payload(b.begin(), b.end());
+
+        // Flux : parfois une trame bien formee, parfois un en-tete
+        // mensonger, puis decoupage aleatoire comme sur un vrai tube.
+        std::string stream = pluginproto::encode_frame(payload);
+        if (rnd(10) == 0 && stream.size() >= 4) stream[rnd(4)] = static_cast<char>(rnd(256));
+        pluginproto::FrameReader reader;
+        std::size_t off = 0;
+        while (off < stream.size()) {
+            const std::size_t n = 1 + rnd((std::min<std::size_t>)(64, stream.size() - off));
+            reader.feed(stream.data() + off, n);
+            off += n;
+            std::string frame;
+            while (reader.next(&frame) == pluginproto::FrameReader::Status::Frame) {
+                g_cases++;
+                pluginproto::Error err;
+                const auto req = pluginproto::parse_request(frame, &err);
+                std::string out;
+                if (req) {
+                    ++accepted;
+                    // Invariant : methode connue, params objet.
+                    if (!pluginproto::required_permission(req->method) ||
+                        !req->params.is_object()) {
+                        std::printf("\nECHEC itération %d : requête acceptée hors "
+                                    "table (« %s »)\n", i, req->method.c_str());
+                        dump("ipc", i, frame);
+                        std::exit(1);
+                    }
+                    out = pluginproto::make_result(req->id, req->params);
+                } else {
+                    out = pluginproto::make_error(err);
+                }
+                if (out.empty()) {
+                    std::printf("\nECHEC itération %d : réponse vide\n", i);
+                    std::exit(1);
+                }
+            }
+            if (reader.poisoned()) break;
+        }
+        if ((i % 2000) == 0) { std::printf("."); std::fflush(stdout); }
+    }
+    std::printf(" [%lld requêtes acceptées]", accepted);
+    // Garde-fou de couverture : si plus rien n'est accepté, les graines
+    // ont cessé d'être valides et la cible ne teste plus le chemin profond.
+    if (iterations >= 1000 && accepted == 0) {
+        std::printf("\nECHEC : aucune requête acceptée — graines invalides\n");
+        std::exit(1);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -403,6 +487,7 @@ int main(int argc, char** argv) {
     std::printf("Région    "); fuzz_region(n / 8 + 1); std::printf(" ok\n");
     std::printf("Chunk     "); fuzz_chunk(n);           std::printf(" ok\n");
     std::printf("Manifeste "); fuzz_manifest(n);       std::printf(" ok\n");
+    std::printf("IPC       "); fuzz_ipc(n);            std::printf(" ok\n");
     std::printf("\n%lld cas traités, aucun plantage.\n", g_cases);
     std::printf("ALL TESTS PASSED\n");
     return 0;
