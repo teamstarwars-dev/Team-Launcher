@@ -207,6 +207,11 @@ bool start(const fs::path& hostExe, std::string* err) {
     auto child = std::make_unique<pipechild::Child>();
     pipechild::Options o;
     o.program = hostExe.string();
+    // Sous Windows, le host — et donc chaque plugin, qui en hérite — tourne
+    // en intégrité basse : même un plugin malveillant passé entre les
+    // mailles de la review ne peut pas écrire dans les fichiers de
+    // l'utilisateur.
+    o.lowIntegrity = true;
     if (!child->start(o, err)) return false;
     // Ancien fil lecteur (host précédent mort) : attendu HORS verrou, car
     // il prend lui-même c.m pour se terminer.

@@ -8,6 +8,8 @@
 #define NOMINMAX
 #endif
 #include <Windows.h>
+#include <aclapi.h>
+#include <sddl.h>
 #else
 #include <cerrno>
 #include <csignal>
@@ -72,7 +74,88 @@ std::string last_error(const char* what) {
     return std::string(what) + " (code " + std::to_string(GetLastError()) + ")";
 }
 
+// Jeton primaire copié du nôtre, abaissé au niveau d'intégrité « bas »
+// (S-1-16-4096). nullptr + err si impossible.
+HANDLE low_integrity_token(std::string* err) {
+    HANDLE self = nullptr, dup = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT |
+                              TOKEN_ASSIGN_PRIMARY,
+                          &self)) {
+        if (err) *err = last_error("OpenProcessToken");
+        return nullptr;
+    }
+    const BOOL okDup = DuplicateTokenEx(self, 0, nullptr, SecurityImpersonation, TokenPrimary,
+                                        &dup);
+    CloseHandle(self);
+    if (!okDup) {
+        if (err) *err = last_error("DuplicateTokenEx");
+        return nullptr;
+    }
+    PSID sid = nullptr;
+    if (!ConvertStringSidToSidW(L"S-1-16-4096", &sid)) {
+        if (err) *err = last_error("SID d'intégrité basse");
+        CloseHandle(dup);
+        return nullptr;
+    }
+    TOKEN_MANDATORY_LABEL tml{};
+    tml.Label.Attributes = SE_GROUP_INTEGRITY;
+    tml.Label.Sid = sid;
+    const BOOL okSet = SetTokenInformation(dup, TokenIntegrityLevel, &tml,
+                                           sizeof(tml) + GetLengthSid(sid));
+    LocalFree(sid);
+    if (!okSet) {
+        if (err) *err = last_error("abaissement de l'intégrité");
+        CloseHandle(dup);
+        return nullptr;
+    }
+    return dup;
+}
+
 } // namespace
+
+bool allow_low_integrity_writes(const std::string& dirUtf8, std::string* err) {
+    PSECURITY_DESCRIPTOR sd = nullptr;
+    // Étiquette obligatoire « Low », héritée par les fichiers (OI) et les
+    // sous-dossiers (CI), politique « pas d'écriture vers le haut » (NW).
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"S:(ML;OICI;NW;;;LW)",
+                                                              SDDL_REVISION_1, &sd, nullptr)) {
+        if (err) *err = last_error("descripteur d'étiquette");
+        return false;
+    }
+    PACL sacl = nullptr;
+    BOOL present = FALSE, defaulted = FALSE;
+    GetSecurityDescriptorSacl(sd, &present, &sacl, &defaulted);
+    std::wstring w = to_w(dirUtf8);
+    const DWORD rc = SetNamedSecurityInfoW(w.data(), SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION,
+                                           nullptr, nullptr, nullptr, sacl);
+    LocalFree(sd);
+    if (rc != ERROR_SUCCESS) {
+        if (err) *err = "étiquette d'intégrité (code " + std::to_string(rc) + ")";
+        return false;
+    }
+    return true;
+}
+
+long integrity_level(long pid) {
+    HANDLE p = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!p) return -1;
+    HANDLE tok = nullptr;
+    long rid = -1;
+    if (OpenProcessToken(p, TOKEN_QUERY, &tok)) {
+        DWORD len = 0;
+        GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &len);
+        std::vector<unsigned char> buf(len);
+        if (len && GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), len, &len)) {
+            const auto* tml = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
+            const DWORD n = *GetSidSubAuthorityCount(tml->Label.Sid);
+            rid = static_cast<long>(*GetSidSubAuthority(tml->Label.Sid, n - 1));
+        }
+        CloseHandle(tok);
+    }
+    CloseHandle(p);
+    return rid;
+}
 
 Child::~Child() {
     terminate();
@@ -144,14 +227,35 @@ bool Child::start(const Options& o, std::string* err) {
     wcmd.push_back(L'\0');
     const std::wstring wwork = to_w(o.workDir);
 
+    HANDLE lowTok = nullptr;
+    if (o.lowIntegrity) {
+        std::string why;
+        lowTok = low_integrity_token(&why);
+        if (!lowTok) {
+            // Pas de repli silencieux à l'intégrité normale : on a demandé
+            // un bac à sable, on ne lance pas sans.
+            DeleteProcThreadAttributeList(attrs);
+            cleanup_child_side();
+            CloseHandle(inWr);
+            CloseHandle(outRd);
+            return fail("intégrité basse impossible : " + why);
+        }
+    }
+
     PROCESS_INFORMATION pi{};
     // SUSPENDU : le placer dans le job AVANT qu'il exécute la moindre
     // instruction, pour qu'il ne puisse pas s'en échapper en lançant un
     // enfant dans la fenêtre.
-    const BOOL ok = CreateProcessW(
-        nullptr, wcmd.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr,
-        wwork.empty() ? nullptr : wwork.c_str(), &si.StartupInfo, &pi);
+    const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+    const wchar_t* cwd = wwork.empty() ? nullptr : wwork.c_str();
+    // Même utilisateur, jeton seulement abaissé : CreateProcessAsUser ne
+    // demande aucun privilège particulier dans ce cas.
+    const BOOL ok =
+        lowTok ? CreateProcessAsUserW(lowTok, nullptr, wcmd.data(), nullptr, nullptr, TRUE, flags,
+                                      nullptr, cwd, &si.StartupInfo, &pi)
+               : CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, TRUE, flags, nullptr, cwd,
+                                &si.StartupInfo, &pi);
+    if (lowTok) CloseHandle(lowTok);
     DeleteProcThreadAttributeList(attrs);
     cleanup_child_side();
     if (!ok) {
@@ -284,6 +388,10 @@ Child::~Child() {
         ::waitpid(pid_, &st, 0);
     }
 }
+
+bool allow_low_integrity_writes(const std::string&, std::string*) { return true; }
+
+long integrity_level(long) { return -1; }
 
 bool Child::start(const Options& o, std::string* err) {
     auto fail = [&](const std::string& m) {

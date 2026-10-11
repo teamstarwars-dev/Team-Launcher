@@ -39,7 +39,24 @@ struct Options {
     std::vector<std::string> args;  // SANS argv[0]
     std::string workDir;            // vide = hérité
     std::string stderrPath;         // vide = vers le néant
+    // Windows : lancer l'enfant en INTÉGRITÉ BASSE (comme le bac à sable
+    // des navigateurs). Il garde vos droits de LECTURE, mais ne peut plus
+    // écrire dans vos fichiers, votre registre ni les autres processus
+    // (« no write up »). Ses propres enfants héritent de ce niveau : ils ne
+    // peuvent jamais remonter. Refus de lancer si le jeton ne peut pas être
+    // abaissé. Sans effet ailleurs que sous Windows.
+    bool lowIntegrity = false;
 };
+
+// Windows : autorise les processus d'intégrité basse à ÉCRIRE dans ce
+// dossier (étiquette obligatoire « Low », héritée par son contenu). À
+// réserver à des dossiers sans enjeu, comme les journaux des plugins. Sans
+// effet (true) ailleurs.
+bool allow_low_integrity_writes(const std::string& dirUtf8, std::string* err);
+
+// Niveau d'intégrité d'un processus (RID : 0x1000 bas, 0x2000 moyen,
+// 0x3000 élevé), -1 si inconnu. Pour les tests ; -1 hors Windows.
+long integrity_level(long pid);
 
 class Child {
 public:

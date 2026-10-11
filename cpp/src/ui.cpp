@@ -12,6 +12,7 @@
 #include "jvmwarm.hpp"
 #include "localapi.hpp"
 #include "modmeta.hpp"            // mods.list (API des plugins)
+#include "pipe_child.hpp"         // V8 : intégrité basse des plugins
 #include "plugin_host_client.hpp" // V8 : plugins à service
 #include "plugin_proto.hpp"
 #include "plugins.hpp"
@@ -1299,6 +1300,17 @@ void plugin_services_pump() {
             std::error_code ec;
             const auto logs = DataStore::dir() / "logs-plugins";
             std::filesystem::create_directories(logs, ec);
+            // Les plugins tournent en intégrité basse : seul ce dossier de
+            // journaux leur est ouvert en écriture (via le host, qui y crée
+            // leur sortie d'erreur).
+            static bool s_logsLabeled = false;
+            if (!s_logsLabeled) {
+                std::string lerr;
+                const auto u = logs.u8string();
+                s_logsLabeled =
+                    pipechild::allow_low_integrity_writes(std::string(u.begin(), u.end()), &lerr);
+                if (!s_logsLabeled) svc_trace("Journaux des plugins : " + lerr);
+            }
             for (const auto& [id, p] : desired) {
                 if (g_svc.count(id)) continue;
                 plugins::Context ctx;

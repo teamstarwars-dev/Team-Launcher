@@ -606,6 +606,7 @@ if(TL_BUILD_TESTS)
     "tests/test_plugin_host.cpp|TLTestPluginHost"
     "tests/test_signing.cpp|TLTestSigning"
     "tests/test_marketplace.cpp|TLTestMarketplace"
+    "tests/test_lowintegrity.cpp|TLTestLowIntegrity"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")
