@@ -41,7 +41,15 @@ const char* const kKnownUsages[] = {"plugin", "mod", "revocation"};
 //
 // Tant que cette liste est vide, aucune signature ne peut être vérifiée et
 // tous les plugins sont « non signés ».
-const std::vector<PublicKey> kBuiltinRoots = {};
+const std::vector<PublicKey> kBuiltinRoots = {
+    // Racine n°1, générée hors ligne le 11/10/2026 (tools.keys root-init),
+    // gardée chiffrée par son propriétaire. Une première racine générée le
+    // même jour a été jetée avant tout usage : son code papier avait été
+    // exposé. Elle n'est PAS ici et ne doit jamais y figurer.
+    PublicKey{0xb9, 0x33, 0x59, 0xe2, 0xce, 0x1a, 0xc0, 0x4b, 0xf8, 0x39, 0xb0,
+              0xae, 0xd2, 0xaf, 0xb7, 0xd4, 0x70, 0x50, 0x1d, 0x3c, 0x26, 0xac,
+              0x27, 0xb3, 0x6c, 0x6c, 0xe0, 0x1e, 0x2f, 0xda, 0x81, 0xb3},
+};
 
 std::string hex(const std::uint8_t* d, std::size_t n) {
     static const char* h = "0123456789abcdef";
