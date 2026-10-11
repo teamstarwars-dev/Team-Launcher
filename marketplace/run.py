@@ -68,10 +68,10 @@ def main() -> None:
     load_dotenv(HERE / ".env")
     import uvicorn
 
-    from app.main import build
-
     try:
-        app = build()  # refuse de démarrer si la configuration est incomplète
+        # L'import est DANS le try : app/main.py construit l'application (et
+        # se connecte à la base) dès qu'il est importé.
+        from app.main import app  # refuse de démarrer si la configuration est incomplète
     except Exception as exc:
         if "Access denied" not in str(exc):
             raise
