@@ -2,6 +2,7 @@
 
 #include "datastore.hpp"
 #include "http_win.hpp"
+#include "plugin_telemetry.hpp"
 #include "plugins.hpp"
 
 #include "miniz.h"
@@ -453,6 +454,34 @@ bool refresh_revocations(std::string* err, const std::atomic<bool>* cancel) {
     }
     return signing::install_revocations(r->body, static_cast<std::int64_t>(std::time(nullptr)),
                                         err);
+}
+
+bool send_telemetry(std::string* err, const std::atomic<bool>* cancel) {
+    if (!DataStore::settings.pluginTelemetry) {
+        plugtele::take(); // désactivée entre-temps : on jette, on n'envoie pas
+        return true;
+    }
+    const auto base = base_or_err(err);
+    if (!base) return false;
+    const plugtele::Counts c = plugtele::take();
+    if (c.empty()) return true;
+#ifdef _WIN32
+    const char* os = "windows";
+#else
+    const char* os = "linux";
+#endif
+#ifndef TL_VERSION_STRING
+#define TL_VERSION_STRING "dev"
+#endif
+    const auto r = http::post_string(*base + "/v1/public/telemetry",
+                                     plugtele::payload(c, TL_VERSION_STRING, os),
+                                     "application/json", {}, cancel);
+    if (r && (r->status == 204 || r->status == 200)) return true;
+    // Réseau, débit ou serveur en panne : on garde pour plus tard. Un refus
+    // de validation (4xx) ne se corrigera pas en réessayant : on jette.
+    if (!r || r->status == 429 || r->status >= 500) plugtele::restore(c);
+    if (err) *err = r ? "le serveur a répondu " + std::to_string(r->status) : "serveur injoignable";
+    return false;
 }
 
 } // namespace tl::market

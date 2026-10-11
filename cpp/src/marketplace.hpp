@@ -84,4 +84,9 @@ Result install(const Entry& e, const std::filesystem::path& modsDir,
 // aucune.
 bool refresh_revocations(std::string* err, const std::atomic<bool>* cancel = nullptr);
 
+// Envoie la télémétrie anonyme en attente (plugin_telemetry.hpp). Rien
+// n'est envoyé si l'utilisateur ne l'a pas activée. Échec réseau ou
+// serveur occupé : les compteurs sont remis en attente.
+bool send_telemetry(std::string* err, const std::atomic<bool>* cancel = nullptr);
+
 } // namespace tl::market

@@ -242,6 +242,8 @@ set(TL_CORE_SOURCES
   src/signing.cpp
   # V8 : marketplace (catalogue, installation verifiee, revocation).
   src/marketplace.cpp
+  # V8 : telemetrie anonyme des plugins (opt-in).
+  src/plugin_telemetry.cpp
   third_party/monocypher/src/monocypher.c
   third_party/monocypher/src/optional/monocypher-ed25519.c
 )
@@ -460,7 +462,7 @@ endif()
 
 # ---- Application ----
 file(GLOB_RECURSE TL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
-foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto pipe_child plugin_host_client signing marketplace apikeys apievents diagapi localapi startup support social account)
+foreach(core_src IN ITEMS datastore secrets dialogs http_win util_hash util_zip game_installer game_launcher lang backup crash_analyzer maintenance telemetry curseforge pack_import modrinth content_install shortcut presence pack_share ms_auth launch_flow server_host apptasks admin nbt region world worldsync citygen worldedit moddev model3d downloads netcache accounts presets modmeta modcheck modupdate gamesession jvmwarm plugins plugin_proto pipe_child plugin_host_client signing marketplace plugin_telemetry apikeys apievents diagapi localapi startup support social account)
   list(REMOVE_ITEM TL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/${core_src}.cpp)
 endforeach()
 # diagd_main.cpp et plugin_host_main.cpp ont leur propre `main` : ils
@@ -607,6 +609,7 @@ if(TL_BUILD_TESTS)
     "tests/test_signing.cpp|TLTestSigning"
     "tests/test_marketplace.cpp|TLTestMarketplace"
     "tests/test_lowintegrity.cpp|TLTestLowIntegrity"
+    "tests/test_plugin_telemetry.cpp|TLTestPluginTelemetry"
   )
   foreach(entry IN LISTS TL_TEST_TARGETS)
     string(REPLACE "|" ";" parts "${entry}")

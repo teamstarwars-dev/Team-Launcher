@@ -2,6 +2,7 @@
 
 #include "marketplace.hpp"
 #include "plugin_proto.hpp"
+#include "plugin_telemetry.hpp"
 #include "plugins.hpp"
 
 #include <ctime>
@@ -22,6 +23,7 @@ namespace tl::ui {
 namespace {
 
 constexpr std::int64_t kRevocationEvery = 6 * 3600;
+constexpr std::int64_t kTelemetryEvery = 3600;
 
 struct MarketState {
     std::mutex m;
@@ -41,6 +43,7 @@ struct MarketState {
     bool revTriedThisSession = false;
     std::int64_t revNextTry = 0; // après un échec : pas avant (en mémoire seulement)
     bool catalogAutoTried = false; // chargé tout seul à la première ouverture
+    std::int64_t telemetryNext = 0;  // prochain envoi possible (en mémoire)
     char urlBuf[300] = {};
     bool urlInit = false;
     int tab = 0; // 0 = plugins, 1 = mods
@@ -135,6 +138,8 @@ std::string date_of(std::int64_t t) {
 
 } // namespace
 
+void marketplace_telemetry_pump(std::int64_t now);
+
 // Appelé à chaque image : synchronisation périodique de la liste de
 // révocation, et report des résultats du fil dans la configuration.
 void marketplace_pump() {
@@ -151,6 +156,7 @@ void marketplace_pump() {
         DataStore::save();
     }
     if (st.marketplaceUrl.empty()) return;
+    marketplace_telemetry_pump(now);
     // Au démarrage (une fois), puis toutes les 6 h.
     const bool due = !s_mk.revTriedThisSession ||
                      (now - st.lastRevocationSyncUnix > kRevocationEvery && now >= s_mk.revNextTry);
@@ -167,6 +173,20 @@ void marketplace_pump() {
             start_revocation_sync(false);
         }
     }
+}
+
+void marketplace_telemetry_pump(std::int64_t now) {
+    if (!DataStore::settings.pluginTelemetry || DataStore::settings.marketplaceUrl.empty()) return;
+    if (now < s_mk.telemetryNext || plugtele::pending() == 0) return;
+    {
+        std::lock_guard<std::mutex> lk(s_mk.m);
+        if (s_mk.busy) return;
+    }
+    s_mk.telemetryNext = now + kTelemetryEvery;
+    run_job("Envoi des statistiques anonymes…", [] {
+        std::string err;
+        market::send_telemetry(&err, &s_mk.cancel); // échec : remis en attente, sans bruit
+    });
 }
 
 void marketplace_stop() {
@@ -266,6 +286,32 @@ void marketplace_panel() {
                                     "stopped."));
         ImGui::PopStyleColor();
     }
+
+    // --- Télémétrie anonyme (désactivée par défaut) ------------------------
+    bool tele = st.pluginTelemetry;
+    if (ImGui::Checkbox(tr("Envoyer des statistiques anonymes sur les plugins",
+                           "Send anonymous plugin statistics"),
+                        &tele)) {
+        st.pluginTelemetry = tele;
+        if (!tele) plugtele::take(); // désactivée : ce qui attendait est jeté
+        DataStore::save();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextWrapped(
+        "%s",
+        tr("Aide l'équipe à repérer vite un plugin qui dérape, pour le révoquer. Est envoyé, "
+           "au plus une fois par heure : l'identifiant et la version d'un plugin SIGNÉ, la "
+           "raison d'un incident (arrêt d'office, appel refusé, démarrage raté) et leur "
+           "nombre, la version du launcher et le système. Jamais : votre pseudo, vos "
+           "instances, vos fichiers, ni les plugins non signés. Le serveur ne garde que des "
+           "totaux par jour, sans votre adresse.",
+           "Helps the team quickly spot a misbehaving plugin, to revoke it. Sent at most once "
+           "an hour: the id and version of a SIGNED plugin, the reason for an incident "
+           "(forced stop, denied call, failed start) and their count, the launcher version "
+           "and the OS. Never: your username, your instances, your files, or unsigned "
+           "plugins. The server only keeps daily totals, without your address."));
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
 
     ImGui::BeginDisabled(!configured || busy);
     if (ImGui::Button(tr("Actualiser le catalogue", "Refresh catalog"), ImVec2(220, 30)))

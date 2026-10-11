@@ -95,8 +95,12 @@ def main() -> None:
     threading.Thread(target=console_loop, daemon=True).start()
     print(f"Marketplace : port {port}, {'HTTPS' if tls else 'HTTP (sans TLS)'}. "
           "Tapez « help » pour les commandes.", flush=True)
+    # Derrière le proxy HTTPS de l'hébergeur, l'adresse vue est celle du
+    # proxy : on lit celle qu'il transmet (X-Forwarded-For). Elle ne sert
+    # qu'à limiter le débit de la télémétrie — l'authentification ne
+    # dépend jamais de l'adresse, et l'adresse n'est jamais stockée.
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info",
-                server_header=False, **tls)
+                server_header=False, proxy_headers=True, forwarded_allow_ips="*", **tls)
 
 
 if __name__ == "__main__":

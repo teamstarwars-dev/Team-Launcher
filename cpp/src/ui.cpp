@@ -13,6 +13,7 @@
 #include "localapi.hpp"
 #include "modmeta.hpp"            // mods.list (API des plugins)
 #include "pipe_child.hpp"         // V8 : intégrité basse des plugins
+#include "plugin_telemetry.hpp"   // V8 : télémétrie anonyme (opt-in)
 #include "plugin_host_client.hpp" // V8 : plugins à service
 #include "plugin_proto.hpp"
 #include "plugins.hpp"
@@ -1161,6 +1162,8 @@ nlohmann::json public_instance(const nlohmann::json& e) {
 struct SvcState {
     std::string name;  // nom affichable, pour préfixer ses notifications
     std::string state; // texte pour la page Paramètres
+    std::string version;
+    bool isSigned = false; // seuls les plugins signés entrent dans la télémétrie
 };
 std::map<std::string, SvcState> g_svc; // services dont on a demandé le démarrage
 Uint32 g_svcLastScan = 0;
@@ -1248,6 +1251,10 @@ void plugin_event(const pluginhost::Event& e) {
     auto set = [&](const std::string& s) {
         if (it != g_svc.end()) it->second.state = s;
     };
+    // Télémétrie anonyme : seulement si l'utilisateur l'a activée, et
+    // seulement pour un plugin signé (identifiant public de la marketplace).
+    if (DataStore::settings.pluginTelemetry && it != g_svc.end() && it->second.isSigned)
+        plugtele::record(e.plugin, it->second.version, plugtele::classify(e.kind, e.detail));
     if (e.kind == "started") {
         set("en marche");
     } else if (e.kind == "failed") {
@@ -1330,7 +1337,8 @@ void plugin_services_pump() {
                 l.stderrPath = errLog.string();
                 std::string err;
                 if (pluginhost::start_plugin(l, &err)) {
-                    g_svc[id] = SvcState{p.name, "démarrage…"};
+                    g_svc[id] = SvcState{p.name, "démarrage…", p.version,
+                                         p.trust == plugins::Trust::Signed};
                     svc_trace("Plugin « " + p.name + " » : service démarré.");
                 } else {
                     svc_trace("Plugin « " + p.name + " » : " + err);

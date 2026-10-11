@@ -131,6 +131,9 @@ struct AppSettings {
     std::string marketplaceUrl;
     // Dernière liste de révocation récupérée avec succès (Unix).
     long long lastRevocationSyncUnix = 0;
+    // V8 : télémétrie anonyme des plugins signés (plugin_telemetry.hpp).
+    // DÉSACTIVÉE par défaut : c'est l'utilisateur qui coche.
+    bool pluginTelemetry = false;
     // Clés d'application de l'API (apikeys.hpp). On n'y range que des
     // EMPREINTES de secrets, jamais les secrets : lire ce fichier ne doit
     // pas permettre de s'authentifier.

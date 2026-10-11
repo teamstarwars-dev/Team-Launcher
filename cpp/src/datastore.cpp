@@ -421,6 +421,7 @@ static json serialize(const AppSettings& s) {
         {"PluginDevMode", s.pluginDevMode},
         {"MarketplaceUrl", s.marketplaceUrl},
         {"LastRevocationSyncUnix", s.lastRevocationSyncUnix},
+        {"PluginTelemetry", s.pluginTelemetry},
         {"ApiKeys", s.apiKeys},
         {"EventHooks", s.eventHooks},
     };
@@ -555,6 +556,7 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("PluginDevMode", s.pluginDevMode);
     getS("MarketplaceUrl", s.marketplaceUrl);
     getI64("LastRevocationSyncUnix", s.lastRevocationSyncUnix);
+    getB("PluginTelemetry", s.pluginTelemetry);
     getI("LocalApiPort", s.localApiPort);
     getSec("LocalApiToken", s.localApiToken);
     getA("ApiKeys", s.apiKeys);

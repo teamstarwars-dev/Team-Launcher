@@ -122,3 +122,22 @@ class Revocation(Base):
     # tel quel au launcher.
     content_json: Mapped[str] = mapped_column(Text)
     document: Mapped[str] = mapped_column(Text)
+
+
+class TelemetryDaily(Base):
+    """Télémétrie des plugins, AGRÉGÉE par jour.
+
+    Aucune adresse IP, aucun identifiant de poste, aucun événement
+    individuel : seulement « tel jour, telle version de tel plugin a été
+    arrêtée N fois pour telle raison ». C'est tout ce qu'il faut pour
+    repérer un plugin qui dérape, et rien de plus.
+    """
+
+    __tablename__ = "telemetry_daily"
+    __table_args__ = _TABLE
+
+    day: Mapped[int] = mapped_column(Integer, primary_key=True)  # AAAAMMJJ
+    plugin: Mapped[str] = mapped_column(String(64), primary_key=True)
+    version: Mapped[str] = mapped_column(String(32), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(24), primary_key=True)
+    count: Mapped[int] = mapped_column(BigInteger, default=0)

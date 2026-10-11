@@ -15,6 +15,7 @@ import difflib
 import io
 import json
 import re
+import time
 import zipfile
 from pathlib import Path
 from typing import Annotated, Iterator
@@ -24,7 +25,7 @@ from fastapi import Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DbSession, sessionmaker
 
 from . import models as m
@@ -83,6 +84,26 @@ class RevokeIn(BaseModel):
     releases: list[dict] = Field(default_factory=list, max_length=500)
     fileHashes: list[str] = Field(default_factory=list, max_length=500)
     note: str = Field(default="", max_length=4000)
+
+
+# Raisons comptées : celles que le launcher sait nommer (voir
+# cpp/src/plugin_telemetry.cpp). Rien de libre : aucun texte ne passe.
+TELEMETRY_KINDS = ("start_failed", "exited", "denied", "rate_abuse", "permission_probe",
+                   "invalid_requests", "bad_frame", "killed_other")
+
+
+class TelemetryEvent(BaseModel):
+    plugin: str = Field(max_length=64)
+    version: str = Field(max_length=32)
+    kind: str = Field(max_length=24)
+    count: int = Field(ge=1, le=10_000)
+
+
+class TelemetryIn(BaseModel):
+    v: int = Field(ge=1, le=1)
+    launcher: str = Field(default="", max_length=32)
+    os: str = Field(default="", max_length=16)
+    events: list[TelemetryEvent] = Field(max_length=200)
 
 
 class KillIn(BaseModel):
@@ -527,11 +548,61 @@ def create_app(settings: Settings, session_factory: sessionmaker, signer: Signer
         return _publish(s, ad.id, set_kill, "killswitch_on" if body.on else "killswitch_off",
                         body.note)
 
+    @adm_r.get("/telemetry")
+    def telemetry_summary(ad: Admin, s: Db, days: int = 7):
+        days = max(1, min(days, 90))
+        since = int(time.strftime("%Y%m%d", time.gmtime(security.now() - days * 86400)))
+        rows = s.execute(select(m.TelemetryDaily.plugin, m.TelemetryDaily.version,
+                                m.TelemetryDaily.kind, func.sum(m.TelemetryDaily.count))
+                         .where(m.TelemetryDaily.day >= since)
+                         .group_by(m.TelemetryDaily.plugin, m.TelemetryDaily.version,
+                                   m.TelemetryDaily.kind)).all()
+        out = [{"plugin": p, "version": v, "kind": k, "count": int(c)} for p, v, k, c in rows]
+        out.sort(key=lambda r: -r["count"])
+        return {"days": days, "rows": out}
+
     app.include_router(adm_r)
 
     # --- Public : ce que lit le launcher ------------------------------------------
 
     pub_r = APIRouter(prefix="/v1/public")
+
+    # Garde-fou par adresse, en mémoire seulement : l'adresse sert à limiter
+    # le débit pendant une heure et n'est JAMAIS écrite en base.
+    tele_seen: dict[str, list[float]] = {}
+
+    @pub_r.post("/telemetry", status_code=204)
+    def telemetry(body: TelemetryIn, request: Request, s: Db):
+        ip = request.client.host if request.client else "?"
+        now_f = time.monotonic()
+        recent = [t for t in tele_seen.get(ip, []) if now_f - t < 3600]
+        if len(recent) >= 12:
+            raise HTTPException(429, "trop d'envois")
+        recent.append(now_f)
+        tele_seen[ip] = recent
+        if len(tele_seen) > 50_000:  # borne la mémoire
+            tele_seen.clear()
+
+        # Ne compte que des versions PUBLIÉES : le point d'entrée est public,
+        # il ne doit pas servir à remplir la base de noms inventés.
+        published = {(p.slug, sub.version) for sub, p in s.execute(
+            select(m.Submission, m.Project)
+            .join(m.Project, m.Project.id == m.Submission.project_id)
+            .where(m.Project.kind == "plugin",
+                   m.Submission.status.in_(("approved", "revoked")))).all()}
+        day = int(time.strftime("%Y%m%d", time.gmtime(security.now())))
+        for e in body.events:
+            if e.kind not in TELEMETRY_KINDS or (e.plugin, e.version) not in published:
+                continue
+            row = s.get(m.TelemetryDaily, (day, e.plugin, e.version, e.kind))
+            if row is None:
+                s.add(m.TelemetryDaily(day=day, plugin=e.plugin, version=e.version,
+                                       kind=e.kind, count=e.count))
+            else:
+                row.count += e.count
+            s.flush()
+        s.commit()
+        return Response(status_code=204)
 
     @pub_r.get("/revocations", response_class=PlainTextResponse)
     def revocations(s: Db):
