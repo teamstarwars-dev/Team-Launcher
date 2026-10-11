@@ -75,12 +75,14 @@ panneau** sert de console d'administration (`help`, `list`,
 
 ## Cérémonie des clés (hors ligne)
 
-Sur une machine déconnectée, racine sur support amovible (deux copies) :
+Réseau coupé pendant la cérémonie. La racine n'est écrite que **chiffrée**
+(phrase de passe, Argon2id) : `root.key.enc` peut être copié n'importe où,
+il ne sert à rien sans la phrase. Une sauvegarde **papier** (64 caractères +
+contrôle) permet de la reconstituer (`restore-root`).
 
 ```bash
-python -m tools.keys root-init --out /media/cle/tl-root
-python -m tools.keys issue --root /media/cle/tl-root/root.key \
-    --key-id market-2026a --usages plugin,mod,revocation --days 365 --out ./keys
+python -m tools.keys root-init --out ~/tl-root
+python -m tools.keys issue --root ~/tl-root/root.key.enc     --key-id market-2026a --usages plugin,mod,revocation --days 365 --out ~/tl-keys
 ```
 
 `root-init` affiche la ligne à coller dans `kBuiltinRoots`. Copier
