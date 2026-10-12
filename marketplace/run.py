@@ -41,6 +41,7 @@ HELP = """Commandes de la console :
   grant <email> reviewer|admin donner un rôle
   revoke <email> reviewer|admin retirer un rôle
   reset-2fa <email>            effacer la 2FA (après vérification d'identité)
+  set-password <email> [mdp]   nouveau mot de passe (généré si omis)
   help                         cette aide"""
 
 

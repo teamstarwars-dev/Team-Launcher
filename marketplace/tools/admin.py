@@ -4,11 +4,13 @@ relecteur ne doit pas être possible depuis Internet).
     python -m tools.admin grant   dev@example.org reviewer
     python -m tools.admin revoke  dev@example.org admin
     python -m tools.admin reset-2fa dev@example.org
+    python -m tools.admin set-password dev@example.org [motdepasse]
     python -m tools.admin list
 """
 
 from __future__ import annotations
 
+import secrets
 import sys
 
 from sqlalchemy import select
@@ -51,6 +53,16 @@ def main(argv: list[str]) -> int:
             dev.totp_secret_enc = ""
             s.query(m.Session).filter(m.Session.developer_id == dev.id).delete()
             action = "totp_reset"
+        elif argv[0] == "set-password":
+            # Mot de passe donné en 3e argument, sinon on en génère un fort.
+            # Toutes les sessions tombent ; le verrouillage éventuel est levé.
+            new_password = argv[2] if len(argv) >= 3 else secrets.token_urlsafe(12)
+            dev.password_hash = security.hash_password(new_password)
+            dev.failed_logins = 0
+            dev.locked_until = 0
+            s.query(m.Session).filter(m.Session.developer_id == dev.id).delete()
+            print(f"Nouveau mot de passe : {new_password}")
+            action = "password_reset"
         else:
             print(__doc__)
             return 1
