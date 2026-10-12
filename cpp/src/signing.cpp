@@ -31,7 +31,7 @@ constexpr std::size_t kMaxFiles = 4096;
 constexpr std::uintmax_t kMaxTotalBytes = 512ull * 1024 * 1024;
 constexpr std::uintmax_t kMaxSigFile = 1024 * 1024;
 
-const char* const kKnownUsages[] = {"plugin", "mod", "revocation"};
+const char* const kKnownUsages[] = {"plugin", "mod", "revocation", "launcher"};
 
 // --- Racines épinglées ------------------------------------------------------
 //
@@ -284,6 +284,57 @@ Verdict verify_plugin_dir(const fs::path& dir, const std::string& pluginId,
                           const std::string& version, const Roots& roots,
                           const Revocations* revs, std::int64_t now) {
     return verify_release_dir(dir, Kind::Plugin, pluginId, version, roots, revs, now);
+}
+
+Verdict verify_update(const fs::path& packageFile, const std::string& sigText,
+                      const Roots& roots, std::int64_t now) {
+    Verdict v;
+    auto invalid = [&](const std::string& why) {
+        v.status = Status::Invalid;
+        v.detail = why;
+        return v;
+    };
+    const json doc = parse_obj(sigText);
+    if (doc.is_null() || doc.value("v", 0) != 1 || !doc.contains("cert") ||
+        !doc.contains("release"))
+        return invalid("signature de mise à jour mal formée");
+
+    std::string err;
+    const auto cert = open_cert(doc["cert"], roots, &err);
+    if (!cert) {
+        // Sans racine compilée, on ne PEUT pas vérifier : refus franc (une
+        // mise à jour non vérifiable ne s'installe pas).
+        if (roots.keys.empty()) {
+            v.status = Status::Unsigned;
+            v.detail = err;
+            return v;
+        }
+        return invalid(err);
+    }
+    if (!cert->usages.count("launcher"))
+        return invalid("certificat non habilité à signer le launcher");
+    v.keyId = cert->keyId;
+
+    const auto payload = open_signed(doc["release"], cert->pub);
+    if (!payload) return invalid("signature de mise à jour invalide");
+    const json rel = parse_obj(*payload);
+    if (rel.is_null() || rel.value("type", "") != "tl-launcher-release" ||
+        rel.value("v", 0) != 1)
+        return invalid("publication de mise à jour mal formée");
+    if (rel.value("keyId", "") != cert->keyId)
+        return invalid("publication et certificat discordants");
+    if (!rel.contains("signedAt") || !rel["signedAt"].is_number_integer() ||
+        !within(*cert, rel["signedAt"].get<std::int64_t>(), now))
+        return invalid("signature hors de la période de validité du certificat");
+    const auto sha = rel.find("sha512");
+    if (sha == rel.end() || !sha->is_string())
+        return invalid("publication de mise à jour sans empreinte");
+    const auto got = sha512_file_hex(packageFile);
+    if (!got) return invalid("paquet de mise à jour illisible");
+    if (*got != sha->get<std::string>())
+        return invalid("empreinte du paquet de mise à jour incorrecte");
+    v.status = Status::Valid;
+    return v;
 }
 
 Verdict verify_release_dir(const fs::path& dir, Kind kind, const std::string& pluginId,

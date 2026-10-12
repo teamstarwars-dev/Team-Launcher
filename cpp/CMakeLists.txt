@@ -246,6 +246,8 @@ set(TL_CORE_SOURCES
   src/plugin_telemetry.cpp
   third_party/monocypher/src/monocypher.c
   third_party/monocypher/src/optional/monocypher-ed25519.c
+  # V8 : QR code de la connexion Microsoft (Nayuki, MIT).
+  third_party/qrcodegen/cpp/qrcodegen.cpp
 )
 add_library(tl_core STATIC ${TL_CORE_SOURCES})
 target_include_directories(tl_core PUBLIC
@@ -253,6 +255,7 @@ target_include_directories(tl_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/miniz
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/src
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/src/optional
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/qrcodegen/cpp
 )
 # crypt32 : DPAPI + base64 (jetons MsAuth) ; shell32 : ouverture du navigateur
 # bcrypt : plus utilise pour SHA-1/MD5 (portables depuis l etape 5), mais
@@ -607,6 +610,7 @@ if(TL_BUILD_TESTS)
     "tests/test_plugin_proto.cpp|TLTestPluginProto"
     "tests/test_plugin_host.cpp|TLTestPluginHost"
     "tests/test_signing.cpp|TLTestSigning"
+    "tests/poc_revocation.cpp|TLPocRevocation"
     "tests/test_marketplace.cpp|TLTestMarketplace"
     "tests/test_lowintegrity.cpp|TLTestLowIntegrity"
     "tests/test_plugin_telemetry.cpp|TLTestPluginTelemetry"

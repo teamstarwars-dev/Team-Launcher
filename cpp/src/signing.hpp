@@ -107,6 +107,16 @@ Verdict verify_release_dir(const std::filesystem::path& dir, Kind kind, const st
                            const std::string& version, const Roots& roots,
                            const Revocations* revs, std::int64_t now);
 
+// Vérifie un PAQUET de mise à jour du launcher (auto-update) : signature
+// Ed25519 jusqu'à une racine compilée (usage « launcher »), période de
+// validité, et SHA-512 du fichier identique à celui signé. `sigText` est le
+// document { "v":1, "cert":…, "release":{ "type":"tl-launcher-release",
+// "version", "keyId", "signedAt", "sha512" } } publié à côté du paquet.
+// Valid = installable. Tout le reste (y compris « non vérifiable faute de
+// racine ») interdit l'installation.
+Verdict verify_update(const std::filesystem::path& packageFile, const std::string& sigText,
+                      const Roots& roots, std::int64_t now);
+
 // --- Utilitaires exposés pour les tests et l'outillage ---------------------
 
 std::optional<std::string> sha512_file_hex(const std::filesystem::path& p);

@@ -17,6 +17,9 @@
 #include "game_installer.hpp"
 #include "game_launcher.hpp"
 #include "http_win.hpp"
+#include "signing.hpp" // V8 : vérification de signature de l'auto-update
+
+#include <ctime>
 #include "startup.hpp" // exe_path_utf8 (deploiement : installe ou portable)
 #include "util_str.hpp" // wide_to_utf8 (wstr_to_utf8_local)
 #include "util_zip.hpp" // zip_extract_all (maj Linux en process)
@@ -617,16 +620,29 @@ bool download_update(const Info& info, ProgressFn progress,
         }
         return false;
     }
-    // DIVERGENCE : pas de signature Velopack ; integrity = taille annoncee.
-    if (info.assetSize > 0) {
-        const uintmax_t got = fs::file_size(part, ec);
-        if (ec || got != static_cast<uintmax_t>(info.assetSize)) {
-            fs::remove(part, ec);
-            if (errOut)
-                *errOut = "Paquet incomplet ou corrompu (taille inattendue) : "
-                          "téléchargement refusé.";
-            return false;
-        }
+    // Intégrité ET authenticité : le paquet doit être SIGNÉ par la racine
+    // Ed25519 compilée (usage « launcher »). Le document de signature est
+    // publié à côté du paquet, à l'URL <asset>.sig, et porte le SHA-512 du
+    // paquet. Sans lui, ou s'il est invalide, on REFUSE (fail-closed). Ceci
+    // remplace l'ancien contrôle de taille, qui ne prouvait rien : un
+    // attaquant maîtrisant la release servait un zip malveillant de même
+    // taille.
+    signing::Verdict verdict;
+    if (const auto sigText = http::get_string(info.assetUrl + ".sig", cancel))
+        verdict = signing::verify_update(part, *sigText, signing::builtin_roots(),
+                                         static_cast<std::int64_t>(std::time(nullptr)));
+    else {
+        verdict.status = signing::Status::Invalid;
+        verdict.detail = "signature de mise à jour introuvable";
+    }
+    if (verdict.status != signing::Status::Valid) {
+        fs::remove(part, ec);
+        if (errOut)
+            *errOut = "Mise à jour refusée (" +
+                      (verdict.detail.empty() ? std::string("signature invalide")
+                                              : verdict.detail) +
+                      ").";
+        return false;
     }
     fs::remove(dest, ec);
     ec.clear();

@@ -371,6 +371,45 @@ int main() {
                   Status::Revoked);
     }
 
+    // =====================================================================
+    // 6. Auto-update signé (verify_update) — H1
+    // =====================================================================
+    {
+        const fs::path pkg = base / "update.zip";
+        write(pkg, "contenu du paquet de mise a jour");
+        const std::string sha = signing::sha512_hex("contenu du paquet de mise a jour");
+        auto sig = [&](const std::vector<std::string>& usages, const std::string& shaOver) {
+            const json rel{{"type", "tl-launcher-release"}, {"v", 1}, {"version", "9.9.9"},
+                           {"keyId", "int-up"}, {"signedAt", 2000000000},
+                           {"sha512", shaOver.empty() ? sha : shaOver}};
+            return json{{"v", 1}, {"cert", make_cert(root, inter, "int-up", usages)},
+                        {"release", sign_obj(rel.dump(), inter)}}.dump();
+        };
+        // Signée par une clé « launcher », empreinte correcte -> installable.
+        CHECK(signing::verify_update(pkg, sig({"launcher"}, ""), roots, kNow).status ==
+              Status::Valid);
+        // Certificat sans usage « launcher » -> refus.
+        CHECK(signing::verify_update(pkg, sig({"plugin", "mod"}, ""), roots, kNow).status ==
+              Status::Invalid);
+        // Empreinte qui ne correspond pas au paquet (paquet substitué) -> refus.
+        CHECK(signing::verify_update(pkg, sig({"launcher"}, std::string(128, 'a')), roots, kNow)
+                  .status == Status::Invalid);
+        // Signé hors racine -> refus.
+        {
+            const json rel{{"type", "tl-launcher-release"}, {"v", 1}, {"version", "9.9.9"},
+                           {"keyId", "int-up"}, {"signedAt", 2000000000}, {"sha512", sha}};
+            const std::string bad =
+                json{{"v", 1}, {"cert", make_cert(other, inter, "int-up", {"launcher"})},
+                     {"release", sign_obj(rel.dump(), inter)}}.dump();
+            CHECK(signing::verify_update(pkg, bad, roots, kNow).status == Status::Invalid);
+        }
+        // Sans racine compilée -> non vérifiable, donc refus (Unsigned, pas Valid).
+        CHECK(signing::verify_update(pkg, sig({"launcher"}, ""), signing::Roots{}, kNow).status ==
+              Status::Unsigned);
+        // Document mal formé -> refus.
+        CHECK(signing::verify_update(pkg, "pas du json", roots, kNow).status == Status::Invalid);
+    }
+
     fs::remove_all(base, ec);
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
