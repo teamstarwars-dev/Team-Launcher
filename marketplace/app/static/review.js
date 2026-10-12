@@ -483,12 +483,11 @@ async function addKey(kind) {
   } else {
     status("Branchez votre clé de sécurité, entrez son code PIN, puis touchez-la.");
   }
-  const name = $("#key-name").value.trim();
+  // Nom laissé vide : le serveur met « Windows Hello » ou « Clé FIDO2 » par défaut.
   try {
     const o = await api("POST", "/v1/auth/webauthn/register/options", { kind });
     const cred = await navigator.credentials.create({ publicKey: creationOptions(o) });
-    await api("POST", "/v1/auth/webauthn/register/verify", { kind, name, credential: credentialJson(cred) });
-    $("#key-name").value = "";
+    await api("POST", "/v1/auth/webauthn/register/verify", { kind, name: "", credential: credentialJson(cred) });
     status(kind === "platform" ? "Windows Hello ajouté : vous pourrez l'utiliser à la prochaine connexion."
                                : "Clé FIDO2 ajoutée : vous pourrez l'utiliser à la prochaine connexion.");
     loadKeys();
