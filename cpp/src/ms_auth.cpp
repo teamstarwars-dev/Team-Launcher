@@ -13,6 +13,7 @@
 #include "http_win.hpp"
 #include "proc.hpp" // open_detached (POSIX) ; vide sous Windows
 #include "obf.hpp" // endpoints et ID client obfusses (S3)
+#include "util_hash.hpp" // sha256_hex_of : entropie DPAPI du jeton (M5)
 
 #include <nlohmann/json.hpp>
 
@@ -106,6 +107,20 @@ struct WipeGuard {
     std::string& s;
     ~WipeGuard() { secure_wipe(s); }
 };
+
+// M5 : entropie secondaire DPAPI, propre a l'application, liee au jeton
+// Microsoft au repos (session et refresh). Ce n'est PAS la graine qui est
+// stockee : .rdata ne porte qu'une graine obfusquee (S3), et l'entropie est
+// son SHA-256, calcule a l'execution. Sans cette valeur, un autre processus
+// du meme utilisateur ne peut plus dechiffrer le jeton par un simple
+// CryptUnprotectData sur le fichier. Limite assumee : un reverse du binaire
+// peut reconstituer la graine ; le cout passe de « copier le fichier » a
+// « extraire aussi cette valeur de l'application ».
+const std::string& ms_token_entropy() {
+    static const std::string v =
+        tl::sha256_hex_of(TL_OBF("TeamLauncher/v8/ms-token/dpapi-entropy"));
+    return v;
+}
 
 // ---------------------------------------------------------------------------
 // Fichiers
@@ -316,8 +331,12 @@ std::optional<AuthSession> try_load_session_cache() {
             auth_log("Cache disque : token vide.");
             return std::nullopt;
         }
-        // Chiffre DPAPI, ou ancien format en clair.
-        s.token = dpapi_unprotect_b64(tokenRaw).value_or(tokenRaw);
+        // M5 : chiffre DPAPI AVEC entropie ; repli sur l'ancien format (sans
+        // entropie), puis sur le clair historique. Un cache ecrit par une
+        // version anterieure reste donc lisible, et sera resauvegarde avec
+        // entropie au prochain enregistrement.
+        s.token = dpapi_unprotect_b64(tokenRaw, ms_token_entropy())
+                      .value_or(dpapi_unprotect_b64(tokenRaw).value_or(tokenRaw));
         // expiresAt = moment ou le JETON MINECRAFT doit etre regenere (~23 h),
         // a ne pas confondre avec kSessionTtlSec (conservation du fichier).
         s.expiresAt = ts + kMcTokenFreshSec;
@@ -338,7 +357,7 @@ void save_session_cache(const AuthSession& s) {
         // d'accès complet au compte) à tout processus lisant le profil. La
         // session reste utilisable en mémoire jusqu'à la fermeture ; seule la
         // LECTURE du format clair est conservée (compat fichiers v5).
-        auto cipher = dpapi_protect_b64(s.token);
+        auto cipher = dpapi_protect_b64(s.token, ms_token_entropy());
         if (!cipher) {
             auth_log("SaveSessionCache : DPAPI indisponible, session non "
                      "conservée (mémoire seule).");
@@ -370,12 +389,14 @@ std::optional<std::string> try_load_refresh_token() {
     std::string t = raw->substr(b, e - b + 1);
     WipeGuard tGuard{t};
     if (t.empty()) return std::nullopt;
-    return dpapi_unprotect_b64(t).value_or(t); // ancien format en clair
+    // M5 : entropie d'abord, repli sans entropie, puis clair historique.
+    return dpapi_unprotect_b64(t, ms_token_entropy())
+        .value_or(dpapi_unprotect_b64(t).value_or(t));
 }
 
 void save_refresh_token(const std::string& token) {
     if (token.empty()) return;
-    auto cipher = dpapi_protect_b64(token);
+    auto cipher = dpapi_protect_b64(token, ms_token_entropy());
     if (!cipher) {
         auth_log("SaveRefreshToken : DPAPI indisponible, jeton non conservé.");
         return;

@@ -25,6 +25,17 @@ std::optional<std::string> b64_decode(const std::string& s);
 std::optional<std::string> dpapi_protect_b64(const std::string& clear);
 std::optional<std::string> dpapi_unprotect_b64(const std::string& b64);
 
+// M5 : idem avec une entropie secondaire (pOptionalEntropy). Le dechiffrement
+// exige la MEME entropie. Reserve au jeton Microsoft au repos : un autre
+// processus du meme utilisateur ne peut plus le dechiffrer sans connaitre
+// aussi cette valeur propre a l'application. Entropie vide = comportement des
+// versions sans entropie. Sous POSIX l'entropie est ignoree (le trousseau
+// isole deja par entree).
+std::optional<std::string> dpapi_protect_b64(const std::string& clear,
+                                             const std::string& entropy);
+std::optional<std::string> dpapi_unprotect_b64(const std::string& b64,
+                                               const std::string& entropy);
+
 // Effacement sûr d'un secret en mémoire (SecureZeroMemory, anti-optimiseur).
 void secure_wipe(std::string& s);
 

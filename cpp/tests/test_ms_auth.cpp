@@ -108,6 +108,34 @@ int main() {
     CHECK(!detail::dpapi_unprotect_b64(b64("texte en clair")).has_value());
     CHECK(!detail::dpapi_unprotect_b64("").has_value());
 
+    // --- 2bis. M5 : entropie secondaire liee au jeton MS ---
+    // Le jeton chiffre AVEC entropie ne se dechiffre qu'avec la MEME entropie.
+    // Une autre entropie (ou aucune) echoue : un simple CryptUnprotectData sur
+    // le fichier ne suffit plus.
+    {
+        const std::string ent = "entropie-propre-a-l-application";
+        const std::string autre = "une-autre-entropie";
+        auto c = detail::dpapi_protect_b64(secret, ent);
+        CHECK(c.has_value());
+        if (c) {
+            CHECK(c->find(secret) == std::string::npos);
+            // Bonne entropie -> OK.
+            CHECK_EQ(detail::dpapi_unprotect_b64(*c, ent).value_or(""), secret);
+#ifdef _WIN32
+            // Mauvaise entropie / aucune -> echec (Windows : l'entropie lie
+            // reellement le blob). Sous POSIX l'entropie est ignoree (trousseau).
+            CHECK(!detail::dpapi_unprotect_b64(*c, autre).has_value());
+            CHECK(!detail::dpapi_unprotect_b64(*c).has_value());
+#else
+            (void)autre;
+#endif
+        }
+        // Entropie vide == comportement sans entropie (compat).
+        auto c0 = detail::dpapi_protect_b64(secret, "");
+        CHECK(c0.has_value());
+        if (c0) CHECK_EQ(detail::dpapi_unprotect_b64(*c0, "").value_or(""), secret);
+    }
+
     // --- 3. Encodage de formulaire (FormUrlEncodedContent C#) ---
     CHECK_EQ(detail::url_encode("abcXYZ019-_.~"), std::string("abcXYZ019-_.~"));
     CHECK_EQ(detail::url_encode("service::user.auth.xboxlive.com::MBI_SSL"),

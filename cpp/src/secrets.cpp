@@ -89,6 +89,45 @@ std::optional<std::string> dpapi_unprotect_b64(const std::string& b64) {
     return clear;
 }
 
+// M5 : variantes avec entropie secondaire (pOptionalEntropy de DPAPI). Le
+// jeton Microsoft au repos s'y lie a une valeur propre a l'application : un
+// autre processus du meme utilisateur ne peut plus le dechiffrer par un
+// simple CryptUnprotectData sur le fichier ; il lui faut AUSSI cette entropie.
+std::optional<std::string> dpapi_protect_b64(const std::string& clear,
+                                             const std::string& entropy) {
+    if (entropy.empty()) return dpapi_protect_b64(clear);
+    DATA_BLOB in{static_cast<DWORD>(clear.size()),
+                 reinterpret_cast<BYTE*>(const_cast<char*>(clear.data()))};
+    DATA_BLOB ent{static_cast<DWORD>(entropy.size()),
+                  reinterpret_cast<BYTE*>(const_cast<char*>(entropy.data()))};
+    DATA_BLOB out{};
+    if (!CryptProtectData(&in, nullptr, &ent, nullptr, nullptr,
+                          CRYPTPROTECT_UI_FORBIDDEN, &out))
+        return std::nullopt;
+    std::string b64 = b64_encode(out.pbData, out.cbData);
+    LocalFree(out.pbData);
+    if (b64.empty()) return std::nullopt;
+    return b64;
+}
+
+std::optional<std::string> dpapi_unprotect_b64(const std::string& b64,
+                                               const std::string& entropy) {
+    if (entropy.empty()) return dpapi_unprotect_b64(b64);
+    auto raw = b64_decode(b64);
+    if (!raw || raw->empty()) return std::nullopt;
+    DATA_BLOB in{static_cast<DWORD>(raw->size()),
+                 reinterpret_cast<BYTE*>(raw->data())};
+    DATA_BLOB ent{static_cast<DWORD>(entropy.size()),
+                  reinterpret_cast<BYTE*>(const_cast<char*>(entropy.data()))};
+    DATA_BLOB out{};
+    if (!CryptUnprotectData(&in, nullptr, &ent, nullptr, nullptr,
+                            CRYPTPROTECT_UI_FORBIDDEN, &out))
+        return std::nullopt;
+    std::string clear(reinterpret_cast<char*>(out.pbData), out.cbData);
+    LocalFree(out.pbData);
+    return clear;
+}
+
 // Les std::string ne s'effacent pas a la destruction : tout secret dont la
 // duree de vie est terminee est ecrase explicitement. SecureZeroMemory est
 // opaque pour l'optimiseur (pas d'elision).
@@ -317,6 +356,19 @@ std::optional<std::string> dpapi_unprotect_b64(const std::string& b64) {
     if (raw->rfind(kKsTag, 0) == 0) return keyring_lookup(raw->substr(3));
     if (raw->rfind(kLocalTag, 0) == 0) return local_lookup(raw->substr(6));
     return std::nullopt; // format inconnu (ex. blob DPAPI Windows)
+}
+
+// M5 : l'entropie secondaire est un concept DPAPI (Windows). Ici le stockage
+// passe par le trousseau systeme (ou un fichier 0600), deja isole par entree :
+// l'entropie n'ajoute rien, on delegue aux versions sans entropie.
+std::optional<std::string> dpapi_protect_b64(const std::string& clear,
+                                             const std::string&) {
+    return dpapi_protect_b64(clear);
+}
+
+std::optional<std::string> dpapi_unprotect_b64(const std::string& b64,
+                                               const std::string&) {
+    return dpapi_unprotect_b64(b64);
 }
 
 bool insecure_fallback_active() { return g_insecure.load(); }
