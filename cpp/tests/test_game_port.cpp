@@ -196,6 +196,47 @@ int main() {
                      std::string("3b0c8ac703f828b04c6c197006d17218"));
         }
 
+        // --- 5ter. SHA-256 : vecteurs officiels + garde anti-alteration ---
+        // M1 : le JRE Adoptium est desormais verifie contre l'empreinte
+        // SHA-256 publiee par l'API. Ces vecteurs (RFC 6234) verrouillent la
+        // nouvelle primitive, y compris le bourrage multi-bloc et le long
+        // flux ; le dernier cas prouve qu'un seul octet modifie suffit a
+        // changer le hash (donc a refuser un paquet altere).
+        {
+            auto sha256_of = [&](const std::string& data, const char* tag) {
+                const fs::path f = tmp / (std::string("sha256-") + tag + ".bin");
+                { std::ofstream o(f, std::ios::binary); o << data; }
+                return sha256_hex(f);
+            };
+            auto expect = [&](const std::string& data, const char* tag,
+                              const char* hex) {
+                const auto h = sha256_of(data, tag);
+                CHECK(h.has_value());
+                if (h) CHECK_EQ(*h, std::string(hex));
+                // Meme resultat via l'API en memoire.
+                CHECK_EQ(sha256_hex_of(data), std::string(hex));
+            };
+
+            expect("", "vide",
+                   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+            expect("abc", "abc",
+                   "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+            expect("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
+                   "rfc2",
+                   "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+            // 1 million de 'a' : vecteur long de la RFC, decoupage multi-bloc.
+            expect(std::string(1000000, 'a'), "a1m",
+                   "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+
+            CHECK(!sha256_hex(tmp / "absent-256.txt").has_value());
+
+            // Garde anti-alteration : un octet change -> empreinte differente.
+            const std::string genuine(4096, 'X');
+            std::string tampered = genuine;
+            tampered[2048] = 'Y';
+            CHECK(sha256_hex_of(genuine) != sha256_hex_of(tampered));
+        }
+
         // --- 5bis. RAM idéale (règle déjà spécifiée dans l'en-tête) ---
         // Moitié de la RAM physique, bornée [2, 8] Go ; 4 Go si la machine
         // est indéterminée. La fonction etait DECLAREE mais jamais definie

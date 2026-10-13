@@ -21,6 +21,13 @@ std::optional<std::string> sha1_hex(const std::filesystem::path& file);
 // du fichier de configuration ne suffise pas a s'authentifier.
 std::string sha1_hex_of(std::string_view data);
 
+// SHA-256 (RFC 6234), hexa minuscule ; nullopt si lecture/hash impossible.
+// Impose par l'API Adoptium sur le JRE/JDK telecharge (le seul contenu
+// execute dont l'empreinte faisant autorite est publiee separement du
+// binaire) : voir download_java.
+std::optional<std::string> sha256_hex(const std::filesystem::path& file);
+std::string sha256_hex_of(std::string_view data);
+
 // MD5 brut (16 octets) d'une donnee en memoire ; nullopt si echec.
 std::optional<std::array<unsigned char, 16>> md5_digest(std::string_view data);
 

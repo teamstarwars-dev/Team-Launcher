@@ -322,7 +322,12 @@ json get_version_json(const std::string& versionId, std::atomic<bool>& cancel) {
         if (v.at("id").get<std::string>() != versionId) continue;
         std::error_code ec2;
         fs::create_directories(localPath.parent_path(), ec2);
-        download_file(v.at("url").get<std::string>(), localPath, nullptr, &cancel,
+        // Le manifeste (piston-meta, TLS) publie le sha1 du JSON de version :
+        // on l'impose, sinon un JSON substitue reorienterait TOUS les
+        // telechargements suivants (jar client, bibliotheques, assets).
+        const std::string vsha = v.value("sha1", "");
+        download_file(v.at("url").get<std::string>(), localPath,
+                      vsha.empty() ? nullptr : &vsha, &cancel,
                       /*quiet=*/true, /*fast=*/false);
         std::ifstream in(localPath, std::ios::binary);
         if (!in) throw std::runtime_error("version json illisible : " + versionId);
@@ -484,8 +489,11 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
         const fs::path indexPath =
             assets_dir() / "indexes" / (assetsIndexName + ".json");
         fs::create_directories(indexPath.parent_path(), ec);
+        // Le JSON de version (deja verifie) publie le sha1 de l'index d'assets :
+        // on l'impose, sinon l'index dicterait des hash d'objets arbitraires.
+        const std::string idxSha = vjson.at("assetIndex").value("sha1", "");
         download_file(vjson.at("assetIndex").at("url").get<std::string>(), indexPath,
-                      nullptr, &cancel, false, false);
+                      idxSha.empty() ? nullptr : &idxSha, &cancel, false, false);
 
         std::ifstream iin(indexPath, std::ios::binary);
         std::ostringstream iss;

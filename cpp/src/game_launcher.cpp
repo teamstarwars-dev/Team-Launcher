@@ -385,20 +385,52 @@ std::optional<std::string> download_java(int major, bool wantJdk,
         }
 
         const std::string flavour = wantJdk ? "jdk" : "jre";
-        const std::string url =
-            "https://api.adoptium.net/v3/binary/latest/" + std::to_string(major) +
 #ifdef _WIN32
-            "/ga/windows/x64/" + flavour + "/hotspot/normal/eclipse";
+        const char* osName = "windows";
 #else
-            "/ga/linux/x64/" + flavour + "/hotspot/normal/eclipse";
+        const char* osName = "linux";
 #endif
+        // API *assets* (et non */binary/latest*) : elle publie, A COTE du
+        // lien de telechargement, l'empreinte SHA-256 du paquet. On la lit
+        // d'abord, puis on l'impose apres telechargement : sans ce controle,
+        // le JRE etait extrait et EXECUTE (javaw) sans aucune verification —
+        // un paquet altere en transit ou par un miroir compromis passait.
+        const std::string metaUrl =
+            "https://api.adoptium.net/v3/assets/latest/" + std::to_string(major) +
+            "/hotspot?architecture=x64&image_type=" + flavour + "&os=" + osName +
+            "&vendor=eclipse";
+        const auto metaBody = http::get_string(metaUrl, &cancel);
+        if (!metaBody) throw std::runtime_error("metadonnees adoptium indisponibles");
+
+        std::string binUrl, expectedSha;
+        {
+            const auto arr = nlohmann::json::parse(*metaBody);
+            if (!arr.is_array() || arr.empty())
+                throw std::runtime_error("adoptium : aucun paquet pour Java " +
+                                         std::to_string(major));
+            const auto& pkg = arr.front().at("binary").at("package");
+            binUrl = pkg.at("link").get<std::string>();
+            expectedSha = pkg.value("checksum", "");
+        }
+        // Pas d'empreinte publiee = on refuse (fail-closed) : on ne lance pas
+        // un paquet qu'on ne peut pas verifier.
+        if (expectedSha.empty())
+            throw std::runtime_error("adoptium : empreinte SHA-256 absente");
+        for (char& c : expectedSha) c = static_cast<char>(std::tolower((unsigned char)c));
+
         const fs::path zipPath =
             runtimeRoot / ("adoptium-" + flavour + "-" + std::to_string(major) + ".zip");
         std::error_code ec;
         fs::create_directories(runtimeRoot, ec);
 
-        if (!http::get_to_file(url, zipPath, nullptr, &cancel))
+        if (!http::get_to_file(binUrl, zipPath, nullptr, &cancel))
             throw std::runtime_error("download adoptium");
+
+        const auto got = sha256_hex(zipPath);
+        if (!got || *got != expectedSha) {
+            fs::remove(zipPath, ec);
+            throw std::runtime_error("adoptium : empreinte SHA-256 non conforme");
+        }
 
         if (status) status("Extraction de Java...");
         fs::remove_all(jreDir, ec);
