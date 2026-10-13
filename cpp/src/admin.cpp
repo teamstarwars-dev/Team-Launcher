@@ -17,10 +17,12 @@
 #include "http_win.hpp"
 #include "maintenance.hpp"   // updates::current_version
 
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
 #include <mutex>
+#include <string>
 #include <thread>
 
 namespace fs = std::filesystem;
@@ -92,12 +94,35 @@ std::string base_url() {
     return u;
 }
 
+// M4 : la telemetrie d'administration ne part JAMAIS en clair. On exige
+// https://, sauf vers une boucle locale (mise au point). Le defaut historique
+// etait « http://<IP>:3000 » : les donnees machine partaient en HTTP.
+bool secure_or_local(const std::string& url) {
+    auto istarts = [&](const char* p) {
+        const size_t n = std::char_traits<char>::length(p);
+        if (url.size() < n) return false;
+        for (size_t i = 0; i < n; ++i)
+            if (std::tolower(static_cast<unsigned char>(url[i])) !=
+                static_cast<unsigned char>(p[i]))
+                return false;
+        return true;
+    };
+    if (istarts("https://")) return true;
+    // Boucle locale en http toleree pour le developpement.
+    return istarts("http://localhost") || istarts("http://127.0.0.1") ||
+           istarts("http://[::1]");
+}
+
 // Envoi non bloquant : un thread detache par message serait couteux, on
 // reutilise le thread de battement quand il tourne, sinon envoi direct depuis
 // l'appelant (les appels ponctuels sont deja hors du fil UI).
 void post(const std::string& path, const json& payload) {
     const std::string url = base_url();
     if (url.empty()) return;
+    if (!secure_or_local(url)) {
+        log_line("[Admin] URL non HTTPS : télémétrie d'administration non envoyée.");
+        return;
+    }
     http::post_string(url + "/" + path, payload.dump(), "application/json");
 }
 

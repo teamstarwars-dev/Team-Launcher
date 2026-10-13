@@ -60,4 +60,15 @@ void allow_host(const std::string& hostUtf8);
 // query sensibles). Fonctionne aussi sur un chemin + query seul.
 std::string redact_url(const std::string& url);
 
+// --- Securite M4 : redirections sures --------------------------------------
+// Valide la cible d'une redirection HTTP. `location` (en-tete Location,
+// absolue ou relative) est resolue par rapport a `currentUrl`, puis refusee
+// si : schema non http(s) ; downgrade https -> http ; hote hors allowlist.
+// Rend l'URL absolue a suivre, ou nullopt = redirection REFUSEE.
+// Les deux transports (WinHTTP et libcurl) suivent les redirections A LA MAIN
+// en passant par ici : l'allowlist d'hotes vaut donc a CHAQUE saut, pas
+// seulement sur l'URL initiale.
+std::optional<std::string> allowed_redirect(const std::string& currentUrl,
+                                            const std::string& location);
+
 } // namespace tl::http

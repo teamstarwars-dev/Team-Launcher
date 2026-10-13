@@ -429,6 +429,36 @@ long long content_length(const Handle& req) {
     return -1;
 }
 
+// true si le status HTTP est une redirection a suivre.
+bool is_redirect(DWORD status) {
+    return status == 301 || status == 302 || status == 303 || status == 307 ||
+           status == 308;
+}
+
+// En-tete Location de la reponse (UTF-8), nullopt si absent.
+std::optional<std::string> query_location(const Handle& req) {
+    DWORD len = 0;
+    WinHttpQueryHeaders(req.h, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
+                        nullptr, &len, WINHTTP_NO_HEADER_INDEX);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || len == 0) return std::nullopt;
+    std::wstring w(len / sizeof(wchar_t), L'\0');
+    if (!WinHttpQueryHeaders(req.h, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
+                             w.data(), &len, WINHTTP_NO_HEADER_INDEX))
+        return std::nullopt;
+    w.resize(len / sizeof(wchar_t));
+    while (!w.empty() && (w.back() == L'\0')) w.pop_back();
+    return wstr_to_utf8(w);
+}
+
+// Desactive le suivi AUTOMATIQUE des redirections : on les valide a la main
+// (allowlist + anti-downgrade) a chaque saut. Sans cela WinHTTP suivait toute
+// redirection, vers n'importe quel hote, l'allowlist ne valant que sur l'URL
+// de depart.
+void disable_auto_redirect(const Handle& req) {
+    DWORD policy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(req.h, WINHTTP_OPTION_REDIRECT_POLICY, &policy, sizeof(policy));
+}
+
 // Requete generique (GET/POST) : lit le corps quoi que soit le status HTTP
 // (OAuth repond 400 avec du JSON utile). nullopt = echec reseau uniquement.
 std::optional<Response> do_request(const char* verb, const std::string& url,
@@ -436,77 +466,106 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
                                    const std::string& contentType,
                                    const std::string& extraHeaders,
                                    const std::atomic<bool>* cancel) {
-    auto c = crack(url);
-    if (!c) {
-        dbg("crack(url)");
-        return std::nullopt;
-    }
-    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
-    if (!host_allowed(wstr_to_utf8(c->host))) {
-        if (std::getenv("TL_HTTP_DEBUG"))
-            std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
-        return std::nullopt;
-    }
-    Handle session{open_session()};
-    if (!session.h) {
-        dbg("WinHttpOpen");
-        return std::nullopt;
-    }
-    Handle conn{WinHttpConnect(session.h, c->host.c_str(), c->port, 0)};
-    if (!conn.h) {
-        dbg("WinHttpConnect");
-        return std::nullopt;
-    }
-    std::string headers = extraHeaders;
-    if (!contentType.empty()) {
-        if (!headers.empty()) headers += "\r\n";
-        headers += "Content-Type: " + contentType;
-    }
-    // verb ASCII (GET/POST) -> large (WinHttpOpenRequest est wide)
-    std::wstring wverb;
-    for (const char* p = verb; *p; ++p)
-        wverb.push_back(static_cast<wchar_t>(*p));
-    Handle req = make_request(conn.h, *c, wverb.c_str(), headers);
-    if (!req.h) {
-        dbg("make_request");
-        return std::nullopt;
-    }
-    const DWORD bodyLen = static_cast<DWORD>(body.size());
-    if (!WinHttpSendRequest(req.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                            body.empty() ? WINHTTP_NO_REQUEST_DATA
-                                         : (LPVOID)body.data(),
-                            bodyLen, bodyLen, 0)) {
-        dbg("WinHttpSendRequest");
-        return std::nullopt;
-    }
-    const DWORD status = wait_response(req);
-    if (status == 0) {
-        dbg("WinHttpReceiveResponse/QueryHeaders");
-        if (std::getenv("TL_HTTP_DEBUG"))
-            std::fprintf(stderr, "[http] status 0 pour %s\n",
-                         redact_url(url).c_str());
-        return std::nullopt;
-    }
-    if (std::getenv("TL_HTTP_DEBUG") && status != 200)
-        std::fprintf(stderr, "[http] status HTTP %lu pour %s\n",
-                     static_cast<unsigned long>(status),
-                     redact_url(url).c_str());
+    const bool isGet = std::strcmp(verb, "GET") == 0;
+    std::string curUrl = url;
 
-    Response out;
-    out.status = static_cast<int>(status);
-    for (;;) {
-        if (cancel && cancel->load(std::memory_order_relaxed)) return std::nullopt;
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(req.h, &avail)) return std::nullopt;
-        if (avail == 0) break;
-        const size_t old = out.body.size();
-        out.body.resize(old + avail);
-        DWORD read = 0;
-        if (!WinHttpReadData(req.h, out.body.data() + old, avail, &read))
+    // M4 : les redirections sont suivies A LA MAIN (seulement pour GET), en
+    // revalidant l'allowlist et en refusant tout downgrade a chaque saut.
+    for (int hop = 0; hop < 10; ++hop) {
+        auto c = crack(curUrl);
+        if (!c) {
+            dbg("crack(url)");
             return std::nullopt;
-        out.body.resize(old + read);
+        }
+        // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
+        if (!host_allowed(wstr_to_utf8(c->host))) {
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(curUrl).c_str());
+            return std::nullopt;
+        }
+        Handle session{open_session()};
+        if (!session.h) {
+            dbg("WinHttpOpen");
+            return std::nullopt;
+        }
+        Handle conn{WinHttpConnect(session.h, c->host.c_str(), c->port, 0)};
+        if (!conn.h) {
+            dbg("WinHttpConnect");
+            return std::nullopt;
+        }
+        std::string headers = extraHeaders;
+        if (!contentType.empty()) {
+            if (!headers.empty()) headers += "\r\n";
+            headers += "Content-Type: " + contentType;
+        }
+        // verb ASCII (GET/POST) -> large (WinHttpOpenRequest est wide)
+        std::wstring wverb;
+        for (const char* p = verb; *p; ++p)
+            wverb.push_back(static_cast<wchar_t>(*p));
+        Handle req = make_request(conn.h, *c, wverb.c_str(), headers);
+        if (!req.h) {
+            dbg("make_request");
+            return std::nullopt;
+        }
+        disable_auto_redirect(req);
+        const DWORD bodyLen = static_cast<DWORD>(body.size());
+        if (!WinHttpSendRequest(req.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                body.empty() ? WINHTTP_NO_REQUEST_DATA
+                                             : (LPVOID)body.data(),
+                                bodyLen, bodyLen, 0)) {
+            dbg("WinHttpSendRequest");
+            return std::nullopt;
+        }
+        const DWORD status = wait_response(req);
+        if (status == 0) {
+            dbg("WinHttpReceiveResponse/QueryHeaders");
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] status 0 pour %s\n",
+                             redact_url(curUrl).c_str());
+            return std::nullopt;
+        }
+
+        // Redirection : on la valide et on refait la requete sur la cible.
+        if (isGet && is_redirect(status)) {
+            const auto loc = query_location(req);
+            if (!loc) return std::nullopt; // 3xx sans Location : echec
+            const auto next = allowed_redirect(curUrl, *loc);
+            if (!next) {
+                if (std::getenv("TL_HTTP_DEBUG"))
+                    std::fprintf(stderr, "[http] REDIRECT REFUSE vers %s\n",
+                                 redact_url(*loc).c_str());
+                return std::nullopt;
+            }
+            curUrl = *next;
+            continue;
+        }
+
+        if (std::getenv("TL_HTTP_DEBUG") && status != 200)
+            std::fprintf(stderr, "[http] status HTTP %lu pour %s\n",
+                         static_cast<unsigned long>(status),
+                         redact_url(curUrl).c_str());
+
+        Response out;
+        out.status = static_cast<int>(status);
+        for (;;) {
+            if (cancel && cancel->load(std::memory_order_relaxed))
+                return std::nullopt;
+            DWORD avail = 0;
+            if (!WinHttpQueryDataAvailable(req.h, &avail)) return std::nullopt;
+            if (avail == 0) break;
+            const size_t old = out.body.size();
+            out.body.resize(old + avail);
+            DWORD read = 0;
+            if (!WinHttpReadData(req.h, out.body.data() + old, avail, &read))
+                return std::nullopt;
+            out.body.resize(old + read);
+        }
+        return out;
     }
-    return out;
+    if (std::getenv("TL_HTTP_DEBUG"))
+        std::fprintf(stderr, "[http] trop de redirections pour %s\n",
+                     redact_url(url).c_str());
+    return std::nullopt;
 }
 
 #else // POSIX : transport libcurl (même API, mêmes délais 15/60 s, même UA)
@@ -632,50 +691,78 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
     std::string responseBody;
     Slist headers = build_headers(extraHeaders, contentType);
     XferCtx xfer{cancel, nullptr};
-    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
     curl_easy_setopt(h, CURLOPT_USERAGENT, "TeamLauncher/6.0");
     curl_easy_setopt(h, CURLOPT_HTTPHEADER, headers.l);
     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_mem);
     curl_easy_setopt(h, CURLOPT_WRITEDATA, &responseBody);
-    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_MAXREDIRS, 10L);
+    // M4 : pas de suivi AUTOMATIQUE — on valide chaque saut a la main
+    // (allowlist + anti-downgrade), ce que FOLLOWLOCATION ne permet pas.
+    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(h, CURLOPT_PROTOCOLS_STR, "http,https");
-    curl_easy_setopt(h, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
     curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, 60000L);
     curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(h, CURLOPT_XFERINFOFUNCTION, xfer_cb);
     curl_easy_setopt(h, CURLOPT_XFERINFODATA, &xfer);
     const bool isPost = std::strcmp(verb, "POST") == 0;
+    const bool isGet = std::strcmp(verb, "GET") == 0;
     if (isPost) {
         curl_easy_setopt(h, CURLOPT_POST, 1L);
         curl_easy_setopt(h, CURLOPT_POSTFIELDS, body.empty() ? "" : body.data());
         curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE_LARGE,
                          static_cast<curl_off_t>(body.size()));
-    } else if (std::strcmp(verb, "GET") != 0) {
+    } else if (!isGet) {
         curl_easy_setopt(h, CURLOPT_CUSTOMREQUEST, verb);
     }
-    const CURLcode rc = curl_easy_perform(h);
-    if (rc != CURLE_OK) {
-        // Annulation : silencieux (comme le return nullopt sur cancel Windows).
-        if (rc == CURLE_ABORTED_BY_CALLBACK && cancel &&
-            cancel->load(std::memory_order_relaxed))
-            return std::nullopt;
-        dbg("curl_easy_perform", rc);
-        if (std::getenv("TL_HTTP_DEBUG"))
-            std::fprintf(stderr, "[http] status 0 pour %s\n", redact_url(url).c_str());
-        return std::nullopt;
-    }
-    long status = 0;
-    curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
-    if (std::getenv("TL_HTTP_DEBUG") && status != 200)
-        std::fprintf(stderr, "[http] status HTTP %ld pour %s\n", status,
-                      redact_url(url).c_str());
 
-    Response out;
-    out.status = static_cast<int>(status);
-    out.body = std::move(responseBody);
-    return out;
+    std::string curUrl = url;
+    for (int hop = 0; hop < 10; ++hop) {
+        responseBody.clear();
+        curl_easy_setopt(h, CURLOPT_URL, curUrl.c_str());
+        const CURLcode rc = curl_easy_perform(h);
+        if (rc != CURLE_OK) {
+            // Annulation : silencieux (comme le return nullopt sur cancel Windows).
+            if (rc == CURLE_ABORTED_BY_CALLBACK && cancel &&
+                cancel->load(std::memory_order_relaxed))
+                return std::nullopt;
+            dbg("curl_easy_perform", rc);
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] status 0 pour %s\n",
+                             redact_url(curUrl).c_str());
+            return std::nullopt;
+        }
+        long status = 0;
+        curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
+
+        // Redirection (GET seulement) : valider puis refaire sur la cible.
+        if (isGet && (status == 301 || status == 302 || status == 303 ||
+                      status == 307 || status == 308)) {
+            char* loc = nullptr;
+            curl_easy_getinfo(h, CURLINFO_REDIRECT_URL, &loc);
+            const auto next =
+                loc ? allowed_redirect(curUrl, loc) : std::optional<std::string>{};
+            if (!next) {
+                if (std::getenv("TL_HTTP_DEBUG") && loc)
+                    std::fprintf(stderr, "[http] REDIRECT REFUSE vers %s\n",
+                                 redact_url(loc).c_str());
+                return std::nullopt;
+            }
+            curUrl = *next;
+            continue;
+        }
+
+        if (std::getenv("TL_HTTP_DEBUG") && status != 200)
+            std::fprintf(stderr, "[http] status HTTP %ld pour %s\n", status,
+                         redact_url(curUrl).c_str());
+        Response out;
+        out.status = static_cast<int>(status);
+        out.body = std::move(responseBody);
+        return out;
+    }
+    if (std::getenv("TL_HTTP_DEBUG"))
+        std::fprintf(stderr, "[http] trop de redirections pour %s\n",
+                     redact_url(url).c_str());
+    return std::nullopt;
 }
 
 #endif // _WIN32 (WinHTTP) / POSIX (libcurl)
@@ -752,6 +839,48 @@ std::string redact_url(const std::string& url) {
            fragment;
 }
 
+namespace {
+bool istarts_with(const std::string& s, const char* p) {
+    const size_t n = std::strlen(p);
+    if (s.size() < n) return false;
+    for (size_t i = 0; i < n; ++i)
+        if (std::tolower(static_cast<unsigned char>(s[i])) !=
+            static_cast<unsigned char>(p[i]))
+            return false;
+    return true;
+}
+
+// Resout une Location (absolue ou relative) par rapport a l'URL courante.
+std::string resolve_url(const std::string& current, const std::string& loc) {
+    if (loc.find("://") != std::string::npos) return loc; // deja absolue
+    const auto schemeEnd = current.find("://");
+    if (schemeEnd == std::string::npos) return loc;
+    const size_t authStart = schemeEnd + 3;
+    const size_t authEnd = current.find_first_of("/?#", authStart);
+    const std::string origin =
+        current.substr(0, authEnd == std::string::npos ? current.size() : authEnd);
+    if (!loc.empty() && loc.front() == '/') return origin + loc; // racine
+    // relatif au repertoire courant
+    const size_t lastSlash = current.find_last_of('/');
+    if (lastSlash == std::string::npos || lastSlash < authStart)
+        return origin + "/" + loc;
+    return current.substr(0, lastSlash + 1) + loc;
+}
+} // namespace
+
+std::optional<std::string> allowed_redirect(const std::string& currentUrl,
+                                            const std::string& location) {
+    if (location.empty()) return std::nullopt;
+    const std::string target = resolve_url(currentUrl, location);
+    const bool tgtSecure = istarts_with(target, "https://");
+    const bool tgtHttp = istarts_with(target, "http://");
+    if (!tgtSecure && !tgtHttp) return std::nullopt; // schema non http(s)
+    if (istarts_with(currentUrl, "https://") && !tgtSecure)
+        return std::nullopt; // downgrade https -> http refuse
+    if (!host_allowed(host_from_url(target))) return std::nullopt;
+    return target;
+}
+
 std::optional<std::string> get_string(const std::string& url,
                                       const std::atomic<bool>* cancel) {
     auto r = do_request("GET", url, {}, {}, {}, cancel);
@@ -776,70 +905,101 @@ std::optional<Response> post_string(const std::string& url,
 bool get_to_file(const std::string& url, const fs::path& dest,
                  ProgressFn progress, const std::atomic<bool>* cancel, int retries) {
 #ifdef _WIN32
-    auto c = crack(url);
-    if (!c) return false;
-    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
-    if (!host_allowed(wstr_to_utf8(c->host))) {
-        if (std::getenv("TL_HTTP_DEBUG"))
-            std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
-        return false;
-    }
-
     std::error_code ec;
     if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
 
-    for (int attempt = 1; attempt <= retries; ++attempt) {
+    // M4 : les redirections sont suivies A LA MAIN (allowlist + anti-downgrade
+    // revalides a chaque saut). `hops` est un budget separe des re-essais
+    // reseau : suivre une redirection ne consomme pas un `attempt`.
+    std::string curUrl = url;
+    int hops = 0;
+    for (int attempt = 1; attempt <= retries;) {
         if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+        auto c = crack(curUrl);
+        if (!c) return false;
+        // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
+        if (!host_allowed(wstr_to_utf8(c->host))) {
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(curUrl).c_str());
+            return false;
+        }
+
         bool ok = false;
+        bool redirected = false;
         {
             Handle session{open_session()};
             if (session.h) {
                 Handle conn{WinHttpConnect(session.h, c->host.c_str(), c->port, 0)};
                 if (conn.h) {
                     Handle req = make_request(conn.h, *c);
-                    if (req.h &&
-                        WinHttpSendRequest(req.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-                        wait_response(req) == 200) {
-                        const long long total = content_length(req);
-                        long long done = 0;
-                        fs::remove(dest, ec); // re-essai : tronque proprement
-                        std::ofstream out(dest, std::ios::binary | std::ios::trunc);
-                        if (out) {
-                            ok = true;
-                            for (;;) {
-                                if (cancel && cancel->load(std::memory_order_relaxed)) {
-                                    ok = false;
-                                    break;
+                    if (req.h) {
+                        disable_auto_redirect(req);
+                        if (WinHttpSendRequest(req.h, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+                            const DWORD status = wait_response(req);
+                            if (is_redirect(status)) {
+                                const auto loc = query_location(req);
+                                const auto next =
+                                    loc ? allowed_redirect(curUrl, *loc) : std::nullopt;
+                                if (!next) {
+                                    if (std::getenv("TL_HTTP_DEBUG") && loc)
+                                        std::fprintf(stderr,
+                                                     "[http] REDIRECT REFUSE vers %s\n",
+                                                     redact_url(*loc).c_str());
+                                    return false;
                                 }
-                                DWORD avail = 0;
-                                if (!WinHttpQueryDataAvailable(req.h, &avail)) {
-                                    ok = false;
-                                    break;
+                                curUrl = *next;
+                                redirected = true;
+                            } else if (status == 200) {
+                                const long long total = content_length(req);
+                                long long done = 0;
+                                fs::remove(dest, ec); // re-essai : tronque proprement
+                                std::ofstream out(dest,
+                                                  std::ios::binary | std::ios::trunc);
+                                if (out) {
+                                    ok = true;
+                                    for (;;) {
+                                        if (cancel &&
+                                            cancel->load(std::memory_order_relaxed)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        DWORD avail = 0;
+                                        if (!WinHttpQueryDataAvailable(req.h, &avail)) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (avail == 0) break;
+                                        std::string buf(avail, '\0');
+                                        DWORD read = 0;
+                                        if (!WinHttpReadData(req.h, buf.data(), avail,
+                                                             &read) ||
+                                            read == 0) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        out.write(buf.data(), read);
+                                        if (out.fail()) { ok = false; break; }
+                                        done += read;
+                                        if (progress) progress(done, total);
+                                    }
+                                    out.close();
                                 }
-                                if (avail == 0) break;
-                                std::string buf(avail, '\0');
-                                DWORD read = 0;
-                                if (!WinHttpReadData(req.h, buf.data(), avail, &read) ||
-                                    read == 0) {
-                                    ok = false;
-                                    break;
-                                }
-                                out.write(buf.data(), read);
-                                if (out.fail()) { ok = false; break; }
-                                done += read;
-                                if (progress) progress(done, total);
                             }
-                            out.close();
                         }
                     }
                 }
             }
         }
         if (ok) return true;
+        if (redirected) {
+            if (++hops > 10) return false; // boucle de redirections
+            continue;                      // ne consomme pas d'essai reseau
+        }
         fs::remove(dest, ec); // pas de fichier partiel (plus sur que le C#)
         if (cancel && cancel->load(std::memory_order_relaxed)) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+        ++attempt;
     }
     return false;
 #else
@@ -859,25 +1019,35 @@ bool get_to_file(const std::string& url, const fs::path& dest,
     std::error_code ec;
     if (dest.has_parent_path()) fs::create_directories(dest.parent_path(), ec);
 
-    for (int attempt = 1; attempt <= retries; ++attempt) {
+    // M4 : suivi manuel des redirections (allowlist + anti-downgrade revalides
+    // a chaque saut). `hops` est un budget separe des re-essais reseau.
+    std::string curUrl = url;
+    int hops = 0;
+    for (int attempt = 1; attempt <= retries;) {
         if (cancel && cancel->load(std::memory_order_relaxed)) return false;
+        // Chaque saut : l'hote est deja valide (entree ou allowed_redirect),
+        // on le revalide avant toute connexion sortante par surete.
+        if (!host_allowed(host_from_url(curUrl))) {
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(curUrl).c_str());
+            return false;
+        }
         bool ok = false;
+        bool redirected = false;
         {
             Easy easy;
             if (easy.h) {
                 CURL* h = easy.h;
-                fs::remove(dest, ec); // re-essai : tronque proprement
+                fs::remove(dest, ec); // re-essai/redirection : tronque proprement
                 std::ofstream out(dest, std::ios::binary | std::ios::trunc);
                 if (out) {
                     XferCtx xfer{cancel, &progress};
-                    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
+                    curl_easy_setopt(h, CURLOPT_URL, curUrl.c_str());
                     curl_easy_setopt(h, CURLOPT_USERAGENT, "TeamLauncher/6.0");
                     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, write_file);
                     curl_easy_setopt(h, CURLOPT_WRITEDATA, &out);
-                    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-                    curl_easy_setopt(h, CURLOPT_MAXREDIRS, 10L);
+                    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 0L);
                     curl_easy_setopt(h, CURLOPT_PROTOCOLS_STR, "http,https");
-                    curl_easy_setopt(h, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
                     curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT_MS, 15000L);
                     curl_easy_setopt(h, CURLOPT_TIMEOUT_MS, 60000L);
                     curl_easy_setopt(h, CURLOPT_NOPROGRESS, 0L);
@@ -888,8 +1058,26 @@ bool get_to_file(const std::string& url, const fs::path& dest,
                     if (rc == CURLE_OK) {
                         long status = 0;
                         curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &status);
-                        // 200 exigé comme côté WinHTTP (wait_response == 200).
-                        ok = (status == 200) && !out.fail();
+                        if (status == 301 || status == 302 || status == 303 ||
+                            status == 307 || status == 308) {
+                            char* loc = nullptr;
+                            curl_easy_getinfo(h, CURLINFO_REDIRECT_URL, &loc);
+                            const auto next = loc ? allowed_redirect(curUrl, loc)
+                                                  : std::optional<std::string>{};
+                            if (!next) {
+                                if (std::getenv("TL_HTTP_DEBUG") && loc)
+                                    std::fprintf(stderr,
+                                                 "[http] REDIRECT REFUSE vers %s\n",
+                                                 redact_url(loc).c_str());
+                                fs::remove(dest, ec);
+                                return false;
+                            }
+                            curUrl = *next;
+                            redirected = true;
+                        } else {
+                            // 200 exigé comme côté WinHTTP (wait_response == 200).
+                            ok = (status == 200) && !out.fail();
+                        }
                     } else if (rc != CURLE_ABORTED_BY_CALLBACK) {
                         dbg("curl_easy_perform", rc);
                     }
@@ -897,9 +1085,14 @@ bool get_to_file(const std::string& url, const fs::path& dest,
             }
         }
         if (ok) return true;
+        if (redirected) {
+            if (++hops > 10) return false; // boucle de redirections
+            continue;                      // ne consomme pas d'essai reseau
+        }
         fs::remove(dest, ec); // pas de fichier partiel (plus sur que le C#)
         if (cancel && cancel->load(std::memory_order_relaxed)) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(500 * attempt));
+        ++attempt;
     }
     return false;
 #endif

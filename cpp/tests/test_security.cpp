@@ -245,6 +245,48 @@ int main() {
         fs::remove_all(tmp, ec);
     }
 
+    // --- Securite M4 : redirections sures (allowed_redirect) ---
+    // Les deux transports suivent les redirections A LA MAIN via cette
+    // fonction. L'allowlist vaut donc a chaque saut, et le downgrade
+    // https -> http est refuse.
+    {
+        // Saut cross-host vers un hote AUTORISE : accepte, URL resolue.
+        CHECK_EQ(allowed_redirect("https://api.adoptium.net/v3/binary/latest",
+                                  "https://github.com/adoptium/x.zip")
+                     .value_or(""),
+                 std::string("https://github.com/adoptium/x.zip"));
+
+        // Saut cross-host vers un hote NON autorise : refuse.
+        CHECK(!allowed_redirect("https://github.com/x",
+                                "https://evil.example.com/p")
+                   .has_value());
+
+        // Downgrade https -> http (meme hote autorise) : refuse.
+        CHECK(!allowed_redirect("https://github.com/x", "http://github.com/y")
+                   .has_value());
+
+        // Upgrade http -> https vers un hote autorise : accepte.
+        CHECK(allowed_redirect("http://github.com/x", "https://github.com/y")
+                  .has_value());
+
+        // Location relative (racine) : meme hote, resolue sur l'origine.
+        CHECK_EQ(allowed_redirect("https://api.adoptium.net/v3/binary/latest?a=1",
+                                  "/v3/assets/x")
+                     .value_or(""),
+                 std::string("https://api.adoptium.net/v3/assets/x"));
+
+        // Location relative (repertoire courant).
+        CHECK_EQ(allowed_redirect("https://github.com/a/b", "c").value_or(""),
+                 std::string("https://github.com/a/c"));
+
+        // Schema non http(s) : refuse.
+        CHECK(!allowed_redirect("https://github.com/x", "ftp://github.com/y")
+                   .has_value());
+
+        // Location vide : refuse.
+        CHECK(!allowed_redirect("https://github.com/x", "").has_value());
+    }
+
     if (g_failures == 0) {
         std::printf("ALL TESTS PASSED\n");
         return 0;

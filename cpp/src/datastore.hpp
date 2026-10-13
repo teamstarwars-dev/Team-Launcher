@@ -60,9 +60,12 @@ struct AppSettings {
     std::string discordTelemetryWebhook;
     std::string installationId;
     bool adminTelemetryEnabled = false;
-    // IP du serveur d'admin : obfusquee (S3) pour ne pas la laisser en clair
-    // dans .rdata (elle est de toute facon chiffree DPAPI dans config.json).
-    std::string adminServerUrl = TL_OBF("http://51.255.207.183:3000");
+    // Serveur d'admin : obfusque (S3) pour ne pas le laisser en clair dans
+    // .rdata (il est de toute facon chiffre DPAPI dans config.json).
+    // M4 : https obligatoire (admin::post refuse le clair hors boucle locale).
+    // Un serveur http-only sur cette IP n'enverra donc plus rien tant qu'il
+    // n'expose pas un endpoint HTTPS valide.
+    std::string adminServerUrl = TL_OBF("https://51.255.207.183:3000");
     // Ce que fait le launcher quand la partie demarre : "nothing",
     // "minimize" ou "quit". Remplace minimizeOnLaunch, conserve juste
     // en dessous parce que la v5 Avalonia partage ce fichier de
