@@ -75,8 +75,13 @@ std::optional<Revocations> parse_revocations(const std::string& text, const Root
 // plus récente, et l'écrit dans le cache.
 // Rendue PAR VALEUR, copiée sous verrou : une référence pourrait être lue
 // pendant qu'install_revocations la remplace depuis un autre fil.
-Revocations current_revocations();
-bool install_revocations(const std::string& text, std::int64_t now, std::string* err);
+Revocations current_revocations(const Roots& roots = builtin_roots());
+bool install_revocations(const std::string& text, std::int64_t now, std::string* err,
+                         const Roots& roots = builtin_roots());
+
+// Tests : vide le cache de révocation en mémoire (simule un lancement neuf
+// qui relira le fichier et la sauvegarde de la configuration).
+void reset_revocations_for_tests();
 
 // --- Vérification d'un plugin ----------------------------------------------
 

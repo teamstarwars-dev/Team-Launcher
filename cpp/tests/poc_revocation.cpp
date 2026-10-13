@@ -1,12 +1,14 @@
-// PoC — fail-open des révocations (pentest V8, étape 2).
+// PoC — fail-open des révocations (pentest V8, étape 2/3).
 //
-// Démontre que, SANS le fichier revocations.json (supprimé ou absent), un
-// plugin pourtant RÉVOQUÉ par une liste signée valide est de nouveau jugé
-// « Valide » par le launcher. Le kill-switch distant est donc neutralisé
-// par la simple suppression d'un fichier de cache en écriture utilisateur.
+// AVANT correctif : supprimer revocations.json (cache en écriture) remettait
+// un plugin RÉVOQUÉ à « Valide » et neutralisait le kill-switch distant.
+// APRÈS correctif (plancher persistant + sauvegarde dans la config), la
+// révocation TIENT malgré la suppression du fichier : cette PoC doit donc
+// désormais ÉCHOUER (code de sortie 1).
 //
 // 100 % local : clés de test fabriquées ici, aucun réseau, aucun serveur.
 
+#include "datastore.hpp"
 #include "secrets.hpp"
 #include "signing.hpp"
 
@@ -16,6 +18,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -71,7 +74,7 @@ void sign_dir(const fs::path& dir, const std::string& id, const std::string& ver
         files[rel] = *signing::sha512_file_hex(e.path());
     }
     const json release{{"type", "tl-plugin-release"}, {"v", 1}, {"pluginId", id},
-                       {"version", ver}, {"keyId", "int-1"}, {"signedAt", 2000000000},
+                       {"version", ver}, {"keyId", "int-1"}, {"signedAt", 1700000000},
                        {"files", files}};
     write(dir / "signature.json",
           json{{"v", 1}, {"cert", make_cert(root, inter, "int-1", {"plugin"})},
@@ -79,12 +82,13 @@ void sign_dir(const fs::path& dir, const std::string& id, const std::string& ver
 }
 std::string make_revocations(const Key& root, const Key& inter, std::int64_t seq,
                              const json& extra) {
-    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", 2000000000}};
+    // Daté dans le passé : le rechargement passe par l'heure réelle.
+    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", 1700000000}};
     for (auto it = extra.begin(); it != extra.end(); ++it) list[it.key()] = it.value();
     return json{{"v", 1}, {"cert", make_cert(root, inter, "int-rev", {"revocation"})},
                 {"list", sign_obj(list.dump(), inter)}}.dump();
 }
-const std::int64_t kNow = 2000000100;
+const std::int64_t kNow = 1700000100;
 
 const char* label(Status s) {
     switch (s) {
@@ -100,42 +104,50 @@ const char* label(Status s) {
 int main() {
     const Key root = make_key(1), inter = make_key(2);
     const signing::Roots roots{{root.pk}};
-    const fs::path dir = fs::temp_directory_path() / "tl_poc_revocation" / "demo";
+    const fs::path base = fs::temp_directory_path() / "tl_poc_revocation";
     std::error_code ec;
-    fs::remove_all(dir.parent_path(), ec);
+    fs::remove_all(base, ec);
+    const fs::path dataDir = base / "data";
+    fs::create_directories(dataDir);
+#ifdef _WIN32
+    _putenv_s("TL_DATA_DIR", dataDir.string().c_str());
+#else
+    setenv("TL_DATA_DIR", dataDir.string().c_str(), 1);
+#endif
+    DataStore::settings.revocationFloorSeq = 0;
+    DataStore::settings.revocationDoc.clear();
+    signing::reset_revocations_for_tests();
+
+    const fs::path dir = dataDir / "plugins" / "demo";
     write(dir / "plugin.json", R"({"name":"Demo","version":"1.0"})");
     write(dir / "bin" / "service.exe", "binaire factice");
     sign_dir(dir, "demo", "1.0", root, inter);
 
-    auto verdict = [&](const signing::Revocations* revs) {
-        return signing::verify_release_dir(dir, signing::Kind::Plugin, "demo", "1.0", roots,
-                                           revs, kNow)
+    auto verdict = [&]() {
+        const auto revs = signing::current_revocations(roots);
+        return signing::verify_release_dir(dir, signing::Kind::Plugin, "demo", "1.0", roots, &revs,
+                                           kNow)
             .status;
     };
 
-    // 1. Plugin signé, aucune révocation en vigueur -> Valide (normal).
-    const Status base = verdict(nullptr);
-    std::printf("1. signe, sans liste de revocation           : %s\n", label(base));
-
-    // 2. L'equipe publie une liste signee qui revoque demo@1.0.
+    // L'équipe publie une révocation de demo@1.0.
     std::string err;
-    const auto revs = signing::parse_revocations(
+    signing::install_revocations(
         make_revocations(root, inter, 1,
                          {{"releases", json::array({json{{"id", "demo"}, {"version", "1.0"}}})}}),
-        roots, kNow, -1, &err);
-    const Status revoked = (revs ? verdict(&*revs) : Status::Invalid);
-    std::printf("2. liste de revocation presente              : %s\n", label(revoked));
+        kNow, &err, roots);
+    const Status revoked = verdict();
+    std::printf("1. revocation installee                      : %s\n", label(revoked));
 
-    // 3. ATTAQUE : revocations.json supprime -> current_revocations() rend une
-    //    liste VIDE au prochain lancement (load_cache_locked : if(!in) return;).
-    //    On modelise ce cas par l'absence de liste.
-    const Status afterDelete = verdict(nullptr);
-    std::printf("3. APRES suppression de revocations.json     : %s\n", label(afterDelete));
+    // ATTAQUE : suppression de revocations.json, puis « nouveau lancement ».
+    fs::remove(dataDir / "revocations.json", ec);
+    signing::reset_revocations_for_tests();
+    const Status afterDelete = verdict();
+    std::printf("2. APRES suppression de revocations.json     : %s\n", label(afterDelete));
 
-    const bool bypass = (base == Status::Valid && revoked == Status::Revoked &&
-                         afterDelete == Status::Valid);
-    std::printf("\n%s : un plugin revoque redevient %s sans le fichier de revocation.\n",
-                bypass ? "FAIL-OPEN CONFIRME" : "pas de bypass", label(afterDelete));
-    fs::remove_all(dir.parent_path(), ec);
+    const bool bypass = (revoked == Status::Revoked && afterDelete == Status::Valid);
+    std::printf("\n%s\n", bypass ? "FAIL-OPEN : la revocation a saute (VULNERABLE)."
+                                 : "CORRIGE : la revocation tient malgre la suppression.");
+    fs::remove_all(base, ec);
     return bypass ? 0 : 1;
 }

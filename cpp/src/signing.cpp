@@ -243,36 +243,65 @@ bool g_revLoaded = false;
 
 fs::path rev_cache() { return DataStore::dir() / "revocations.json"; }
 
-void load_cache_locked() {
+void load_cache_locked(const Roots& roots) {
     if (g_revLoaded) return;
     g_revLoaded = true;
-    std::ifstream in(rev_cache(), std::ios::binary);
-    if (!in) return;
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string err;
-    // Au chargement, on n'impose pas d'horodatage minimal ; la vérification
-    // de signature suffit à écarter un fichier forgé.
-    if (auto r = parse_revocations(ss.str(), builtin_roots(),
-                                   static_cast<std::int64_t>(std::time(nullptr)), -1, &err))
-        g_rev = *r;
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    // Plancher persistant : une liste PLUS ANCIENNE que la dernière acceptée
+    // est refusée (anti-retour arrière), même si le fichier de cache a été
+    // supprimé puis remplacé par une vieille liste pourtant bien signée.
+    const std::int64_t floor = DataStore::settings.revocationFloorSeq;
+    auto consider = [&](const std::string& text) {
+        if (text.empty()) return;
+        std::string err;
+        if (auto r = parse_revocations(text, roots, now, floor, &err))
+            if (r->seq > g_rev.seq) g_rev = *r;
+    };
+    // DEUX sources : le fichier de cache ET une sauvegarde dans la config.
+    // Supprimer le seul fichier ne désarme donc plus le kill-switch ni les
+    // révocations ; il faudrait altérer les deux.
+    {
+        std::ifstream in(rev_cache(), std::ios::binary);
+        if (in) {
+            std::stringstream ss;
+            ss << in.rdbuf();
+            consider(ss.str());
+        }
+    }
+    consider(DataStore::settings.revocationDoc);
 }
 
 } // namespace
 
-Revocations current_revocations() {
+Revocations current_revocations(const Roots& roots) {
     std::lock_guard<std::mutex> lk(g_revM);
-    load_cache_locked();
+    load_cache_locked(roots);
     return g_rev;
 }
 
-bool install_revocations(const std::string& text, std::int64_t now, std::string* err) {
+void reset_revocations_for_tests() {
     std::lock_guard<std::mutex> lk(g_revM);
-    load_cache_locked();
-    auto r = parse_revocations(text, builtin_roots(), now, g_rev.seq, err);
+    g_revLoaded = false;
+    g_rev = Revocations{};
+}
+
+bool install_revocations(const std::string& text, std::int64_t now, std::string* err,
+                         const Roots& roots) {
+    std::lock_guard<std::mutex> lk(g_revM);
+    load_cache_locked(roots);
+    const std::int64_t minSeq = g_rev.seq > DataStore::settings.revocationFloorSeq
+                                    ? g_rev.seq
+                                    : DataStore::settings.revocationFloorSeq;
+    auto r = parse_revocations(text, roots, now, minSeq, err);
     if (!r) return false;
     if (r->seq == g_rev.seq) return true; // déjà en vigueur
     g_rev = *r;
+    // Persiste la liste ET relève le plancher, dans la configuration (hors
+    // du fichier de cache supprimable) : la révocation survit à la
+    // suppression de revocations.json et au redémarrage.
+    DataStore::settings.revocationDoc = text;
+    DataStore::settings.revocationFloorSeq = r->seq;
+    DataStore::save();
     std::ofstream out(rev_cache(), std::ios::binary | std::ios::trunc);
     out << text;
     return true;

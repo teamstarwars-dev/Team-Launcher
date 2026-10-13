@@ -131,6 +131,13 @@ struct AppSettings {
     std::string marketplaceUrl;
     // Dernière liste de révocation récupérée avec succès (Unix).
     long long lastRevocationSyncUnix = 0;
+    // V8 (M3) : plancher anti-retour arrière des listes de révocation, et
+    // sauvegarde de la dernière liste signée HORS du fichier revocations.json
+    // (supprimable). Supprimer ce seul fichier ne désarme plus le
+    // kill-switch ni les révocations, et une ancienne liste ne peut plus
+    // être rejouée.
+    long long revocationFloorSeq = 0;
+    std::string revocationDoc;
     // V8 : télémétrie anonyme des plugins signés (plugin_telemetry.hpp).
     // DÉSACTIVÉE par défaut : c'est l'utilisateur qui coche.
     bool pluginTelemetry = false;

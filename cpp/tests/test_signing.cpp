@@ -6,6 +6,7 @@
 // launcher. On vérifie surtout les REFUS : une vérification de signature
 // qui accepte trop est pire qu'aucune.
 
+#include "datastore.hpp"
 #include "secrets.hpp"
 #include "signing.hpp"
 
@@ -14,6 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -102,7 +104,10 @@ std::string make_revocations(const Key& root, const Key& inter, std::int64_t seq
                              const json& extra = json::object(),
                              const std::vector<std::string>& usages = {"revocation"},
                              const std::string& keyId = "int-rev") {
-    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", 2000000000}};
+    // Daté dans le passé : la section M3 recharge via l'heure réelle, et
+    // `within` refuse une liste émise « dans le futur ». Ne gêne pas les
+    // autres tests, qui passent kNow.
+    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", 1700000000}};
     for (auto it = extra.begin(); it != extra.end(); ++it) list[it.key()] = it.value();
     const json doc{{"v", 1},
                    {"cert", make_cert(root, inter, keyId, usages)},
@@ -408,6 +413,42 @@ int main() {
               Status::Unsigned);
         // Document mal formé -> refus.
         CHECK(signing::verify_update(pkg, "pas du json", roots, kNow).status == Status::Invalid);
+    }
+
+    // =====================================================================
+    // 7. M3 : révocations fail-closed (plancher persistant + sauvegarde config)
+    // =====================================================================
+    {
+        const fs::path dataDir = base / "data";
+        fs::create_directories(dataDir);
+#ifdef _WIN32
+        _putenv_s("TL_DATA_DIR", dataDir.string().c_str());
+#else
+        setenv("TL_DATA_DIR", dataDir.string().c_str(), 1);
+#endif
+        DataStore::settings.revocationFloorSeq = 0;
+        DataStore::settings.revocationDoc.clear();
+        signing::reset_revocations_for_tests();
+
+        // L'équipe publie la liste n°2 qui révoque demo@1.0.
+        const json rel = json::array({json{{"id", "demo"}, {"version", "1.0"}}});
+        const std::string rev2 = make_revocations(root, inter, 2, {{"releases", rel}});
+        std::string ierr;
+        CHECK(signing::install_revocations(rev2, kNow, &ierr, roots));
+        CHECK(signing::current_revocations(roots).releases.count({"demo", "1.0"}) == 1);
+
+        // ATTAQUE 1 : suppression du fichier de cache -> la sauvegarde dans
+        // la config garde la révocation (fail-CLOSED, avant : fail-open).
+        fs::remove(dataDir / "revocations.json", ec);
+        signing::reset_revocations_for_tests();
+        CHECK(signing::current_revocations(roots).releases.count({"demo", "1.0"}) == 1);
+
+        // ATTAQUE 2 : rejouer une ANCIENNE liste (n°1) -> refusée par le
+        // plancher persistant (séquence courante = 2).
+        const std::string rev1 = make_revocations(root, inter, 1, json::object());
+        signing::reset_revocations_for_tests();
+        CHECK(!signing::install_revocations(rev1, kNow, &ierr, roots));
+        CHECK(signing::current_revocations(roots).seq == 2);
     }
 
     fs::remove_all(base, ec);
