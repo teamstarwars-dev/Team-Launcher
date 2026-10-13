@@ -64,4 +64,11 @@ Result import_modrinth(const std::filesystem::path& mrpack, const Progress& prog
 Result import_any(const std::filesystem::path& archive, const Progress& progress,
                   std::atomic<bool>& cancel);
 
+// Verifie le corps telecharge contre l'empreinte DECLAREE dans une entree
+// .mrpack (objet « hashes » : sha512 de preference, sinon sha1). false si
+// l'empreinte est absente (le format Modrinth l'impose) ou non conforme :
+// un fichier non verifiable ne doit jamais atterrir dans l'instance.
+// Expose pour les tests de regression (securite M2).
+bool mrpack_body_verified(const nlohmann::json& fileEntry, const std::string& body);
+
 } // namespace tl::packs

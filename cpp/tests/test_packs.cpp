@@ -10,12 +10,14 @@
 #include "datastore.hpp"
 #include "pack_import.hpp"
 #include "pack_share.hpp"
+#include "signing.hpp" // sha512_hex (verif empreinte .mrpack)
 
 #include "test_env.hpp" // _putenv_s portable (Windows/POSIX)
 #include "util_hash.hpp"
 #include "util_zip.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -584,6 +586,41 @@ int main() {
         }
     } else {
         std::printf("INFO test reseau saute (TL_TEST_NET non defini)\n");
+    }
+
+    // --- Securite M2 : empreinte imposee sur les fichiers .mrpack ---
+    // Avant correctif, import_modrinth telechargeait depuis l'URL et ECRIVAIT
+    // sans regarder l'objet « hashes » pourtant present. mrpack_body_verified
+    // est le verrou : il refuse tout corps non conforme a l'empreinte declaree
+    // et tout fichier sans empreinte (le format Modrinth l'impose).
+    {
+        const std::string body = "contenu-de-mod-factice-pour-le-test";
+        const std::string wrong = "contenu-altere-par-un-cdn-compromis";
+        const std::string sha512 = signing::sha512_hex(body);
+        const std::string sha1 = sha1_hex_of(body);
+
+        auto upper = [](std::string s) {
+            for (char& c : s) c = static_cast<char>(std::toupper((unsigned char)c));
+            return s;
+        };
+
+        // sha512 correct -> accepte
+        CHECK(packs::mrpack_body_verified(json{{"hashes", {{"sha512", sha512}}}}, body));
+        // sha512 insensible a la casse -> accepte
+        CHECK(packs::mrpack_body_verified(
+            json{{"hashes", {{"sha512", upper(sha512)}}}}, body));
+        // sha1 seul correct -> accepte
+        CHECK(packs::mrpack_body_verified(json{{"hashes", {{"sha1", sha1}}}}, body));
+        // sha512 present mais faux -> REFUSE (coeur de la faille)
+        CHECK(!packs::mrpack_body_verified(json{{"hashes", {{"sha512", sha512}}}}, wrong));
+        // sha512 prioritaire : faux meme si un sha1 correct accompagne -> REFUSE
+        CHECK(!packs::mrpack_body_verified(
+            json{{"hashes", {{"sha512", signing::sha512_hex(wrong)}, {"sha1", sha1}}}},
+            body));
+        // pas d'objet hashes -> REFUSE (fail-closed)
+        CHECK(!packs::mrpack_body_verified(json{{"path", "mods/x.jar"}}, body));
+        // objet hashes vide -> REFUSE
+        CHECK(!packs::mrpack_body_verified(json{{"hashes", json::object()}}, body));
     }
 
     DataStore::shutdown();

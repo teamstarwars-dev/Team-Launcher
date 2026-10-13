@@ -9,6 +9,7 @@
 #include "util_str.hpp" // strCaseCmp
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 
@@ -147,6 +148,20 @@ int download_items(const json& items, const fs::path& destDir,
         if (!r || r->status != 200 || r->body.empty()) {
             ++failed;
             log_line("Pack partagé : échec du téléchargement de " + name);
+            continue;
+        }
+        // Le descriptif du pack DECLARE le sha1 de chaque fichier (calcule a
+        // l'export, recoupe avec Modrinth). On l'impose : le lien pointe vers
+        // un CDN tiers, seul ce hash — issu du pack que l'utilisateur importe —
+        // fait foi. Empreinte absente ou non conforme = refus (fail-closed).
+        const std::string sha1 = it.value("Sha1", std::string{});
+        std::string got = sha1_hex_of(r->body);
+        for (char& c : got) c = static_cast<char>(std::tolower((unsigned char)c));
+        std::string want = sha1;
+        for (char& c : want) c = static_cast<char>(std::tolower((unsigned char)c));
+        if (want.empty() || got != want) {
+            ++failed;
+            log_line("Pack partagé : empreinte non conforme pour " + name);
             continue;
         }
         std::ofstream out(destDir / cf::sanitize(name), std::ios::binary | std::ios::trunc);

@@ -5,6 +5,8 @@
 #include "game_launcher.hpp" // log_line
 #include "http_win.hpp"
 #include "modmeta.hpp"       // detect_folder : estimation d'apres les mods
+#include "signing.hpp"       // sha512_hex (empreintes .mrpack)
+#include "util_hash.hpp"     // sha1_hex_of
 #include "util_zip.hpp"
 
 #include <algorithm>
@@ -33,6 +35,11 @@ bool write_file(const fs::path& dest, const std::string& data) {
 
 void report(const Progress& p, const std::string& msg) {
     if (p) p(msg);
+}
+
+std::string to_lower(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower((unsigned char)c));
+    return s;
 }
 
 // Garde-fou : un chemin d'entree ne doit pas sortir du dossier de l'instance.
@@ -162,6 +169,16 @@ Result import_curseforge(const fs::path& zip, const Progress& progress,
 // Modrinth (.mrpack : modrinth.index.json + overrides/)
 // ---------------------------------------------------------------------------
 
+bool mrpack_body_verified(const json& fileEntry, const std::string& body) {
+    const auto h = fileEntry.find("hashes");
+    if (h == fileEntry.end() || !h->is_object()) return false;
+    if (const auto it = h->find("sha512"); it != h->end() && it->is_string())
+        return to_lower(signing::sha512_hex(body)) == to_lower(it->get<std::string>());
+    if (const auto it = h->find("sha1"); it != h->end() && it->is_string())
+        return to_lower(sha1_hex_of(body)) == to_lower(it->get<std::string>());
+    return false;
+}
+
 Result import_modrinth(const fs::path& mrpack, const Progress& progress,
                        std::atomic<bool>& cancel) {
     Result res;
@@ -234,9 +251,24 @@ Result import_modrinth(const fs::path& mrpack, const Progress& progress,
             }
             const std::string url = dl->front().get<std::string>();
             auto r = http::get_response(url, {}, &cancel);
-            if (!r || r->status != 200 || !write_file(*dest, r->body)) {
+            if (!r || r->status != 200) {
                 ++res.failed;
                 log_line("mrpack : échec de " + rel);
+                continue;
+            }
+            // Le format .mrpack DECLARE sha1 et sha512 pour chaque fichier.
+            // On impose l'empreinte (sha512 de preference) : le lien peut
+            // pointer n'importe ou, seul le hash de l'index — que
+            // l'utilisateur a choisi d'importer — fait foi. Fichier sans
+            // empreinte ou non conforme = refuse (fail-closed), jamais ecrit.
+            if (!mrpack_body_verified(f, r->body)) {
+                ++res.failed;
+                log_line("mrpack : empreinte non conforme pour « " + rel + " »");
+                continue;
+            }
+            if (!write_file(*dest, r->body)) {
+                ++res.failed;
+                log_line("mrpack : écriture impossible pour « " + rel + " »");
                 continue;
             }
             ++res.downloaded;
