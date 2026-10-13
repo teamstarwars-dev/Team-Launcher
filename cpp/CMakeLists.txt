@@ -649,6 +649,11 @@ if(TL_BUILD_TESTS)
   target_compile_definitions(TLTestMarketplace PRIVATE
     TL_INTEROP_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/interop")
 
+  # M7 : garde anti-regression des secrets de build (webhook/cle en clair
+  # dans un fichier suivi). Le test lit les fichiers du depot.
+  target_compile_definitions(TLTestSecurity PRIVATE
+    TL_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+
   # ---- Harnais de fuzzing (optionnel) -------------------------------
   # -DTL_FUZZ=ON dans un dossier de build SEPARE. Les sanitizers doivent
   # couvrir tl_core aussi, pas seulement le harnais : c'est DANS les

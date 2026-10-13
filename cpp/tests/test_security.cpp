@@ -7,8 +7,11 @@
 #include "miniz.h"
 #include "util_zip.hpp"
 
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -244,6 +247,68 @@ int main() {
 
         fs::remove_all(tmp, ec);
     }
+
+#ifdef TL_SRC_DIR
+    // --- Securite M7 : aucun secret de build en clair dans le depot ---
+    // Le webhook Discord et la cle CurseForge ont deja vecu en clair dans un
+    // depot PUBLIC. Ils sont desormais lus de build-secrets.env (non suivi) et
+    // injectes obfusques a la compilation. Ce garde echoue si l'un revient en
+    // clair dans un fichier SUIVI : la lecon ne doit pas se reperdre.
+    {
+        auto read = [](const fs::path& p) -> std::string {
+            std::ifstream in(p, std::ios::binary);
+            if (!in) return {};
+            std::stringstream ss;
+            ss << in.rdbuf();
+            return ss.str();
+        };
+        const fs::path src = TL_SRC_DIR;
+
+        // 1. Aucun webhook Discord en clair (URL + identifiant numerique) dans
+        //    les fichiers suivis susceptibles d'en contenir.
+        for (const char* rel : {"assets/default.env", "src/datastore.cpp",
+                                 "build-secrets.env.example"}) {
+            const std::string t = read(src / rel);
+            const std::string needle = "discord.com/api/webhooks/";
+            size_t pos = t.find(needle);
+            bool liveHook = false;
+            while (pos != std::string::npos) {
+                const size_t after = pos + needle.size();
+                if (after < t.size() && std::isdigit((unsigned char)t[after]))
+                    liveHook = true; // suivi d'un id -> vrai webhook
+                pos = t.find(needle, pos + 1);
+            }
+            if (liveHook) {
+                std::printf("FAIL M7 : webhook Discord en clair dans %s\n", rel);
+                ++g_failures;
+            }
+        }
+
+        // 2. default.env : les deux secrets restent des PLACEHOLDERS (lignes
+        //    commentees ou valeur vide), jamais une valeur renseignee.
+        {
+            const std::string env = read(src / "assets/default.env");
+            std::stringstream ss(env);
+            std::string line;
+            while (std::getline(ss, line)) {
+                const size_t b = line.find_first_not_of(" \t");
+                if (b == std::string::npos) continue;
+                if (line.compare(b, 2, "//") == 0 || line[b] == '#') continue;
+                for (const char* key :
+                     {"DISCORD_TELEMETRY_WEBHOOK", "CURSEFORGE_API_KEY"}) {
+                    const std::string pref = std::string(key) + "=";
+                    if (line.compare(b, pref.size(), pref) == 0) {
+                        const std::string val = line.substr(b + pref.size());
+                        if (val.find_first_not_of(" \t\r") != std::string::npos) {
+                            std::printf("FAIL M7 : %s renseigne dans default.env\n", key);
+                            ++g_failures;
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     // --- Securite M4 : redirections sures (allowed_redirect) ---
     // Les deux transports suivent les redirections A LA MAIN via cette
