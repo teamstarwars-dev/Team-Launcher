@@ -194,6 +194,10 @@ std::optional<Revocations> parse_revocations(const std::string& text, const Root
         if (err) *err = m;
         return std::nullopt;
     };
+    // M6 : toute exception JSON (type inattendu dans la liste, meme signee par
+    // un intermediaire legitime mais mal formee) => liste rejetee, jamais un
+    // crash.
+    try {
     const json doc = parse_obj(text);
     if (doc.is_null() || doc.value("v", 0) != 1 || !doc.contains("cert") ||
         !doc.contains("list"))
@@ -233,6 +237,9 @@ std::optional<Revocations> parse_revocations(const std::string& text, const Root
     if (r.keyIds.count(cert->keyId))
         return fail("liste signée par un certificat qu'elle révoque elle-même");
     return r;
+    } catch (const std::exception& ex) {
+        return fail(std::string("liste de révocation illisible : ") + ex.what());
+    }
 }
 
 namespace {
@@ -323,47 +330,56 @@ Verdict verify_update(const fs::path& packageFile, const std::string& sigText,
         v.detail = why;
         return v;
     };
-    const json doc = parse_obj(sigText);
-    if (doc.is_null() || doc.value("v", 0) != 1 || !doc.contains("cert") ||
-        !doc.contains("release"))
-        return invalid("signature de mise à jour mal formée");
+    // M6 : sigText vient du reseau (fichier .sig) et n'est pas verifie a ce
+    // stade. nlohmann leve (type_error 302/305...) des qu'une cle a un type
+    // inattendu, y compris via .value(). Toute exception JSON => mise a jour
+    // invalide (jamais un crash : profil hijack de mise a jour / serveur
+    // compromis).
+    try {
+        const json doc = parse_obj(sigText);
+        if (doc.is_null() || doc.value("v", 0) != 1 || !doc.contains("cert") ||
+            !doc.contains("release"))
+            return invalid("signature de mise à jour mal formée");
 
-    std::string err;
-    const auto cert = open_cert(doc["cert"], roots, &err);
-    if (!cert) {
-        // Sans racine compilée, on ne PEUT pas vérifier : refus franc (une
-        // mise à jour non vérifiable ne s'installe pas).
-        if (roots.keys.empty()) {
-            v.status = Status::Unsigned;
-            v.detail = err;
-            return v;
+        std::string err;
+        const auto cert = open_cert(doc["cert"], roots, &err);
+        if (!cert) {
+            // Sans racine compilée, on ne PEUT pas vérifier : refus franc (une
+            // mise à jour non vérifiable ne s'installe pas).
+            if (roots.keys.empty()) {
+                v.status = Status::Unsigned;
+                v.detail = err;
+                return v;
+            }
+            return invalid(err);
         }
-        return invalid(err);
-    }
-    if (!cert->usages.count("launcher"))
-        return invalid("certificat non habilité à signer le launcher");
-    v.keyId = cert->keyId;
+        if (!cert->usages.count("launcher"))
+            return invalid("certificat non habilité à signer le launcher");
+        v.keyId = cert->keyId;
 
-    const auto payload = open_signed(doc["release"], cert->pub);
-    if (!payload) return invalid("signature de mise à jour invalide");
-    const json rel = parse_obj(*payload);
-    if (rel.is_null() || rel.value("type", "") != "tl-launcher-release" ||
-        rel.value("v", 0) != 1)
-        return invalid("publication de mise à jour mal formée");
-    if (rel.value("keyId", "") != cert->keyId)
-        return invalid("publication et certificat discordants");
-    if (!rel.contains("signedAt") || !rel["signedAt"].is_number_integer() ||
-        !within(*cert, rel["signedAt"].get<std::int64_t>(), now))
-        return invalid("signature hors de la période de validité du certificat");
-    const auto sha = rel.find("sha512");
-    if (sha == rel.end() || !sha->is_string())
-        return invalid("publication de mise à jour sans empreinte");
-    const auto got = sha512_file_hex(packageFile);
-    if (!got) return invalid("paquet de mise à jour illisible");
-    if (*got != sha->get<std::string>())
-        return invalid("empreinte du paquet de mise à jour incorrecte");
-    v.status = Status::Valid;
-    return v;
+        const auto payload = open_signed(doc["release"], cert->pub);
+        if (!payload) return invalid("signature de mise à jour invalide");
+        const json rel = parse_obj(*payload);
+        if (rel.is_null() || rel.value("type", "") != "tl-launcher-release" ||
+            rel.value("v", 0) != 1)
+            return invalid("publication de mise à jour mal formée");
+        if (rel.value("keyId", "") != cert->keyId)
+            return invalid("publication et certificat discordants");
+        if (!rel.contains("signedAt") || !rel["signedAt"].is_number_integer() ||
+            !within(*cert, rel["signedAt"].get<std::int64_t>(), now))
+            return invalid("signature hors de la période de validité du certificat");
+        const auto sha = rel.find("sha512");
+        if (sha == rel.end() || !sha->is_string())
+            return invalid("publication de mise à jour sans empreinte");
+        const auto got = sha512_file_hex(packageFile);
+        if (!got) return invalid("paquet de mise à jour illisible");
+        if (*got != sha->get<std::string>())
+            return invalid("empreinte du paquet de mise à jour incorrecte");
+        v.status = Status::Valid;
+        return v;
+    } catch (const std::exception& ex) {
+        return invalid(std::string("signature de mise à jour illisible : ") + ex.what());
+    }
 }
 
 Verdict verify_release_dir(const fs::path& dir, Kind kind, const std::string& pluginId,
@@ -401,6 +417,10 @@ Verdict verify_release_dir(const fs::path& dir, Kind kind, const std::string& pl
         ss << in.rdbuf();
         sigText = ss.str();
     }
+    // M6 : signature.json peut venir d'un modpack hostile et n'est pas verifie
+    // a ce stade. Toute exception JSON (type_error via .value(), etc.) =>
+    // publication invalide, jamais un crash du balayage.
+    try {
     const json doc = parse_obj(sigText);
     if (doc.is_null() || doc.value("v", 0) != 1 || !doc.contains("cert") ||
         !doc.contains("release"))
@@ -502,6 +522,9 @@ Verdict verify_release_dir(const fs::path& dir, Kind kind, const std::string& pl
     v.status = Status::Valid;
     v.detail = "signé par " + cert->keyId;
     return v;
+    } catch (const std::exception& ex) {
+        return invalid(std::string("signature.json illisible : ") + ex.what());
+    }
 }
 
 } // namespace tl::signing

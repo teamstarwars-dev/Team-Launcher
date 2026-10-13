@@ -108,6 +108,25 @@ int main() {
         CHECK(!none.error.empty()); // aucune action
     }
     {
+        // M6 : champs au mauvais TYPE. Avant correctif, .value("name", id) sur
+        // un « name » numerique levait type_error et faisait planter le
+        // balayage. Desormais : erreur de plugin, nom de repli, pas de crash.
+        const auto n = plugins::parse_manifest(R"({"name":123})", "x");
+        CHECK(!n.error.empty());
+        CHECK_EQ(n.name, std::string("x"));
+        // Idem « version »/« author » numeriques, « service » non-objet.
+        CHECK(!plugins::parse_manifest(R"({"version":42,"actions":[]})", "x")
+                   .error.empty());
+        CHECK(!plugins::parse_manifest(R"({"service":"pas-un-objet"})", "x")
+                   .error.empty());
+        CHECK(!plugins::parse_manifest(R"({"author":{"x":1},"actions":[]})", "x")
+                   .error.empty());
+        // args au mauvais type dans une action : ne doit pas lever.
+        const auto a = plugins::parse_manifest(
+            R"({"actions":[{"label":"A","run":"p","args":"pas-une-liste"}]})", "x");
+        CHECK(a.error.empty()); // args ignore, action valide
+    }
+    {
         // Une ligne de shell déguisée en programme : refusée franchement,
         // plutôt qu'exécutée par un chemin détourné.
         const auto sh = plugins::parse_manifest(

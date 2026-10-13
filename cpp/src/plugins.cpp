@@ -131,6 +131,12 @@ Plugin parse_manifest(const std::string& text, const std::string& id) {
         p.error = "plugin.json : objet attendu.";
         return p;
     }
+    // M6 : nlohmann leve type_error (ex. 302) des qu'une cle existe avec un
+    // type inattendu — y compris via .value(cle, defaut) quand le defaut ne
+    // correspond pas au type trouve (« name » numerique, etc.). Sans ce garde,
+    // un plugin.json hostile faisait planter le balayage (profil : modpack ou
+    // plugin malveillant). Toute exception JSON devient une erreur de plugin.
+    try {
     p.name = j.value("name", id);
     p.version = j.value("version", std::string{});
     p.description = j.value("description", std::string{});
@@ -242,6 +248,10 @@ Plugin parse_manifest(const std::string& text, const std::string& id) {
     if (p.actions.empty() && !p.hasService && p.error.empty())
         p.error = "plugin.json : aucune action exploitable (il faut « label » "
                   "et « run »).";
+    } catch (const std::exception& ex) {
+        p.error = std::string("plugin.json invalide : ") + ex.what();
+        return p;
+    }
     return p;
 }
 

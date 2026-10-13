@@ -1277,6 +1277,11 @@ void plugin_event(const pluginhost::Event& e) {
 }
 
 void plugin_services_pump() {
+    // M6 : cette pompe tourne sur le fil UI et traite des trames IPC de
+    // plugins (processus non fiables) plus le balayage des manifestes. Aucune
+    // exception — JSON malforme, trame hostile — ne doit faire tomber tout le
+    // launcher : on la journalise et on repart au prochain tour.
+    try {
     const Uint32 now = SDL_GetTicks();
     if (now - g_svcLastScan > 2000) {
         g_svcLastScan = now;
@@ -1349,6 +1354,9 @@ void plugin_services_pump() {
         }
     }
     if (pluginhost::running()) pluginhost::pump(plugin_call, plugin_event);
+    } catch (const std::exception& ex) {
+        svc_trace(std::string("pompe des services de plugins : ") + ex.what());
+    }
 }
 
 void phase8_pump(SDL_Window* window) {

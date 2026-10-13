@@ -413,6 +413,22 @@ int main() {
               Status::Unsigned);
         // Document mal formé -> refus.
         CHECK(signing::verify_update(pkg, "pas du json", roots, kNow).status == Status::Invalid);
+
+        // M6 : JSON au mauvais TYPE (le .sig vient du reseau, non verifie a ce
+        // stade). Avant correctif, .value("v", 0) sur « v » non entier levait
+        // type_error -> crash. Desormais : Invalid, jamais d'exception.
+        CHECK(signing::verify_update(pkg, R"({"v":"pas un entier"})", roots, kNow).status ==
+              Status::Invalid);
+        CHECK(signing::verify_update(pkg, R"({"v":1,"cert":123,"release":"x"})", roots, kNow)
+                  .status == Status::Invalid);
+        CHECK(signing::verify_update(pkg, R"([1,2,3])", roots, kNow).status == Status::Invalid);
+        CHECK(signing::verify_update(pkg, R"("juste une chaine")", roots, kNow).status ==
+              Status::Invalid);
+        // M6 : liste de révocation au mauvais type -> rejetee, pas de throw.
+        std::string rerr;
+        CHECK(!signing::parse_revocations(R"({"v":[1]})", roots, kNow, 0, &rerr).has_value());
+        CHECK(!signing::parse_revocations(R"({"v":1,"cert":1,"list":2})", roots, kNow, 0, &rerr)
+                   .has_value());
     }
 
     // =====================================================================
