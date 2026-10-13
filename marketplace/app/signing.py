@@ -19,7 +19,7 @@ from pathlib import Path
 from nacl.signing import SigningKey, VerifyKey
 from nacl.exceptions import BadSignatureError
 
-KNOWN_USAGES = ("plugin", "mod", "revocation")
+KNOWN_USAGES = ("plugin", "mod", "revocation", "launcher")
 
 
 def b64(data: bytes) -> str:
@@ -130,6 +130,22 @@ class Signer:
         }
         return json.dumps({"v": 1, "cert": self.cert,
                            "release": sign_payload(release, self.key)})
+
+    def sign_update(self, sha512_hex: str, version: str, signed_at: int) -> str:
+        """signature.json d'un paquet de mise à jour du launcher, vérifié par
+        signing::verify_update côté C++ (type tl-launcher-release). La clé
+        doit porter l'usage « launcher ». `sha512_hex` est l'empreinte du zip."""
+        if "launcher" not in self.usages:
+            raise PermissionError("cette clé n'est pas habilitée à signer : launcher")
+        release = {
+            "type": "tl-launcher-release",
+            "v": 1,
+            "version": version,
+            "keyId": self.key_id,
+            "signedAt": signed_at,
+            "sha512": sha512_hex,
+        }
+        return json.dumps({"v": 1, "cert": self.cert, "release": sign_payload(release, self.key)})
 
     def sign_revocations(self, content: dict) -> str:
         if "revocation" not in self.usages:

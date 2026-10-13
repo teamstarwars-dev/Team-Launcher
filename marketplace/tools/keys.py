@@ -34,7 +34,7 @@ from nacl import secret
 from nacl.exceptions import CryptoError
 from nacl.signing import SigningKey
 
-from app.signing import KNOWN_USAGES, load_seed, make_cert, write_secret_file
+from app.signing import KNOWN_USAGES, Signer, load_seed, make_cert, write_secret_file
 
 SAFE_KEY_ID = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
 
@@ -210,6 +210,38 @@ def cmd_issue(a) -> int:
     return 0
 
 
+def cmd_sign_update(a) -> int:
+    """Signe un paquet de mise à jour du launcher (auto-update).
+
+    Produit <zip>.sig à côté du zip, à publier comme asset de la release
+    GitHub. Le launcher le télécharge à <asset>.sig et refuse la mise à
+    jour si la signature manque ou est invalide. La clé doit porter l'usage
+    « launcher » (émettez-la avec : issue --usages launcher)."""
+    try:
+        signer = Signer.load(Path(a.key).expanduser(), Path(a.cert).expanduser())
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    zip_path = Path(a.zip).expanduser()
+    if not zip_path.is_file():
+        print(f"paquet introuvable : {zip_path}", file=sys.stderr)
+        return 1
+    h = hashlib.sha512()
+    with open(zip_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    try:
+        sig = signer.sign_update(h.hexdigest(), a.version, int(time.time()))
+    except PermissionError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    out = zip_path.with_name(zip_path.name + ".sig")
+    out.write_text(sig)
+    print(f"Signature écrite : {out}")
+    print(f"Publiez {zip_path.name} ET {out.name} comme assets de la release.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="tools.keys")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -225,9 +257,14 @@ def main(argv: list[str] | None = None) -> int:
     i.add_argument("--usages", default="plugin,mod,revocation")
     i.add_argument("--days", type=int, default=365)
     i.add_argument("--out", required=True)
+    u = sub.add_parser("sign-update")
+    u.add_argument("--key", required=True)
+    u.add_argument("--cert", required=True)
+    u.add_argument("--zip", required=True)
+    u.add_argument("--version", required=True)
     a = p.parse_args(argv)
     return {"root-init": cmd_root_init, "show-root": cmd_show_root, "issue": cmd_issue,
-            "restore-root": cmd_restore_root}[a.cmd](a)
+            "restore-root": cmd_restore_root, "sign-update": cmd_sign_update}[a.cmd](a)
 
 
 if __name__ == "__main__":
