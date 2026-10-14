@@ -126,6 +126,16 @@ const std::string& ms_token_entropy() {
     return v;
 }
 
+// Déchiffre un jeton MS stocké, dans l'ordre : AVEC entropie (format M5),
+// puis SANS entropie (ancien format), puis clair historique. Court-circuit :
+// on n'appelle le repli sans entropie QUE si la version avec entropie a
+// échoué (value_or aurait évalué les deux à chaque fois).
+std::string unprotect_ms_token(const std::string& raw) {
+    if (auto t = dpapi_unprotect_b64(raw, ms_token_entropy())) return *t;
+    if (auto t = dpapi_unprotect_b64(raw)) return *t;
+    return raw;
+}
+
 // ---------------------------------------------------------------------------
 // Fichiers
 // ---------------------------------------------------------------------------
@@ -339,8 +349,7 @@ std::optional<AuthSession> try_load_session_cache() {
         // entropie), puis sur le clair historique. Un cache ecrit par une
         // version anterieure reste donc lisible, et sera resauvegarde avec
         // entropie au prochain enregistrement.
-        s.token = dpapi_unprotect_b64(tokenRaw, ms_token_entropy())
-                      .value_or(dpapi_unprotect_b64(tokenRaw).value_or(tokenRaw));
+        s.token = unprotect_ms_token(tokenRaw);
         // expiresAt = moment ou le JETON MINECRAFT doit etre regenere (~23 h),
         // a ne pas confondre avec kSessionTtlSec (conservation du fichier).
         s.expiresAt = ts + kMcTokenFreshSec;
@@ -394,8 +403,7 @@ std::optional<std::string> try_load_refresh_token() {
     WipeGuard tGuard{t};
     if (t.empty()) return std::nullopt;
     // M5 : entropie d'abord, repli sans entropie, puis clair historique.
-    return dpapi_unprotect_b64(t, ms_token_entropy())
-        .value_or(dpapi_unprotect_b64(t).value_or(t));
+    return unprotect_ms_token(t);
 }
 
 void save_refresh_token(const std::string& token) {

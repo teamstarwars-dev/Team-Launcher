@@ -614,6 +614,32 @@ size_t write_file(char* ptr, size_t size, size_t nmemb, void* ud) {
     return out->fail() ? 0 : n;
 }
 
+// M4 (reprise) : hote TEL QUE libcurl le parsera (API CURLU), pour que la
+// decision d'allowlist porte sur l'hote reellement contacte et non sur un
+// parseur maison (host_from_url) qui pourrait diverger — sinon un attaquant
+// forgerait une URL validee sur un hote mais connectee a un autre (SSRF par
+// confusion de parseur). nullopt si curl rejette l'URL => on refuse.
+std::optional<std::string> curl_host(const std::string& url) {
+    CURLU* u = curl_url();
+    if (!u) return std::nullopt;
+    std::optional<std::string> out;
+    if (curl_url_set(u, CURLUPART_URL, url.c_str(), 0) == CURLUE_OK) {
+        char* host = nullptr;
+        if (curl_url_get(u, CURLUPART_HOST, &host, 0) == CURLUE_OK && host)
+            out = std::string(host);
+        if (host) curl_free(host);
+    }
+    curl_url_cleanup(u);
+    return out;
+}
+
+// Vrai si l'URL sera connectee par curl vers un hote autorise. Fail-closed si
+// curl ne sait pas parser l'URL.
+bool curl_host_allowed(const std::string& url) {
+    const auto h = curl_host(url);
+    return h && host_allowed(*h);
+}
+
 // Annulation + progression. Retour != 0 : curl avorte (CURLE_ABORTED_BY_CALLBACK).
 struct XferCtx {
     const std::atomic<bool>* cancel = nullptr;
@@ -681,9 +707,10 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
         dbg("scheme");
         return std::nullopt;
     }
-    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
-    // host_from_url() est partage (section S2) : pas de parseur ad hoc.
-    if (!host_allowed(host_from_url(url))) {
+    // S2 : allowlist d'hotes, refuse avant toute connexion sortante. On valide
+    // l'hote TEL QUE curl le parsera (curl_host_allowed), pas via un parseur
+    // maison : la validation et la connexion portent ainsi sur le meme hote.
+    if (!curl_host_allowed(url)) {
         if (std::getenv("TL_HTTP_DEBUG"))
             std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
         return std::nullopt;
@@ -727,6 +754,12 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
 
     std::string curUrl = url;
     for (int hop = 0; hop < 10; ++hop) {
+        // Chaque saut : l'hote (vu par curl) doit etre autorise avant connexion.
+        if (!curl_host_allowed(curUrl)) {
+            if (std::getenv("TL_HTTP_DEBUG"))
+                std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(curUrl).c_str());
+            return std::nullopt;
+        }
         responseBody.clear();
         curl_easy_setopt(h, CURLOPT_URL, curUrl.c_str());
         // Hors de l'hote d'origine : aucun en-tete personnalise (anti-fuite).
@@ -1027,8 +1060,8 @@ bool get_to_file(const std::string& url, const fs::path& dest,
         dbg("scheme");
         return false;
     }
-    // S2 : allowlist d'hotes, refuse avant toute connexion sortante.
-    if (!host_allowed(host_from_url(url))) {
+    // S2 : allowlist d'hotes (hote vu par curl), refuse avant connexion.
+    if (!curl_host_allowed(url)) {
         if (std::getenv("TL_HTTP_DEBUG"))
             std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(url).c_str());
         return false;
@@ -1043,9 +1076,8 @@ bool get_to_file(const std::string& url, const fs::path& dest,
     int hops = 0;
     for (int attempt = 1; attempt <= retries;) {
         if (cancel && cancel->load(std::memory_order_relaxed)) return false;
-        // Chaque saut : l'hote est deja valide (entree ou allowed_redirect),
-        // on le revalide avant toute connexion sortante par surete.
-        if (!host_allowed(host_from_url(curUrl))) {
+        // Chaque saut : l'hote REELLEMENT contacte par curl doit etre autorise.
+        if (!curl_host_allowed(curUrl)) {
             if (std::getenv("TL_HTTP_DEBUG"))
                 std::fprintf(stderr, "[http] REFUSE %s\n", redact_url(curUrl).c_str());
             return false;
