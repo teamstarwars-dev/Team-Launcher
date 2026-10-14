@@ -103,11 +103,12 @@ void sign_dir(const fs::path& dir, const std::string& id, const std::string& ver
 std::string make_revocations(const Key& root, const Key& inter, std::int64_t seq,
                              const json& extra = json::object(),
                              const std::vector<std::string>& usages = {"revocation"},
-                             const std::string& keyId = "int-rev") {
-    // Daté dans le passé : la section M3 recharge via l'heure réelle, et
-    // `within` refuse une liste émise « dans le futur ». Ne gêne pas les
-    // autres tests, qui passent kNow.
-    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", 1700000000}};
+                             const std::string& keyId = "int-rev",
+                             std::int64_t issuedAt = 1700000000) {
+    // Daté dans le passé par défaut : la section M3 recharge via l'heure
+    // réelle, et `within` refuse une liste émise « dans le futur ». Ne gêne pas
+    // les autres tests, qui passent kNow.
+    json list{{"type", "tl-revocations"}, {"v", 1}, {"seq", seq}, {"issuedAt", issuedAt}};
     for (auto it = extra.begin(); it != extra.end(); ++it) list[it.key()] = it.value();
     const json doc{{"v", 1},
                    {"cert", make_cert(root, inter, keyId, usages)},
@@ -465,6 +466,24 @@ int main() {
         signing::reset_revocations_for_tests();
         CHECK(!signing::install_revocations(rev1, kNow, &ierr, roots));
         CHECK(signing::current_revocations(roots).seq == 2);
+
+        // ATTAQUE 3 (reprise post-revue) : HORLOGE QUI RECULE. Une liste déjà
+        // acceptée est datée « dans le futur » par rapport à l'heure réelle du
+        // rechargement. Avant le correctif, `within` la rejetait au reload et
+        // la révocation SAUTAIT (fail-open). Désormais la fenêtre n'est pas
+        // revérifiée au rechargement : la révocation TIENT.
+        const std::int64_t future = 3000000000; // < notAfter du cert (4e9)
+        const std::string rev3 =
+            make_revocations(root, inter, 3, {{"releases", rel}}, {"revocation"},
+                             "int-rev", future);
+        signing::reset_revocations_for_tests();
+        DataStore::settings.revocationFloorSeq = 0;
+        DataStore::settings.revocationDoc.clear();
+        // Installée avec une horloge « à l'heure » de la liste (futur).
+        CHECK(signing::install_revocations(rev3, future + 10, &ierr, roots));
+        // Rechargement : current_revocations passe par l'heure RÉELLE (< future).
+        signing::reset_revocations_for_tests();
+        CHECK(signing::current_revocations(roots).releases.count({"demo", "1.0"}) == 1);
     }
 
     fs::remove_all(base, ec);

@@ -109,13 +109,17 @@ struct WipeGuard {
 };
 
 // M5 : entropie secondaire DPAPI, propre a l'application, liee au jeton
-// Microsoft au repos (session et refresh). Ce n'est PAS la graine qui est
-// stockee : .rdata ne porte qu'une graine obfusquee (S3), et l'entropie est
-// son SHA-256, calcule a l'execution. Sans cette valeur, un autre processus
-// du meme utilisateur ne peut plus dechiffrer le jeton par un simple
-// CryptUnprotectData sur le fichier. Limite assumee : un reverse du binaire
-// peut reconstituer la graine ; le cout passe de « copier le fichier » a
-// « extraire aussi cette valeur de l'application ».
+// Microsoft au repos (session et refresh). L'entropie est le SHA-256 d'une
+// graine (obfusquee S3 dans .rdata), calcule a l'execution.
+//
+// PORTEE EXACTE, sans l'embellir : ce depot est PUBLIC, donc la graine est
+// lisible dans les sources et l'entropie se recalcule par un simple SHA-256 —
+// inutile de reverser le binaire. Cette entropie n'arrete donc PAS un
+// attaquant cible qui connait l'application ; elle neutralise seulement les
+// outils GENERIQUES d'extraction DPAPI qui dechiffrent en masse les blobs d'un
+// utilisateur sans fournir d'entropie. Une vraie barriere exigerait un secret
+// par installation, mais il serait lui-meme lisible par le meme utilisateur :
+// DPAPI CurrentUser ne protege pas d'un code s'executant sous ce compte.
 const std::string& ms_token_entropy() {
     static const std::string v =
         tl::sha256_hex_of(TL_OBF("TeamLauncher/v8/ms-token/dpapi-entropy"));

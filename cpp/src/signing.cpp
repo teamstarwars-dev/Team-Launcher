@@ -188,7 +188,7 @@ std::optional<std::string> sha512_file_hex(const fs::path& p) {
 
 std::optional<Revocations> parse_revocations(const std::string& text, const Roots& roots,
                                              std::int64_t now, std::int64_t minSeq,
-                                             std::string* err) {
+                                             std::string* err, bool enforceWindow) {
     std::string e;
     auto fail = [&](const std::string& m) -> std::optional<Revocations> {
         if (err) *err = m;
@@ -220,7 +220,11 @@ std::optional<Revocations> parse_revocations(const std::string& text, const Root
     if (r.seq < 0) return fail("numéro de liste négatif");
     if (r.seq < minSeq)
         return fail("liste de révocation plus ancienne que la dernière acceptée (rejeu ?)");
-    if (!within(*cert, r.issuedAt, now)) return fail("liste émise hors de la validité du certificat");
+    // Fenêtre de validité : imposée à l'installation (liste neuve), mais PAS au
+    // rechargement d'une liste déjà acceptée — sinon la révocation sauterait à
+    // l'expiration du certificat ou si l'horloge recule (fail-open).
+    if (enforceWindow && !within(*cert, r.issuedAt, now))
+        return fail("liste émise hors de la validité du certificat");
     r.killAll = l.value("killAll", false);
     if (const auto k = l.find("keyIds"); k != l.end() && k->is_array())
         for (const auto& v : *k)
@@ -261,7 +265,10 @@ void load_cache_locked(const Roots& roots) {
     auto consider = [&](const std::string& text) {
         if (text.empty()) return;
         std::string err;
-        if (auto r = parse_revocations(text, roots, now, floor, &err))
+        // Rechargement d'une liste DÉJÀ acceptée : on ne revérifie pas la
+        // fenêtre de validité (voir parse_revocations) ; signature + plancher
+        // suffisent, sinon une révocation en vigueur sauterait à l'expiration.
+        if (auto r = parse_revocations(text, roots, now, floor, &err, /*enforceWindow=*/false))
             if (r->seq > g_rev.seq) g_rev = *r;
     };
     // DEUX sources : le fichier de cache ET une sauvegarde dans la config.
@@ -308,7 +315,12 @@ bool install_revocations(const std::string& text, std::int64_t now, std::string*
     // suppression de revocations.json et au redémarrage.
     DataStore::settings.revocationDoc = text;
     DataStore::settings.revocationFloorSeq = r->seq;
-    DataStore::save();
+    // Écriture IMMÉDIATE (pas la sauvegarde différée) : sinon, tué entre
+    // l'écriture de revocations.json et la sauvegarde de la config, le plancher
+    // resterait ancien et supprimer revocations.json permettrait de rejouer une
+    // liste plus ancienne. La config (plancher + doc) doit être sur disque
+    // AVANT le fichier de cache.
+    DataStore::saveNow();
     std::ofstream out(rev_cache(), std::ios::binary | std::ios::trunc);
     out << text;
     return true;

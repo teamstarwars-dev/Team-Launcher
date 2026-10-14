@@ -269,6 +269,13 @@ int main() {
         for (const char* rel : {"assets/default.env", "src/datastore.cpp",
                                  "build-secrets.env.example"}) {
             const std::string t = read(src / rel);
+            // Un fichier attendu VIDE/introuvable = garde inoperant : on echoue
+            // plutot que de passer a vide (TL_SRC_DIR faux, fichier renomme...).
+            if (t.empty()) {
+                std::printf("FAIL M7 : fichier de garde introuvable : %s\n", rel);
+                ++g_failures;
+                continue;
+            }
             const std::string needle = "discord.com/api/webhooks/";
             size_t pos = t.find(needle);
             bool liveHook = false;

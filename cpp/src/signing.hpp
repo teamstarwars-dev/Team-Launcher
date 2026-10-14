@@ -66,9 +66,16 @@ struct Revocations {
 // Vérifie et lit une liste de révocation. `minSeq` : la plus haute déjà
 // acceptée — une liste PLUS ANCIENNE est refusée, sans quoi un attaquant
 // rejouerait une vieille liste où son plugin n'est pas encore révoqué.
+//
+// `enforceWindow` : vérifier que l'horodatage d'émission tombe dans la
+// période de validité du certificat. VRAI à l'installation d'une liste neuve.
+// FAUX au RECHARGEMENT d'une liste DÉJÀ acceptée (persistée) : sinon une
+// révocation en vigueur cesserait de s'appliquer dès que le certificat expire
+// ou que l'horloge recule — un fail-open. On ne revalide alors que la
+// signature, le chaînage et le plancher (minSeq), jamais la fenêtre.
 std::optional<Revocations> parse_revocations(const std::string& text, const Roots& roots,
                                              std::int64_t now, std::int64_t minSeq,
-                                             std::string* err);
+                                             std::string* err, bool enforceWindow = true);
 
 // Liste en vigueur dans ce processus (chargée depuis le cache disque au
 // premier appel). install_revocations la remplace si elle est valide et

@@ -468,6 +468,10 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
                                    const std::atomic<bool>* cancel) {
     const bool isGet = std::strcmp(verb, "GET") == 0;
     std::string curUrl = url;
+    // M4 : hote d'origine. Les en-tetes fournis par l'appelant (Authorization,
+    // x-api-key...) ne repartent QUE vers cet hote : sur un saut cross-host, on
+    // ne divulgue pas le secret a l'hote de redirection (comme curl).
+    const std::string originHost = host_from_url(url);
 
     // M4 : les redirections sont suivies A LA MAIN (seulement pour GET), en
     // revalidant l'allowlist et en refusant tout downgrade a chaque saut.
@@ -493,7 +497,9 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
             dbg("WinHttpConnect");
             return std::nullopt;
         }
-        std::string headers = extraHeaders;
+        // En-tetes sensibles seulement vers l'hote d'origine (cf. originHost).
+        std::string headers =
+            (host_from_url(curUrl) == originHost) ? extraHeaders : std::string{};
         if (!contentType.empty()) {
             if (!headers.empty()) headers += "\r\n";
             headers += "Content-Type: " + contentType;
@@ -690,6 +696,10 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
     CURL* h = easy.h;
     std::string responseBody;
     Slist headers = build_headers(extraHeaders, contentType);
+    // M4 : en-tetes sensibles (Authorization, x-api-key...) seulement vers
+    // l'hote d'origine ; sur un saut cross-host, on ne les divulgue pas (curl
+    // fait de meme avec FOLLOWLOCATION, mais on suit a la main).
+    const std::string originHost = host_from_url(url);
     XferCtx xfer{cancel, nullptr};
     curl_easy_setopt(h, CURLOPT_USERAGENT, "TeamLauncher/6.0");
     curl_easy_setopt(h, CURLOPT_HTTPHEADER, headers.l);
@@ -719,6 +729,9 @@ std::optional<Response> do_request(const char* verb, const std::string& url,
     for (int hop = 0; hop < 10; ++hop) {
         responseBody.clear();
         curl_easy_setopt(h, CURLOPT_URL, curUrl.c_str());
+        // Hors de l'hote d'origine : aucun en-tete personnalise (anti-fuite).
+        curl_easy_setopt(h, CURLOPT_HTTPHEADER,
+                         host_from_url(curUrl) == originHost ? headers.l : nullptr);
         const CURLcode rc = curl_easy_perform(h);
         if (rc != CURLE_OK) {
             // Annulation : silencieux (comme le return nullopt sur cancel Windows).
@@ -871,6 +884,11 @@ std::string resolve_url(const std::string& current, const std::string& loc) {
 std::optional<std::string> allowed_redirect(const std::string& currentUrl,
                                             const std::string& location) {
     if (location.empty()) return std::nullopt;
+    // Une Location contenant un espace, un « \ » ou un caractere de controle
+    // est refusee : elle trahit une tentative de confusion de parseur (l'hote
+    // vu par notre resolveur differerait de celui ouvert par le transport).
+    for (unsigned char ch : location)
+        if (ch <= 0x20 || ch == '\\' || ch == 0x7f) return std::nullopt;
     const std::string target = resolve_url(currentUrl, location);
     const bool tgtSecure = istarts_with(target, "https://");
     const bool tgtHttp = istarts_with(target, "http://");
