@@ -108,9 +108,18 @@ bool secure_or_local(const std::string& url) {
         return true;
     };
     if (istarts("https://")) return true;
-    // Boucle locale en http toleree pour le developpement.
-    return istarts("http://localhost") || istarts("http://127.0.0.1") ||
-           istarts("http://[::1]");
+    // Boucle locale en http toleree pour le developpement. Le prefixe doit
+    // etre suivi de ':' (port), '/' (chemin) ou la fin : sinon
+    // « http://localhost.attacker.com » passerait pour du loopback et
+    // autoriserait un envoi EN CLAIR vers un hote distant.
+    auto local_host = [&](const char* pfx) {
+        if (!istarts(pfx)) return false;
+        const size_t n = std::char_traits<char>::length(pfx);
+        const char next = url.size() > n ? url[n] : '\0';
+        return next == '\0' || next == ':' || next == '/';
+    };
+    return local_host("http://localhost") || local_host("http://127.0.0.1") ||
+           local_host("http://[::1]");
 }
 
 // Envoi non bloquant : un thread detache par message serait couteux, on

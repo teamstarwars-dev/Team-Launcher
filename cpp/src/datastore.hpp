@@ -178,6 +178,12 @@ public:
     static void saveNow(); // ecriture immediate (fin d'app)
     static void shutdown(); // arrete le worker debonce
 
+    // Révocations (M3) : écrit revocationDoc + revocationFloorSeq PUIS persiste,
+    // le tout sous le même verrou que la sérialisation. install_revocations
+    // tourne sur un fil de rafraîchissement : passer par ici évite une course
+    // de données entre l'écriture de ces champs et doSave() (qui lit settings).
+    static void setRevocationState(const std::string& doc, long long floorSeq);
+
     static AppSettings settings;
 
 private:

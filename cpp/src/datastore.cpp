@@ -645,6 +645,18 @@ void DataStore::saveNow() {
     doSave();
 }
 
+void DataStore::setRevocationState(const std::string& doc, long long floorSeq) {
+    // Écriture des champs sous saveMutex : mutuellement exclusive avec la
+    // sérialisation de doSave() (qui prend le même verrou), donc pas de lecture
+    // déchirée de revocationDoc depuis le fil de rafraîchissement.
+    {
+        std::lock_guard<std::mutex> g(saveMutex());
+        settings.revocationDoc = doc;
+        settings.revocationFloorSeq = floorSeq;
+    }
+    saveNow();
+}
+
 void DataStore::doSave() {
     std::lock_guard<std::mutex> g(saveMutex());
     std::error_code ec;

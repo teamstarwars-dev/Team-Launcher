@@ -310,17 +310,15 @@ bool install_revocations(const std::string& text, std::int64_t now, std::string*
     if (!r) return false;
     if (r->seq == g_rev.seq) return true; // déjà en vigueur
     g_rev = *r;
-    // Persiste la liste ET relève le plancher, dans la configuration (hors
-    // du fichier de cache supprimable) : la révocation survit à la
-    // suppression de revocations.json et au redémarrage.
-    DataStore::settings.revocationDoc = text;
-    DataStore::settings.revocationFloorSeq = r->seq;
-    // Écriture IMMÉDIATE (pas la sauvegarde différée) : sinon, tué entre
-    // l'écriture de revocations.json et la sauvegarde de la config, le plancher
-    // resterait ancien et supprimer revocations.json permettrait de rejouer une
-    // liste plus ancienne. La config (plancher + doc) doit être sur disque
-    // AVANT le fichier de cache.
-    DataStore::saveNow();
+    // Persiste la liste ET relève le plancher dans la configuration (hors du
+    // fichier de cache supprimable) : la révocation survit à la suppression de
+    // revocations.json et au redémarrage. Écriture IMMÉDIATE et sous le verrou
+    // de sérialisation (setRevocationState) : sinon, tué entre l'écriture de
+    // revocations.json et la sauvegarde de la config, le plancher resterait
+    // ancien et supprimer revocations.json permettrait de rejouer une liste
+    // plus ancienne. La config (plancher + doc) doit être sur disque AVANT le
+    // fichier de cache.
+    DataStore::setRevocationState(text, r->seq);
     std::ofstream out(rev_cache(), std::ios::binary | std::ios::trunc);
     out << text;
     return true;

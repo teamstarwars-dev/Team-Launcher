@@ -623,6 +623,27 @@ int main() {
         CHECK(!packs::mrpack_body_verified(json{{"hashes", json::object()}}, body));
     }
 
+    // --- Securite (reprise santa) : pack partage hostile ne doit pas CRASHER ---
+    // download_items lisait Url/Filename/Sha1 via .value(cle, defaut), qui LEVE
+    // un type_error si la cle existe avec un type non-string. import_pack tourne
+    // sur un std::thread nu (ui_packs) => une exception non rattrapee faisait
+    // std::terminate (DoS). Champs lus en securite + corps enveloppe : plus de
+    // crash. Les Url numeriques donnent une chaine vide => rien de reseau.
+    {
+        std::atomic<bool> cancel{false};
+        bool threw = false;
+        try {
+            const std::string hostile =
+                R"({"Mods":[{"Url":123,"Filename":456,"Sha1":789}],"Name":42,)"
+                R"("Loader":[],"McVersion":{}})";
+            const auto r = share::import_pack(hostile, nullptr, cancel);
+            (void)r;
+        } catch (...) {
+            threw = true;
+        }
+        CHECK(!threw);
+    }
+
     DataStore::shutdown();
     fs::remove_all(tmp, ec);
 

@@ -24,6 +24,16 @@ void report(const Progress& p, const std::string& s) {
     if (p) p(s);
 }
 
+// Lecture SÛRE d'un champ chaîne : "" si absent OU d'un type non-string. Le
+// descriptif d'un pack partagé vient de l'utilisateur (fichier/texte importé)
+// et peut être hostile ; `.value(clé, défaut)` de nlohmann LÈVE un type_error
+// si la clé existe avec un type différent — ce qui, sur un fil de travail sans
+// try/catch, ferait planter le launcher (DoS). On ne lève donc jamais ici.
+std::string jstr(const json& j, const char* key) {
+    const auto it = j.find(key);
+    return (it != j.end() && it->is_string()) ? it->get<std::string>() : std::string{};
+}
+
 bool iends_with(const std::string& s, const char* suffix) {
     const size_t n = std::char_traits<char>::length(suffix);
     if (s.size() < n) return false;
@@ -135,8 +145,8 @@ int download_items(const json& items, const fs::path& destDir,
     for (const auto& it : items) {
         if (cancel.load()) break;
         ++i;
-        const std::string url = it.value("Url", std::string{});
-        const std::string name = it.value("Filename", std::string{});
+        const std::string url = jstr(it, "Url");
+        const std::string name = jstr(it, "Filename");
         report(progress, std::string(label) + " (" + std::to_string(i) + "/" +
                              std::to_string(total) + ")...");
         if (url.empty() || name.empty()) {
@@ -154,7 +164,7 @@ int download_items(const json& items, const fs::path& destDir,
         // l'export, recoupe avec Modrinth). On l'impose : le lien pointe vers
         // un CDN tiers, seul ce hash — issu du pack que l'utilisateur importe —
         // fait foi. Empreinte absente ou non conforme = refus (fail-closed).
-        const std::string sha1 = it.value("Sha1", std::string{});
+        const std::string sha1 = jstr(it, "Sha1");
         std::string got = sha1_hex_of(r->body);
         for (char& c : got) c = static_cast<char>(std::tolower((unsigned char)c));
         std::string want = sha1;
@@ -275,6 +285,10 @@ ImportResult import_pack(const std::string& text, const Progress& progress,
         return (v && v->is_string()) ? v->get<std::string>() : std::string{};
     };
 
+    // Tout accès au contenu du pack (hostile possible) est enveloppé : cette
+    // fonction tourne sur un std::thread nu (ui_packs), une exception non
+    // rattrapée y ferait std::terminate (crash du launcher).
+    try {
     const json mods = arr("Mods");
     const json shaders = arr("Shaders");
     if (mods.empty() && shaders.empty()) {
@@ -303,6 +317,10 @@ ImportResult import_pack(const std::string& text, const Progress& progress,
                                      progress, cancel, &res.downloaded);
     if (cancel.load()) res.cancelled = true;
     return res;
+    } catch (const std::exception& ex) {
+        res.error = std::string("Pack partagé illisible : ") + ex.what();
+        return res;
+    }
 }
 
 } // namespace tl::share
