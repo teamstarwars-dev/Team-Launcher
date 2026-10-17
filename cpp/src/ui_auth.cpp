@@ -1,5 +1,10 @@
 #include "ui_internal.hpp"
 
+#include "qrcodegen.hpp"
+
+#include <cmath>
+#include <vector>
+
 #include "game_launcher.hpp" // log_line : une trace dans launcher.log
 #include "http_win.hpp"      // host_allowed : allowlist S2
 #include "ms_auth.hpp"
@@ -18,6 +23,60 @@
 // ---------------------------------------------------------------------------
 
 namespace tl::ui {
+
+namespace {
+
+// Lien encodé dans le QR code. Si Microsoft n'a pas fourni de lien avec le
+// code pré-rempli (verification_uri_complete), on ajoute le paramètre
+// « otc » de microsoft.com/link ; si la page l'ignorait, le joueur
+// verrait simplement le champ vide et taperait le code affiché à l'écran.
+std::string qr_target(const std::string& url, const std::string& code) {
+    if (url.find("otc=") != std::string::npos || url.find(code) != std::string::npos)
+        return url;
+    return url + (url.find('?') == std::string::npos ? "?otc=" : "&otc=") + code;
+}
+
+// Dessine le QR code centré, sur fond blanc avec une marge de 4 modules
+// (indispensable à la lecture par un téléphone). Calculé une fois par lien.
+void draw_login_qr(const std::string& text, float width) {
+    static std::string cachedText;
+    static std::vector<bool> modules;
+    static int n = 0;
+    if (text != cachedText) {
+        cachedText = text;
+        modules.clear();
+        n = 0;
+        try {
+            const auto qr = qrcodegen::QrCode::encodeText(text.c_str(), qrcodegen::QrCode::Ecc::MEDIUM);
+            n = qr.getSize();
+            modules.resize(static_cast<size_t>(n) * n);
+            for (int y = 0; y < n; ++y)
+                for (int x = 0; x < n; ++x) modules[static_cast<size_t>(y) * n + x] = qr.getModule(x, y);
+        } catch (const std::exception&) {
+            n = 0; // lien trop long : pas de QR, le code reste affiché
+        }
+    }
+    if (n == 0) return;
+    const int quiet = 4;
+    const float side = 156.0f;
+    const float cell = std::floor(side / static_cast<float>(n + 2 * quiet));
+    const float real = cell * static_cast<float>(n + 2 * quiet);
+    const ImVec2 cur = ImGui::GetCursorScreenPos();
+    const ImVec2 p(cur.x + (width - real) * 0.5f, cur.y);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + real, p.y + real), IM_COL32(255, 255, 255, 255), 6.0f);
+    for (int y = 0; y < n; ++y)
+        for (int x = 0; x < n; ++x)
+            if (modules[static_cast<size_t>(y) * n + x]) {
+                const float x0 = p.x + (x + quiet) * cell, y0 = p.y + (y + quiet) * cell;
+                dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + cell, y0 + cell),
+                                  IM_COL32(0, 0, 0, 255));
+            }
+    ImGui::Dummy(ImVec2(width, real + 6.0f));
+}
+
+} // namespace
+
 
 // Hote d'une URL, en minuscules, sans port ni chemin. Vide si l'URL n'est
 // pas en https — tout le reste est refuse d'office.
@@ -128,7 +187,9 @@ void draw_login_modal() {
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y * 0.5f), ImGuiCond_Always,
                             ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_Always);
+    // Plus haute pendant l'attente du code : elle porte alors le QR code.
+    const bool showsQr = get_state() == AuthState::WaitingCode;
+    ImGui::SetNextWindowSize(ImVec2(520, showsQr ? 560.0f : 360.0f), ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_PopupBg, kCard);
 
     const std::string mTitle = std::string(tr("Connexion Microsoft")) + "###msauth";
@@ -179,6 +240,12 @@ void draw_login_modal() {
         }
 
         if (st == AuthState::WaitingCode && !info.userCode.empty()) {
+            // QR code à scanner avec le téléphone : il ouvre la page de
+            // connexion Microsoft avec le code déjà rempli.
+            draw_login_qr(qr_target(info.verificationUrl, info.userCode), w);
+            centered(tr("Scanne ce QR code avec ton téléphone, ou bien :",
+                        "Scan this QR code with your phone, or:"), kDim);
+            ImGui::Spacing();
             // Deux lignes courtes : le texte C# d'origine tenait en 520 px en
             // Segoe UI, pas dans la police ImGui par defaut (bien plus large).
             centered(tr("Ton navigateur s'est ouvert sur la page"), kText);
