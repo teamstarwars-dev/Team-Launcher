@@ -78,6 +78,31 @@ int main() {
     CHECK(maven_name_to_path("net.minecraftforge:mcp_config:1.16.5@zip").empty());
     CHECK(maven_name_to_path("trop-court").empty());
 
+    // --- 1bis. Quilt : choix du loader (prefere stable, repli tete de liste) ---
+    // L'API meta Quilt n'a pas de flag « stable » et n'est pas triee par
+    // version : la tete est souvent une beta de build plus recent.
+    {
+        using nlohmann::json;
+        auto entry = [](const char* v) {
+            return json{{"loader", {{"version", v}}}};
+        };
+        // Beta en tete, stable plus loin -> on prend la stable.
+        const json mixed = json::array({entry("0.20.0-beta.9"), entry("0.24.0"),
+                                        entry("0.23.1")});
+        CHECK_EQ(quilt_pick_loader_version(mixed), std::string("0.24.0"));
+        // Que des pre-versions -> repli sur la tete de liste.
+        const json allBeta = json::array({entry("0.21.0-beta.1"),
+                                          entry("0.20.0-beta.9")});
+        CHECK_EQ(quilt_pick_loader_version(allBeta), std::string("0.21.0-beta.1"));
+        // Liste vide ou mal formee -> "".
+        CHECK(quilt_pick_loader_version(json::array()).empty());
+        CHECK(quilt_pick_loader_version(json::object()).empty());
+        CHECK(quilt_pick_loader_version(json::array({json{{"x", 1}}})).empty());
+        // Premiere entree deja stable -> prise telle quelle.
+        CHECK_EQ(quilt_pick_loader_version(json::array({entry("0.26.0")})),
+                 std::string("0.26.0"));
+    }
+
     // --- 2. RulesAllow (OS courant : "windows" sous Windows, "linux" sinon) ---
     CHECK(rules_allow(nlohmann::json::object())); // pas de rules -> true
 #ifdef _WIN32

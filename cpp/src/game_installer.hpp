@@ -44,6 +44,14 @@ std::string run_jar_installer(const std::string& java,
 // Installeurs de loaders (retournent l'id de version cree).
 std::string ensure_fabric_installed(const std::string& mcVersion,
                                     std::atomic<bool>& cancel);
+std::string ensure_quilt_installed(const std::string& mcVersion,
+                                   std::atomic<bool>& cancel);
+
+// Choix du loader Quilt dans la réponse de l'API meta : premier SANS tag de
+// pré-version (SemVer « - »), sinon la tête de liste. "" si la liste est vide
+// ou mal formée. Exposé pour les tests (l'API Quilt n'a pas de flag stable et
+// n'est pas triée par version, cf. ensure_quilt_installed).
+std::string quilt_pick_loader_version(const nlohmann::json& list);
 std::string ensure_forge_installed(const std::string& mcVersion,
                                    std::atomic<bool>& cancel);
 std::string ensure_neoforge_installed(const std::string& mcVersion,

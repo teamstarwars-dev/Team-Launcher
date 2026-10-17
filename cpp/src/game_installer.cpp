@@ -692,10 +692,13 @@ nlohmann::json install(const std::string& versionId, const std::string& loader,
         return make_info(root, cp, 8, true, nullptr);
     }
 
-    // ---- 5bis. Fabric ----
-    if (iequals(loader, "Fabric")) {
-        P("Installation de Fabric", 0, 0);
-        const std::string fabricId = ensure_fabric_installed(versionId, cancel);
+    // ---- 5bis. Fabric / Quilt (Quilt = fork de Fabric, même mécanique) ----
+    if (iequals(loader, "Fabric") || iequals(loader, "Quilt")) {
+        const bool isQuilt = iequals(loader, "Quilt");
+        P(isQuilt ? "Installation de Quilt" : "Installation de Fabric", 0, 0);
+        const std::string fabricId = isQuilt
+                                         ? ensure_quilt_installed(versionId, cancel)
+                                         : ensure_fabric_installed(versionId, cancel);
         const fs::path fabricJsonPath =
             versions_dir() / fabricId / (fabricId + ".json");
         std::ifstream fin(fabricJsonPath, std::ios::binary);
@@ -845,6 +848,60 @@ std::string ensure_fabric_installed(const std::string& mcVersion,
     std::ofstream out(jsonPath, std::ios::binary);
     out << *profile;
     return fabricId;
+}
+
+std::string quilt_pick_loader_version(const nlohmann::json& list) {
+    // Contrairement à Fabric, l'API Quilt n'expose pas de champ « stable » et
+    // la liste n'est PAS triée par version (la tête est souvent une beta de
+    // build plus récent). On retient le premier loader SANS tag de pré-version
+    // (SemVer : tout ce qui suit « - »), avec repli sur la tête de liste.
+    if (!list.is_array() || list.empty()) return {};
+    auto version_of = [](const nlohmann::json& e) -> std::string {
+        if (!e.is_object() || !e.contains("loader")) return {};
+        const auto& l = e.at("loader");
+        return (l.is_object() && l.contains("version") && l.at("version").is_string())
+                   ? l.at("version").get<std::string>()
+                   : std::string{};
+    };
+    for (const auto& e : list) {
+        const std::string v = version_of(e);
+        if (!v.empty() && v.find('-') == std::string::npos) return v;
+    }
+    return version_of(list[0]);
+}
+
+std::string ensure_quilt_installed(const std::string& mcVersion,
+                                   std::atomic<bool>& cancel) {
+    // Quilt est un fork de Fabric : même mécanique (API meta v3, profil au
+    // format Mojang, bibliothèques maven). Les mods Fabric tournent sous Quilt,
+    // d'où le mapping quilt -> fabric côté recherche de mods (content_install).
+    // 1. Dernier loader Quilt compatible.
+    const auto loaderList = http::get_string(
+        "https://meta.quiltmc.org/v3/versions/loader/" + mcVersion, &cancel);
+    if (!loaderList) throw std::runtime_error("meta.quiltmc.org injoignable");
+    const auto list = json::parse(*loaderList);
+    if (!list.is_array() || list.empty())
+        throw std::runtime_error("Quilt n'est pas disponible pour Minecraft " +
+                                 mcVersion + ".");
+    const std::string loaderVer = quilt_pick_loader_version(list);
+    if (loaderVer.empty())
+        throw std::runtime_error("Quilt : aucun loader exploitable pour " + mcVersion);
+
+    const std::string quiltId = "quilt-loader-" + loaderVer + "-" + mcVersion;
+    const fs::path jsonPath = versions_dir() / quiltId / (quiltId + ".json");
+    std::error_code ec;
+    if (fs::exists(jsonPath, ec)) return quiltId;
+
+    // 2. Profil de version officiel (format standard Mojang).
+    fs::create_directories(jsonPath.parent_path(), ec);
+    const auto profile = http::get_string(
+        "https://meta.quiltmc.org/v3/versions/loader/" + mcVersion + "/" +
+        loaderVer + "/profile/json",
+        &cancel);
+    if (!profile) throw std::runtime_error("profil Quilt indisponible");
+    std::ofstream out(jsonPath, std::ios::binary);
+    out << *profile;
+    return quiltId;
 }
 
 std::string ensure_forge_installed(const std::string& mcVersion,
