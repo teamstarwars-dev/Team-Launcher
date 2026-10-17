@@ -112,6 +112,47 @@ target_include_directories(tl_headers INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/third_party/stb
 )
 
+# ---- Opus (OPTIONNEL) : lecture du flux Ogg/Opus de SB'Music -----------
+# Pile Xiph statique : ogg + opus (via leur CMake) + opusfile (cible maison,
+# alimentee par callbacks -> OP_DISABLE_HTTP, pas de client HTTP/TLS). Presente
+# si fetch-deps.ps1 a recupere les trois ; sinon TL_HAVE_OPUS reste indefini et
+# le lecteur reste inactif (bouton de lecture grise).
+set(TL_HAVE_OPUS OFF)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opusfile/src/opusfile.c")
+  set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+  set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+  set(INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+  set(INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+  set(INSTALL_CMAKE_PACKAGE_MODULE OFF CACHE BOOL "" FORCE)
+  set(BUILD_TESTING OFF)
+  # Intrinsics SIMD OFF : opus passe "-msse4.1" brut sur ses fichiers
+  # dispatches, que clang-cl n'applique pas (il faudrait /clang:-msse4.1).
+  # Le chemin C portable suffit largement pour decoder un flux musical.
+  set(OPUS_DISABLE_INTRINSICS ON CACHE BOOL "" FORCE)
+  add_subdirectory(third_party/ogg EXCLUDE_FROM_ALL)
+  add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
+  add_library(opusfile STATIC
+    third_party/opusfile/src/info.c
+    third_party/opusfile/src/internal.c
+    third_party/opusfile/src/opusfile.c
+    third_party/opusfile/src/stream.c)
+  target_include_directories(opusfile PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opusfile/include)
+  target_include_directories(opusfile PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opusfile/src)
+  # OP_DISABLE_HTTP : pas de http.c/wincerts.c ; on lit le flux par callbacks.
+  target_compile_definitions(opusfile PRIVATE OP_DISABLE_HTTP)
+  target_link_libraries(opusfile PUBLIC opus ogg)
+  if(MSVC)
+    target_compile_options(opusfile PRIVATE /EHsc)
+  endif()
+  set(TL_HAVE_OPUS ON)
+  message(STATUS "Lecteur Musique : decodeur Opus (ON)")
+else()
+  message(STATUS "Lecteur Musique : Opus absent -> lecture desactivee")
+endif()
+
 # ---- Flags Release communs : taille + gc-sections + LTO + durcissement ----
 #
 # Les protections memoire ont ete MESUREES sur les binaires produits, pas
@@ -529,6 +570,12 @@ if(WIN32 AND EXISTS "${TL_WEBVIEW2_DIR}/include/WebView2.h")
   message(STATUS "Nova Skin : editeur embarque WebView2 (ON)")
 else()
   message(STATUS "Nova Skin : WebView2 absent -> fallback navigateur")
+endif()
+
+# Decodeur Opus (lecteur SB'Music) : lie au launcher si disponible.
+if(TL_HAVE_OPUS)
+  target_link_libraries(TeamLauncher PRIVATE opusfile)
+  target_compile_definitions(TeamLauncher PRIVATE TL_HAVE_OPUS=1)
 endif()
 
 target_compile_definitions(TeamLauncher PRIVATE

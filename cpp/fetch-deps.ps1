@@ -62,6 +62,14 @@ $deps = @(
   # Nayuki (MIT), deux fichiers C++, en-tetes standard uniquement, relue
   # avant integration. On ne compile que cpp/qrcodegen.cpp.
   @{ Name = 'qrcodegen';     Url = 'https://github.com/nayuki/QR-Code-generator.git'; Tag = 'v1.8.0' }
+  # Page Musique (SB'Music) : lecture du flux Ogg/Opus (/streams/:id). Pile
+  # Xiph : libogg (conteneur) + libopus (codec) + libopusfile (demux+decode,
+  # API simple op_read_stereo/op_pcm_seek). On alimente opusfile par CALLBACKS
+  # (le flux vient de notre couche HTTP), donc OP_DISABLE_HTTP cote CMake :
+  # pas besoin de son client HTTP/TLS. BSD, portables Windows/Linux.
+  @{ Name = 'ogg';           Url = 'https://github.com/xiph/ogg.git';          Tag = 'v1.3.5' }
+  @{ Name = 'opus';          Url = 'https://github.com/xiph/opus.git';         Tag = 'v1.5.2' }
+  @{ Name = 'opusfile';      Url = 'https://github.com/xiph/opusfile.git';     Tag = 'v0.12' }
 )
 
 $failed = @()

@@ -34,6 +34,7 @@
 #include "maintenance.hpp"
 #include "admin.hpp"
 #include "presence.hpp"
+#include "sbmusic_player.hpp" // arret du lecteur a la fermeture
 #include "shortcut.hpp"
 #include "ms_auth.hpp"
 #include "telemetry.hpp"
@@ -1873,6 +1874,8 @@ void shutdown() {
     if (dbg) std::fprintf(stderr, "SH: presence_stop\n");
     presence::shutdown();
     if (dbg) std::fprintf(stderr, "SH: presence_stop done\n");
+    // Lecteur SB'Music : ferme le peripherique audio et libere le titre.
+    sbmusic::shutdown();
     // Page Exploration : annuler la recherche/installation et joindre.
     if (dbg) std::fprintf(stderr, "SH: explore_stop\n");
     explore_stop();

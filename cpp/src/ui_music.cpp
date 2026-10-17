@@ -3,6 +3,7 @@
 #include "apptasks.hpp"
 #include "sbmusic.hpp"
 #include "sbmusic_api.hpp"
+#include "sbmusic_player.hpp"
 
 #include <atomic>
 #include <cstdio>
@@ -15,11 +16,12 @@
 // Page Musique (19) — SB'Music.
 //
 // Phase 5 : connexion OAuth (flux reel), recherche, bibliotheque et playlists.
-// La LECTURE audio (streaming Opus) arrive en phase 4 ; les boutons de lecture
-// sont presents mais inactifs pour l'instant.
+// Phase 4 : lecture audio (Ogg/Opus via le lecteur sbmusic_player) — le
+// telechargement du flux bloque, il tourne donc sur un worker comme le reste.
 //
-// Toutes les requetes reseau (login, search, library, playlists) tournent sur
-// des taches de fond ; l'UI ne lit que l'etat partage (sous verrou).
+// Toutes les requetes reseau (login, search, library, playlists, lecture)
+// tournent sur des taches de fond ; l'UI ne lit que l'etat partage (sous
+// verrou) et l'etat du lecteur (atomiques / verrou interne).
 // ---------------------------------------------------------------------------
 
 namespace tl::ui {
@@ -40,6 +42,12 @@ struct MusicState {
     bool loggingIn = false;
     bool loginJustDone = false;
     std::string loginError;
+
+    // Lecture en cours (miroir de l'etat du lecteur, pour les boutons).
+    std::string playingId;   // id du titre charge (vide = aucun)
+    std::string playingName; // titre affiche dans la barre de lecture
+    bool playLoading = false; // telechargement du flux en cours
+    std::string playError;
 
     std::future<void> job; // garde la tache en vie (sinon le future bloque)
     Tab tab = Tab::Search;
@@ -122,13 +130,40 @@ std::string fmt_duration(int sec) {
     return b;
 }
 
+// Telecharge le flux d'un titre puis le joue (le download bloque : worker).
+void play_track(const sbmusic::Track& t) {
+    {
+        std::lock_guard<std::mutex> lk(S.m);
+        if (S.playLoading) return;
+        S.playLoading = true;
+        S.playError.clear();
+    }
+    S.job = tasks::run(
+        "SB'Music : lecture",
+        [t](const std::atomic<bool>&,
+            const std::function<void(const std::string&, double)>&) {
+            std::string err;
+            const bool ok = sbmusic::play(t.id, &err);
+            std::lock_guard<std::mutex> lk(S.m);
+            S.playLoading = false;
+            if (ok) {
+                S.playingId = t.id;
+                S.playingName = t.title;
+            } else {
+                S.playError = err.empty() ? "Lecture impossible." : err;
+            }
+        });
+}
+
 void tracks_list() {
     std::vector<sbmusic::Track> copy;
     bool loading;
+    std::string playingId;
     {
         std::lock_guard<std::mutex> lk(S.m);
         copy = S.tracks;
         loading = S.loading;
+        playingId = S.playingId;
     }
     if (loading && copy.empty()) {
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
@@ -144,12 +179,27 @@ void tracks_list() {
     }
     for (const auto& t : copy) {
         ImGui::PushID(t.id.c_str());
-        // Bouton lecture (inactif : la lecture audio arrive en phase 4).
-        ImGui::BeginDisabled(true);
-        ImGui::Button("►", ImVec2(32, 0));
+        // Bouton lecture : met le titre en lecture (ou le repart s'il est en
+        // pause, le meme bouton sert de reprise dans la barre du bas).
+        const bool current = (!playingId.empty() && playingId == t.id &&
+                              sbmusic::has_track());
+        ImGui::BeginDisabled(S.playLoading && !current);
+        if (ImGui::Button(current && sbmusic::is_playing() ? "▶" : "►",
+                          ImVec2(32, 0))) {
+            if (current)
+                sbmusic::toggle_pause();
+            else
+                play_track(t);
+        }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::TextUnformatted(t.title.c_str());
+        if (current) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
+            ImGui::TextUnformatted(t.title.c_str());
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextUnformatted(t.title.c_str());
+        }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Text, kDim);
         std::string meta = " — " + t.artist;
@@ -158,6 +208,49 @@ void tracks_list() {
         ImGui::TextUnformatted(meta.c_str());
         ImGui::PopStyleColor();
         ImGui::PopID();
+    }
+}
+
+// Barre de lecture fixee sous la liste : titre courant, position, pause,
+// arret. n'affiche que si un titre est charge.
+void player_bar() {
+    if (!sbmusic::has_track()) return;
+    std::string name, err;
+    bool loading;
+    {
+        std::lock_guard<std::mutex> lk(S.m);
+        name = S.playingName;
+        err = S.playError;
+        loading = S.playLoading;
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (loading) {
+        ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+        ImGui::TextUnformatted("Chargement du flux…");
+        ImGui::PopStyleColor();
+        return;
+    }
+    const bool playing = sbmusic::is_playing();
+    if (ImGui::Button(playing ? "⏸" : "▶")) sbmusic::toggle_pause();
+    ImGui::SameLine();
+    if (ImGui::SmallButton(tr("Arrêter"))) {
+        sbmusic::stop();
+        std::lock_guard<std::mutex> lk(S.m);
+        S.playingId.clear();
+        S.playingName.clear();
+    }
+    ImGui::SameLine();
+    const double pos = sbmusic::position_sec();
+    const double dur = sbmusic::duration_sec();
+    const std::string clock =
+        fmt_duration(static_cast<int>(pos)) + " / " + fmt_duration(static_cast<int>(dur));
+    ImGui::Text("%s  —  %s", clock.c_str(), name.c_str());
+    if (!err.empty()) {
+        ImGui::SameLine();
+        ImGui::PushStyleColor(ImGuiCol_Text, kDanger);
+        ImGui::TextUnformatted(err.c_str());
+        ImGui::PopStyleColor();
     }
 }
 
@@ -232,10 +325,13 @@ void music_page() {
     }
     ImGui::SameLine();
     if (ImGui::SmallButton(tr("Déconnexion"))) {
+        sbmusic::stop();
         sbmusic::logout();
         std::lock_guard<std::mutex> lk(S.m);
         S.tracks.clear();
         S.playlists.clear();
+        S.playingId.clear();
+        S.playingName.clear();
     }
     ImGui::Spacing();
     ImGui::Separator();
@@ -292,6 +388,8 @@ void music_page() {
             }
         }
     }
+
+    player_bar();
 }
 
 } // namespace tl::ui
