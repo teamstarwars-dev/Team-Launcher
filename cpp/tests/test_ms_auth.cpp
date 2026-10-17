@@ -10,6 +10,7 @@
 #include "datastore.hpp"
 #include "obf.hpp" // barriere « lecture de chaines » (securite S3)
 #include "pkce.hpp" // PKCE (page Musique SB'Music)
+#include "sbmusic_api.hpp" // parsing API SB'Music (phase 3)
 
 #include <nlohmann/json.hpp>
 
@@ -430,6 +431,54 @@ int main() {
         CHECK(v1 != v2); // aleatoire
         // Le challenge de notre propre verifier est stable et non vide.
         CHECK(!tl::pkce::challenge(v1).empty());
+    }
+
+    // --- SB'Music API (phase 3) : parsing sur / defensif ---
+    {
+        using tl::sbmusic::parse_playlists;
+        using tl::sbmusic::parse_tracks;
+
+        // Forme documentee de /search : { "tracks": [ {...} ], ... }
+        const std::string search = R"({"tracks":[
+            {"id":"t1","title":"Around the World","artist":"Daft Punk",
+             "album":"Homework","duration":428,"thumbnail":"http://x/a.jpg"},
+            {"id":"t2","title":"Da Funk","artist":"Daft Punk","album":"Homework",
+             "duration":328}],"artists":[],"albums":[]})";
+        const auto ts = parse_tracks(search);
+        CHECK_EQ(ts.size(), size_t{2});
+        if (ts.size() == 2) {
+            CHECK_EQ(ts[0].id, std::string("t1"));
+            CHECK_EQ(ts[0].title, std::string("Around the World"));
+            CHECK_EQ(ts[0].artist, std::string("Daft Punk"));
+            CHECK_EQ(ts[0].duration, 428);
+            CHECK_EQ(ts[1].thumbnail, std::string("")); // absent -> vide
+        }
+
+        // Racine = tableau direct, et champs au mauvais type -> pas de crash.
+        const auto ts2 = parse_tracks(
+            R"([{"id":"x","title":5,"artist":null,"duration":"non"}])");
+        CHECK_EQ(ts2.size(), size_t{1});
+        if (ts2.size() == 1) {
+            CHECK_EQ(ts2[0].id, std::string("x"));
+            CHECK_EQ(ts2[0].title, std::string("")); // 5 -> ignore (non-string)
+            CHECK_EQ(ts2[0].duration, 0);            // "non" -> 0
+        }
+
+        // JSON invalide / vide -> liste vide, jamais d'exception.
+        CHECK(parse_tracks("pas du json").empty());
+        CHECK(parse_tracks("{}").empty());
+
+        // Playlists : tableau direct ou enveloppe.
+        const auto pls = parse_playlists(
+            R"({"playlists":[{"id":"p1","name":"Chill","trackCount":12},
+                            {"id":"p2","name":"Workout","total":30}]})");
+        CHECK_EQ(pls.size(), size_t{2});
+        if (pls.size() == 2) {
+            CHECK_EQ(pls[0].name, std::string("Chill"));
+            CHECK_EQ(pls[0].trackCount, 12);
+            CHECK_EQ(pls[1].trackCount, 30); // repli sur "total"
+        }
+        CHECK(parse_playlists("null").empty());
     }
 
     stop(); // sans thread en cours : doit etre sans effet

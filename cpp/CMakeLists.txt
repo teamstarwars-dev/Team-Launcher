@@ -184,6 +184,7 @@ set(TL_CORE_SOURCES
   src/secrets.cpp
   src/pkce.cpp
   src/sbmusic.cpp
+  src/sbmusic_api.cpp
   src/dialogs.cpp
   src/http_win.cpp
   src/util_hash.cpp
