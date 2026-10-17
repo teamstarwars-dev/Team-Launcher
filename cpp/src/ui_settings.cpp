@@ -880,25 +880,11 @@ void tab_integrations() {
                                 "Shows the current instance, version and playtime "
                                 "on your Discord profile (Discord must be open)."));
     ImGui::PopStyleColor();
-    if (ImGui::Checkbox(tr("Activer la Rich Presence Discord"), &s.discordEnabled))
+    // L'ID d'application Discord est EMBARQUE (jamais saisi par l'utilisateur) :
+    // seul l'interrupteur reste visible. Le logo est deja configure cote appli.
+    if (ImGui::Checkbox(tr("Activer la Rich Presence Discord"), &s.discordEnabled)) {
         DataStore::save();
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint(
-            "##dcid", tr("ID d'application Discord (discord.com/developers/applications)"),
-            b.discordId, sizeof(b.discordId))) {
-        s.discordAppId = trimmed(b.discordId);
-        DataStore::save();
-    }
-    if (ImGui::Button(tr("Appliquer"), ImVec2(160, 34))) {
         presence::reload();
-        notify_toast(tr("Discord"),
-                     presence::enabled()
-                         ? tr("Rich Presence activée - ouvre Discord pour voir "
-                              "ton statut.",
-                              "Rich Presence enabled - open Discord to see your "
-                              "status.")
-                         : tr("Rich Presence désactivée.",
-                              "Rich Presence disabled."));
     }
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Text,
@@ -907,33 +893,16 @@ void tab_integrations() {
                                ? tr("Connecté à Discord", "Connected to Discord")
                                : tr("Non connecté", "Not connected"));
     ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextWrapped("%s", tr("Le logo doit être téléversé sur "
-                                "discord.com/developers/applications sous le nom "
-                                "exact « logo » (Rich Presence > Art Assets).",
-                                "The logo must be uploaded to "
-                                "discord.com/developers/applications under the "
-                                "exact name \"logo\" (Rich Presence > Art Assets)."));
-    ImGui::PopStyleColor();
 
     section("Compte Team Launcher");
+    // L'URL de l'API est EMBARQUEE (pre-remplie, invisible) : l'utilisateur ne
+    // configure rien, il se connecte simplement ci-dessous.
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
-    ImGui::TextWrapped("%s", tr("Amis, messages et appels vocaux sans Discord, "
-                                "via ton propre serveur (URL de l'API). "
-                                "Laisse vide pour désactiver.",
-                                "Friends, messages and voice calls without "
-                                "Discord, through your own server (API URL). "
-                                "Leave empty to disable."));
+    ImGui::TextWrapped("%s", tr("Amis, messages et appels vocaux via ton compte "
+                                "Team Launcher.",
+                                "Friends, messages and voice calls through your "
+                                "Team Launcher account."));
     ImGui::PopStyleColor();
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint(
-            "##tlurl", tr("URL de l'API (ex. http://192.168.1.58:3000)"),
-            b.tlApiUrl, sizeof(b.tlApiUrl))) {
-        s.tlApiUrl = trimmed(b.tlApiUrl);
-        DataStore::save();
-        account::stop();
-        account::start();
-    }
     {
         const account::Status st = account::status();
         // Connexion/inscription asynchrones : le HTTP ne bloque jamais
@@ -1093,26 +1062,15 @@ void tab_integrations() {
     // telechargement avec progression, installation differee au redemarrage.
     update_panel();
 
-    section("CURSEFORGE");
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint(
-            "##cf", tr("Clé API CurseForge (console.curseforge.com - gratuite)"),
-            b.curseForge, sizeof(b.curseForge), ImGuiInputTextFlags_Password)) {
-        s.curseForgeApiKey = trimmed(b.curseForge);
-        DataStore::save();
-    }
+    // Cle API CurseForge : EMBARQUEE (obfusquee a la compilation), jamais
+    // saisie ni affichee ici. La recherche/import CurseForge marche d'office.
 
     section("TÉLÉMÉTRIE & LOGS DISTANTS");
+    // Le webhook de destination est EMBARQUE : seul l'interrupteur reste visible.
     if (ImGui::Checkbox(
             tr("Envoyer les rapports de crash et stats d'utilisation vers Discord"),
             &s.telemetryEnabled))
         DataStore::save();
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint("##hook", tr("URL du webhook Discord"), b.webhook,
-                                 sizeof(b.webhook), ImGuiInputTextFlags_Password)) {
-        s.discordTelemetryWebhook = trimmed(b.webhook);
-        DataStore::save();
-    }
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     ImGui::TextWrapped(
         "%s", tr("Les rapports incluent : crashs Minecraft, crashs du launcher, "

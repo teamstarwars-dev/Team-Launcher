@@ -529,6 +529,11 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getS("VpsUrl", s.vpsUrl);
     getSec("VpsApiKey", s.vpsApiKey);
     getS("TlApiUrl", s.tlApiUrl);
+    // Pre-remplie meme pour les configs anterieures (ou le champ etait vide) :
+    // le social doit etre disponible sans saisie. La connexion reste opt-in
+    // (il faut se connecter), donc forcer l'URL n'active rien tout seul.
+    if (s.tlApiUrl.empty())
+        s.tlApiUrl = "https://team-launcher-api.pixelhorizons.fr";
     getSec("TlApiToken", s.tlApiToken);
     getS("TlApiUser", s.tlApiUser);
     getB("TelemetryEnabled", s.telemetryEnabled);

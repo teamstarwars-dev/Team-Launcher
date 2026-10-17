@@ -111,9 +111,11 @@ struct AppSettings {
     // doit s'activer en fond sans qu'on puisse l'arreter.
     bool jvmPreload = true;
     // Compte Team Launcher (API maison : amis, messages, signaling vocal).
-    // URL de base vide = fonction desactivee. Le jeton est chiffre comme
-    // les autres secrets (DPAPI / trousseau).
-    std::string tlApiUrl;
+    // Pre-remplie par defaut (le social doit marcher sans que l'utilisateur
+    // saisisse une URL) : l'API sociale (/api/...) est servie par le backend
+    // marketplace. Vider le champ desactive la fonction. Le jeton est chiffre
+    // comme les autres secrets (DPAPI / trousseau).
+    std::string tlApiUrl = "https://team-launcher-api.pixelhorizons.fr";
     std::string tlApiToken;
     std::string tlApiUser;
     // API HTTP locale (phase 8) : 0 = desactivee. Jamais exposee hors de
