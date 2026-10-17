@@ -5,6 +5,7 @@
 #include "util_image.hpp" // image::from_path : rendu de l'image de fond
 #include "cf_import.hpp"   // import auto des instances CurseForge
 #include "pack_import.hpp" // detect_folder : import d'un dossier d'instance
+#include "webview_win.hpp" // editeur Nova Skin embarque (WebView2)
 
 #include "account.hpp"
 #include "apievents.hpp"
@@ -1519,7 +1520,13 @@ bool draw_background_image() {
     return true;
 }
 
+// Fenetre principale, memorisee pour les pages qui en ont besoin (ex. la
+// page Nova Skin, qui pose un webview enfant sur son HWND).
+static SDL_Window* g_window = nullptr;
+SDL_Window* main_window() { return g_window; }
+
 void frame(SDL_Window* window) {
+    g_window = window;
     poll_state(window);
 
     // Hooks d'automatisation de test : TL_AUTO_VERSION / TL_AUTO_PLAY / TL_AUTO_PAGE
@@ -1658,6 +1665,7 @@ void frame(SDL_Window* window) {
     nav(icons::Id::Play, "Jouer", 2);
     nav(icons::Id::Servers, "Serveurs", 3);
     nav(icons::Id::Skins, "Skins", 4);
+    nav(icons::Id::Skins, "Nova Skin", 18);
     nav(icons::Id::News, "Actualités", 5);
     nav(icons::Id::Bedrock, "Bedrock", 6);
     ImGui::Spacing();
@@ -1706,9 +1714,15 @@ void frame(SDL_Window* window) {
     case 15: downloads_page(); break;
     case 16: social_page(); break;
     case 17: help_page(); break;
+    case 18: novaskin_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
+
+    // Le webview Nova Skin est une fenetre enfant posee PAR-DESSUS la zone
+    // OpenGL : des qu'on quitte sa page, on le masque (sinon il recouvrirait
+    // tout le reste). novaskin_page() le replace et le reaffiche a l'entree.
+    if (g.page != 18) tl::webview::hide();
 
     // ---- Modales instance (contexte racine) ----
     instance_modals();

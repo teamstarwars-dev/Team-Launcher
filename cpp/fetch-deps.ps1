@@ -57,6 +57,11 @@ $deps = @(
   # securite publie. On n'en compile que src/monocypher.c et
   # src/optional/monocypher-ed25519.c.
   @{ Name = 'monocypher';    Url = 'https://github.com/LoupVaillant/Monocypher.git'; Tag = '4.0.3' }
+  # QR code de la connexion Microsoft (V8) : le joueur scanne avec son
+  # telephone au lieu de recopier le code. Bibliotheque de reference de
+  # Nayuki (MIT), deux fichiers C++, en-tetes standard uniquement, relue
+  # avant integration. On ne compile que cpp/qrcodegen.cpp.
+  @{ Name = 'qrcodegen';     Url = 'https://github.com/nayuki/QR-Code-generator.git'; Tag = 'v1.8.0' }
 )
 
 $failed = @()
@@ -106,6 +111,34 @@ if (-not (Test-Path $exp)) {
 $stb = Join-Path $root 'stb\stb_image.h'
 if (-not (Test-Path $stb)) {
   Write-Warning "third_party/stb/stb_image.h manquant (normalement versionne)."
+}
+
+# WebView2 (OPTIONNEL, Windows) : editeur Nova Skin embarque dans le launcher.
+# Distribue en paquet NuGet (un .nupkg = une archive zip), pas en depot git :
+# on le telecharge et on en extrait les en-tetes + le loader STATIQUE (pas de
+# DLL a distribuer). Absent => le build compile quand meme, la page Nova Skin
+# retombe sur « ouvrir dans le navigateur » (voir TL_HAVE_WEBVIEW2 / CMake).
+$wv2Ver = '1.0.2792.45'
+$wv2 = Join-Path $root 'webview2'
+if ((-not (Test-Path (Join-Path $wv2 'include\WebView2.h'))) -or $Force) {
+  Write-Host ("---> {0,-14} {1} (NuGet)" -f 'webview2', $wv2Ver)
+  try {
+    $tmp = Join-Path $env:TEMP ("wv2-" + [guid]::NewGuid().ToString('N') + ".zip")
+    $url = "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$wv2Ver"
+    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing
+    $ext = Join-Path $env:TEMP ("wv2-" + [guid]::NewGuid().ToString('N'))
+    Expand-Archive -LiteralPath $tmp -DestinationPath $ext -Force
+    New-Item -ItemType Directory -Force (Join-Path $wv2 'include') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $wv2 'lib') | Out-Null
+    Copy-Item (Join-Path $ext 'build\native\include\*.h') (Join-Path $wv2 'include') -Force
+    Copy-Item (Join-Path $ext 'build\native\x64\WebView2LoaderStatic.lib') `
+              (Join-Path $wv2 'lib') -Force
+    Remove-Item $tmp, $ext -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "     WebView2 : en-tetes + loader statique prets"
+  } catch {
+    Write-Warning ("WebView2 non recupere ($($_.Exception.Message)) - la page " +
+                   "Nova Skin utilisera le navigateur. Non bloquant.")
+  }
 }
 
 if ($failed.Count -gt 0) {

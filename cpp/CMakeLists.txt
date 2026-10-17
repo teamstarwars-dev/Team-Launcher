@@ -516,6 +516,20 @@ else()
     BUILD_WITH_INSTALL_RPATH TRUE
     INSTALL_RPATH "$ORIGIN/lib")
 endif()
+# WebView2 (OPTIONNEL, Windows) : editeur Nova Skin embarque. Present seulement
+# si third_party/webview2 a ete recupere par fetch-deps.ps1 ; sinon la page
+# Nova Skin retombe sur « ouvrir dans le navigateur » (voir TL_HAVE_WEBVIEW2).
+set(TL_WEBVIEW2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/webview2")
+if(WIN32 AND EXISTS "${TL_WEBVIEW2_DIR}/include/WebView2.h")
+  target_include_directories(TeamLauncher PRIVATE "${TL_WEBVIEW2_DIR}/include")
+  target_link_libraries(TeamLauncher PRIVATE
+    "${TL_WEBVIEW2_DIR}/lib/WebView2LoaderStatic.lib" version ole32)
+  target_compile_definitions(TeamLauncher PRIVATE TL_HAVE_WEBVIEW2=1)
+  message(STATUS "Nova Skin : editeur embarque WebView2 (ON)")
+else()
+  message(STATUS "Nova Skin : WebView2 absent -> fallback navigateur")
+endif()
+
 target_compile_definitions(TeamLauncher PRIVATE
   TL_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
   TL_VERSION_MINOR=${PROJECT_VERSION_MINOR}

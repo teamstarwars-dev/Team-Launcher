@@ -275,6 +275,8 @@ void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
 void social_page();      // ui_social.cpp (page 16) : amis et messages
 void help_page();        // ui_help.cpp (page 17) : aide et assistance
 void help_stop();        // ui_help.cpp : joint le worker d'export
+void novaskin_page();    // ui_novaskin.cpp (page 18) : editeur Nova Skin
+SDL_Window* main_window(); // ui.cpp : fenetre principale (HWND du webview)
 
 // Phase 5 — compatibilite des mods (ui_modcheck.cpp)
 void modcheck_panel(const nlohmann::json& inst); // onglet Mods
