@@ -534,6 +534,14 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     // (il faut se connecter), donc forcer l'URL n'active rien tout seul.
     if (s.tlApiUrl.empty())
         s.tlApiUrl = "https://team-launcher-api.pixelhorizons.fr";
+
+    // Mises a jour : le champ d'URL n'est plus editable (embarque). Une config
+    // anterieure pouvait contenir l'ANCIEN flux « raw.githubusercontent.com/
+    // .../version.json » (ere C#) : on l'efface pour repasser sur l'API GitHub
+    // Releases (comportement par defaut, updateUrl vide), sinon les mises a
+    // jour resteraient bloquees sur un lien perime qu'on ne peut plus corriger.
+    if (s.updateUrl.find("raw.githubusercontent.com") != std::string::npos)
+        s.updateUrl.clear();
     getSec("TlApiToken", s.tlApiToken);
     getS("TlApiUser", s.tlApiUser);
     getB("TelemetryEnabled", s.telemetryEnabled);

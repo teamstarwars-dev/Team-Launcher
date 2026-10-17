@@ -1012,13 +1012,9 @@ void tab_integrations() {
     }
 
     section("MISES À JOUR AUTOMATIQUES");
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint(
-            "##upd", tr("URL du flux de mises à jour (Velopack, optionnel)"),
-            b.updateUrl, sizeof(b.updateUrl))) {
-        s.updateUrl = trimmed(b.updateUrl);
-        DataStore::save();
-    }
+    // Le lien du flux de mises a jour est EMBARQUE (depot officiel) : jamais
+    // saisi ni affiche ici. L'utilisateur garde seulement le canal et la
+    // verification manuelle ci-dessous.
     ImGui::PushStyleColor(ImGuiCol_Text, kDim);
     ImGui::Text("%s%s", tr("Version installée : "), TL_VERSION_STRING);
     ImGui::PopStyleColor();
