@@ -1667,6 +1667,7 @@ void frame(SDL_Window* window) {
     nav(icons::Id::Servers, "Serveurs", 3);
     nav(icons::Id::Skins, "Skins", 4);
     nav(icons::Id::Skins, "Nova Skin", 18);
+    nav(icons::Id::News, "Musique", 19);
     nav(icons::Id::News, "Actualités", 5);
     nav(icons::Id::Bedrock, "Bedrock", 6);
     ImGui::Spacing();
@@ -1717,6 +1718,7 @@ void frame(SDL_Window* window) {
     case 16: social_page(); break;
     case 17: help_page(); break;
     case 18: novaskin_page(); break;
+    case 19: music_page(); break;
     default: settings_page(); break;
     }
     ImGui::EndChild();
