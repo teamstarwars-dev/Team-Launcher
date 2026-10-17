@@ -430,6 +430,8 @@ static json serialize(const AppSettings& s) {
         {"SbMusicAccessToken", secrets::encrypt_value(s.sbMusicAccessToken)},
         {"SbMusicRefreshToken", secrets::encrypt_value(s.sbMusicRefreshToken)},
         {"SbMusicTokenExpiry", s.sbMusicTokenExpiry},
+        {"AutoImportCurseForge", s.autoImportCurseForge},
+        {"CurseForgeInstancesDir", s.curseForgeInstancesDir},
         {"EnabledPlugins", s.enabledPlugins},
         {"PluginDevMode", s.pluginDevMode},
         {"MarketplaceUrl", s.marketplaceUrl},
@@ -579,6 +581,8 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getSec("SbMusicAccessToken", s.sbMusicAccessToken);
     getSec("SbMusicRefreshToken", s.sbMusicRefreshToken);
     getI64("SbMusicTokenExpiry", s.sbMusicTokenExpiry);
+    getB("AutoImportCurseForge", s.autoImportCurseForge);
+    getS("CurseForgeInstancesDir", s.curseForgeInstancesDir);
     getA("ApiKeys", s.apiKeys);
     getA("EventHooks", s.eventHooks);
     {

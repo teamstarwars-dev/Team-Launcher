@@ -3,6 +3,7 @@
 #include "presets.hpp"
 #include "social.hpp"
 #include "util_image.hpp" // image::from_path : rendu de l'image de fond
+#include "cf_import.hpp"   // import auto des instances CurseForge
 #include "pack_import.hpp" // detect_folder : import d'un dossier d'instance
 
 #include "account.hpp"
@@ -1049,6 +1050,7 @@ void init(SDL_Window*) {
     // Renouvellement silencieux de la session Microsoft (thread de fond) :
     // tant que l'utilisateur revient regulierement, il ne se reconnecte jamais.
     auth::startup_refresh();
+    cfimport::start_async();  // import auto des instances CurseForge (si active)
     presence::set_launcher(); // Rich Presence Discord (sans effet si desactivee)
     admin::start();           // telemetrie d'administration (desactivee par defaut)
     // Raccourci bureau a la premiere ouverture (C# MainForm).
@@ -1361,6 +1363,21 @@ void plugin_services_pump() {
 
 void phase8_pump(SDL_Window* window) {
     (void)window;
+
+    // --- Instances CurseForge importées en tâche de fond : on les ajoute ICI,
+    // sur le fil UI (la copie, elle, a eu lieu sur un worker). ---
+    {
+        bool committed = false;
+        for (auto& e : cfimport::take_ready()) {
+            const std::string nm = e.value("Name", "");
+            inst_array().push_back(std::move(e));
+            g.countsDirty = true;
+            committed = true;
+            push_log("Instance CurseForge importée : « " + nm + " ».");
+        }
+        if (committed) DataStore::save();
+    }
+
     const nlohmann::json* inst = selected_instance();
 
     // --- Préchauffage, sur changement de sélection seulement ---

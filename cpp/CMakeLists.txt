@@ -197,6 +197,7 @@ set(TL_CORE_SOURCES
   src/telemetry.cpp
   src/curseforge.cpp
   src/pack_import.cpp
+  src/cf_import.cpp
   src/modrinth.cpp
   src/content_install.cpp
   src/shortcut.cpp

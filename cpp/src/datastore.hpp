@@ -125,6 +125,10 @@ struct AppSettings {
     std::string sbMusicAccessToken;
     std::string sbMusicRefreshToken;
     long long sbMusicTokenExpiry = 0;
+    // Import automatique des instances de l'app CurseForge au demarrage.
+    // Dossier vide = detection du chemin par defaut (<profil>/curseforge/...).
+    bool autoImportCurseForge = true;
+    std::string curseForgeInstancesDir;
     // Plugins : seuls ceux listes ici s'executent. Un plugin lance des
     // programmes ; il ne peut donc jamais etre actif par defaut du seul
     // fait d'avoir ete depose dans le dossier.
