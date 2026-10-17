@@ -324,6 +324,12 @@ void help_page() {
     ImGui::BeginChild("##helpbody");
 
     ImGui::Spacing();
+    if (ImGui::Button(tr("Revoir le guide de présentation"), ImVec2(280, 34)))
+        start_guide();
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    ImGui::Spacing();
     ImGui::TextUnformatted(tr("Se documenter et nous écrire"));
     ImGui::Spacing();
     link_row(icons::Id::Help, "Centre d'aide", "", support::help_center_url());

@@ -311,6 +311,9 @@ void search_frame();     // ui_search.cpp : palette de recherche (Ctrl+K)
 void search_open();
 bool onboarding_needed();  // ui_onboarding.cpp
 void onboarding_frame();   // ui_onboarding.cpp : assistant de 1er lancement
+void start_guide();        // ui_onboarding.cpp : lance la visite guidee
+void onboarding_record_nav(int page); // releve le rect ecran d'un bouton de nav
+void onboarding_tour_frame();          // dessine la visite (apres l'UI, dessus)
 void explore_stop();     // ui_explore.cpp : joint le worker
 
 // Module 3ter — pages reseau

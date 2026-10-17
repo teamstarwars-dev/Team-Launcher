@@ -1650,6 +1650,7 @@ void frame(SDL_Window* window) {
     auto nav = [&](icons::Id ic, const char* label, int page) {
         if (icons::nav_item(ic, tr(label), g.page == page, compact))
             g.page = page;
+        onboarding_record_nav(page); // rect ecran pour la visite guidee
     };
 
     nav(icons::Id::Home, "Accueil", 0);
@@ -1687,6 +1688,7 @@ void frame(SDL_Window* window) {
         if (icons::nav_item(icons::Id::Account, amis.c_str(), g.page == 16,
                             compact))
             g.page = 16;
+        onboarding_record_nav(16);
     }
     nav(icons::Id::Account, "Compte", 7);
     nav(icons::Id::Settings, "Paramètres", 8);
@@ -1765,6 +1767,8 @@ void frame(SDL_Window* window) {
 
     // ---- Assistant de premier lancement (avant tout le reste) ----
     onboarding_frame();
+    // ---- Visite guidee (par-dessus l'interface reelle) ----
+    onboarding_tour_frame();
 
     // ---- Auth Microsoft : applique le succes puis dessine la modale ----
     auth_sync();

@@ -2,6 +2,11 @@
 
 #include "ms_auth.hpp"
 
+#include <algorithm>
+#include <cstdio>
+#include <map>
+#include <utility>
+
 // ---------------------------------------------------------------------------
 // Assistant de premier lancement (portage d'OnboardingDialog.cs).
 //
@@ -22,6 +27,42 @@ bool s_opened = false;
 bool s_waitingLogin = false;
 char s_pseudo[64] = "";
 bool s_pseudoError = false;
+
+// --- Visite guidee ---------------------------------------------------------
+// Chaque etape pointe un bouton de la barre laterale (par son index de page)
+// et l'explique. Les rectangles ecran des boutons sont releves chaque frame
+// par onboarding_record_nav() depuis la nav de ui.cpp.
+struct TourStep {
+    int page;
+    const char* title;
+    const char* text;
+};
+const TourStep kTour[] = {
+    {1, "Tes instances",
+     "Chaque instance est une version de Minecraft avec ses mods et ses "
+     "réglages. Clique « Créer » pour en faire une, ou importe un modpack."},
+    {9, "Explorer les mods",
+     "Cherche et installe des mods depuis Modrinth et CurseForge en un clic, "
+     "directement dans l'instance choisie."},
+    {2, "Jouer",
+     "Lance l'instance sélectionnée. Le launcher télécharge ce qu'il faut et "
+     "démarre le jeu."},
+    {4, "Skins",
+     "Change ton skin Minecraft et gère tes favoris."},
+    {18, "Nova Skin",
+     "Crée ou retouche ton skin dans l'éditeur 3D, directement intégré."},
+    {15, "Téléchargements",
+     "Suis l'avancement de tes téléchargements et installations."},
+    {7, "Ton compte",
+     "Gère ta connexion Microsoft, ton profil et le mode hors-ligne."},
+    {8, "Paramètres",
+     "RAM allouée, version de Java, thèmes, intégrations… tout se règle ici."},
+};
+constexpr int kTourCount = static_cast<int>(sizeof(kTour) / sizeof(kTour[0]));
+
+bool s_tourActive = false;
+int s_tourStep = 0;
+std::map<int, std::pair<ImVec2, ImVec2>> s_navRects;
 
 void finish() {
     DataStore::settings.onboardingDone = true;
@@ -107,7 +148,8 @@ void step_account(float w) {
             s_pseudoError = false;
             DataStore::settings.accountMode = "offline";
             DataStore::settings.playerName = name;
-            finish();
+            DataStore::save();
+            s_step = 2; // -> proposition du guide
         }
     }
     if (s_pseudoError) {
@@ -119,7 +161,119 @@ void step_account(float w) {
     }
 }
 
+void step_guide(float w) {
+    if (fBig) ImGui::PushFont(fBig);
+    ImGui::TextUnformatted(tr("Tout est prêt !"));
+    if (fBig) ImGui::PopFont();
+    ImGui::Spacing();
+
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::PushTextWrapPos(w);
+    ImGui::TextUnformatted(
+        tr("Première fois ici ? Je peux te faire une visite rapide : je te "
+           "présente chaque bouton en quelques secondes. Tu peux arrêter quand "
+           "tu veux."));
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 64.0f);
+    if (accent_button(tr("Commencer le guide"), ImVec2(240, 44))) {
+        finish();      // ferme l'assistant (onboardingDone = true)
+        start_guide(); // lance la visite sur l'interface reelle
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Passer"), ImVec2(120, 44))) finish();
+}
+
 } // namespace
+
+void start_guide() {
+    s_tourActive = true;
+    s_tourStep = 0;
+}
+
+void onboarding_record_nav(int page) {
+    s_navRects[page] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+}
+
+void onboarding_tour_frame() {
+    if (!s_tourActive) return;
+    if (s_tourStep < 0 || s_tourStep >= kTourCount) {
+        s_tourActive = false;
+        return;
+    }
+    const TourStep& step = kTour[s_tourStep];
+
+    // Surbrillance du bouton cible (liste de dessin de premier plan : par-dessus
+    // tout le reste). Sans dim plein ecran, pour eviter les soucis de calque.
+    ImVec2 mn(0, 0), mx(0, 0);
+    bool haveRect = false;
+    if (auto it = s_navRects.find(step.page); it != s_navRects.end()) {
+        mn = it->second.first;
+        mx = it->second.second;
+        haveRect = true;
+    }
+    ImDrawList* fg = ImGui::GetForegroundDrawList();
+    if (haveRect) {
+        fg->AddRectFilled(mn, mx, IM_COL32(255, 170, 60, 40), 6.0f);
+        fg->AddRect(ImVec2(mn.x - 2, mn.y - 2), ImVec2(mx.x + 2, mx.y + 2),
+                    IM_COL32(255, 170, 60, 255), 6.0f, 0, 2.5f);
+    }
+
+    // Bulle de texte, posee a droite du bouton (ou centree si pas de rect).
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    const float boxW = 340.0f;
+    ImVec2 pos = haveRect ? ImVec2(mx.x + 16.0f, mn.y)
+                          : ImVec2((ds.x - boxW) * 0.5f, ds.y * 0.35f);
+    if (pos.x + boxW > ds.x - 12.0f) pos.x = ds.x - boxW - 12.0f;
+    if (pos.x < 12.0f) pos.x = 12.0f;
+
+    ImGui::SetNextWindowPos(pos);
+    ImGui::SetNextWindowSize(ImVec2(boxW, 0));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, kCard);
+    ImGui::Begin("##tour", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                     ImGuiWindowFlags_AlwaysAutoResize);
+
+    if (fBig) ImGui::PushFont(fBig);
+    ImGui::TextUnformatted(tr(step.title));
+    if (fBig) ImGui::PopFont();
+    ImGui::Spacing();
+    ImGui::PushTextWrapPos(boxW - 20.0f);
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextUnformatted(tr(step.text));
+    ImGui::PopStyleColor();
+    ImGui::PopTextWrapPos();
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    char prog[24];
+    std::snprintf(prog, sizeof(prog), "%d / %d", s_tourStep + 1, kTourCount);
+    ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+    ImGui::TextUnformatted(prog);
+    ImGui::PopStyleColor();
+    ImGui::SameLine();
+
+    const bool last = (s_tourStep == kTourCount - 1);
+    // Boutons alignes a droite.
+    const float btnW = last ? 110.0f : 90.0f;
+    const float skipW = 80.0f;
+    float avail = ImGui::GetContentRegionAvail().x;
+    ImGui::SameLine(0.0f, avail - btnW - skipW - 8.0f > 0 ? avail - btnW - skipW - 8.0f : 8.0f);
+    if (ImGui::Button(tr("Passer"), ImVec2(skipW, 0))) s_tourActive = false;
+    ImGui::SameLine();
+    if (accent_button(last ? tr("Terminer") : tr("Suivant"), ImVec2(btnW, 0))) {
+        if (last)
+            s_tourActive = false;
+        else
+            ++s_tourStep;
+    }
+
+    ImGui::End();
+    ImGui::PopStyleColor();
+}
 
 bool onboarding_needed() {
     const auto& s = DataStore::settings;
@@ -137,13 +291,9 @@ void onboarding_frame() {
     if (s_waitingLogin) {
         if (auth::get_state() != auth::AuthState::Idle) return; // auth en cours
         s_waitingLogin = false;
-        if (auth::has_session()) {
-            // auth_sync() a deja pose playerName et le toast de bienvenue.
-            DataStore::settings.onboardingDone = true;
-            DataStore::save();
-            s_opened = false;
-            return;
-        }
+        // auth_sync() a deja pose playerName et le toast de bienvenue. On ne
+        // CLOT pas encore l'assistant : on propose d'abord la visite guidee.
+        if (auth::has_session()) s_step = 2;
         // Echec ou annulation : on reste sur l'etape Compte.
     }
 
@@ -170,6 +320,8 @@ void onboarding_frame() {
         const float w = ImGui::GetContentRegionAvail().x;
         if (s_step == 0)
             step_welcome(w);
+        else if (s_step == 2)
+            step_guide(w);
         else
             step_account(w);
         ImGui::EndPopup();
