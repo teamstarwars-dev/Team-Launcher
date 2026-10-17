@@ -22,7 +22,15 @@ class Developer(Base):
     __table_args__ = _TABLE
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    email: Mapped[str] = mapped_column(String(254), unique=True)
+    # Compte Team Launcher unique (V8, section 6) : un joueur s'inscrit par
+    # pseudo (amis, messages, vocal, chat) ; un développeur de la
+    # marketplace par adresse. Les deux peuvent coexister sur un compte.
+    email: Mapped[str | None] = mapped_column(String(254), unique=True, nullable=True)
+    username: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    # Pseudo en minuscules : unicité insensible à la casse, quelle que soit
+    # la collation de la base.
+    username_key: Mapped[str | None] = mapped_column(String(24), unique=True, nullable=True)
+    presence: Mapped[str] = mapped_column(String(8), default="online")
     display_name: Mapped[str] = mapped_column(String(64))
     password_hash: Mapped[str] = mapped_column(String(255))
     # Secret TOTP CHIFFRÉ (SecretBox). Vide tant que la 2FA n'est pas posée.
@@ -51,6 +59,8 @@ class Session(Base):
     # Le mot de passe seul ouvre une session « à moitié » : rien de
     # sensible n'est permis tant que le second facteur n'a pas été donné.
     mfa_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Dernière requête authentifiée : sert de battement de présence.
+    last_seen: Mapped[int] = mapped_column(BigInteger, default=0)
 
 
 class Project(Base):
@@ -141,3 +151,61 @@ class TelemetryDaily(Base):
     version: Mapped[str] = mapped_column(String(32), primary_key=True)
     kind: Mapped[str] = mapped_column(String(24), primary_key=True)
     count: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+# --- Social (section 6) : reprise de l'ancienne API Node, même contrat ------
+
+
+class Friendship(Base):
+    """Relation entre deux comptes, paire ordonnée (user_a < user_b)."""
+
+    __tablename__ = "friendships"
+    __table_args__ = _TABLE
+
+    user_a: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"),
+                                        primary_key=True)
+    user_b: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"),
+                                        primary_key=True)
+    status: Mapped[str] = mapped_column(String(10))  # pending | accepted | blocked
+    requested_by: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"))
+    created_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class DirectMessage(Base):
+    __tablename__ = "direct_messages"
+    __table_args__ = _TABLE
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sender: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"),
+                                        index=True)
+    recipient: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"),
+                                           index=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class Call(Base):
+    __tablename__ = "calls"
+    __table_args__ = _TABLE
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    caller: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"))
+    callee: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"))
+    lobby_id: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(8))  # ringing | active | ended
+    created_at: Mapped[int] = mapped_column(BigInteger)
+    updated_at: Mapped[int] = mapped_column(BigInteger)
+
+
+class UserEvent(Base):
+    """File d'événements d'un compte, distribuée par long-polling."""
+
+    __tablename__ = "user_events"
+    __table_args__ = _TABLE
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("developers.id", ondelete="CASCADE"),
+                                         index=True)
+    type: Mapped[str] = mapped_column(String(32))
+    payload: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[int] = mapped_column(BigInteger)
