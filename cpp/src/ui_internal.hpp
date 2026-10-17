@@ -273,6 +273,7 @@ void moddev_page();      // ui_moddev.cpp (page 13) : developpement de mods
 void modelviewer_page(); // ui_modelviewer.cpp (page 14) : modeles 3D
 void downloads_page();   // ui_downloads.cpp (page 15) : file de telechargements
 void social_page();      // ui_social.cpp (page 16) : amis et messages
+void social_notify_frame(); // ui_social.cpp : toasts d'evenements (toutes pages)
 void help_page();        // ui_help.cpp (page 17) : aide et assistance
 void help_stop();        // ui_help.cpp : joint le worker d'export
 void novaskin_page();    // ui_novaskin.cpp (page 18) : editeur Nova Skin

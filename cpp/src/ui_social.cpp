@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -703,6 +704,71 @@ void social_page() {
     }
 
     draw_split(social::friends());
+}
+
+// Notifications sociales GLOBALES (toasts), affichees quelle que soit la page.
+// Detection par delta, throttlee a ~1 s : sans ca, une demande d'ami, un
+// message ou un appel passaient inapercus tant qu'on n'ouvrait pas la page.
+void social_notify_frame() {
+    using clock = std::chrono::steady_clock;
+    static clock::time_point next{};
+    const auto now = clock::now();
+    if (now < next) {
+        // On ne LAISSE PAS filer un appel entrant : il se verifie a chaque frame.
+        static bool prevCallFast = false;
+        const bool incFast =
+            account::call_info().incoming || social::call_info().incoming;
+        if (incFast && !prevCallFast) {
+            const std::string peer = account::call_info().incoming
+                                         ? account::call_info().peer
+                                         : social::call_info().peerName;
+            notify_toast(tr("Appel entrant"),
+                         peer.empty() ? tr("Quelqu'un t'appelle.")
+                                      : (peer + tr(" t'appelle.", " is calling.")));
+        }
+        prevCallFast = incFast;
+        return;
+    }
+    next = now + std::chrono::seconds(1);
+
+    static int prevPending = -1;
+    static int prevUnread = -1;
+    static bool prevCall = false;
+
+    // Demandes d'ami + messages non lus (compte maison).
+    if (account::status().loggedIn) {
+        const int pin = static_cast<int>(account::pending_in().size());
+        if (prevPending >= 0 && pin > prevPending)
+            notify_toast(tr("Demande d'ami"),
+                         tr("Tu as une nouvelle demande d'ami.",
+                            "You have a new friend request."));
+        prevPending = pin;
+
+        int unread = 0;
+        std::string lastSender;
+        for (const auto& f : account::friends()) {
+            unread += f.unread;
+            if (f.unread > 0) lastSender = f.name;
+        }
+        // On evite de doubler la notif quand on est deja sur la page social.
+        if (prevUnread >= 0 && unread > prevUnread && g.page != 16)
+            notify_toast(tr("Nouveau message"),
+                         lastSender.empty()
+                             ? tr("Nouveau message reçu.", "New message.")
+                             : (lastSender + tr(" t'a écrit.", " messaged you.")));
+        prevUnread = unread;
+    }
+
+    const bool inc = account::call_info().incoming || social::call_info().incoming;
+    if (inc && !prevCall) {
+        const std::string peer = account::call_info().incoming
+                                     ? account::call_info().peer
+                                     : social::call_info().peerName;
+        notify_toast(tr("Appel entrant"),
+                     peer.empty() ? tr("Quelqu'un t'appelle.")
+                                  : (peer + tr(" t'appelle.", " is calling.")));
+    }
+    prevCall = inc;
 }
 
 } // namespace tl::ui

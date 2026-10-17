@@ -1754,6 +1754,7 @@ void frame(SDL_Window* window) {
 
     // Timeouts d'appel du compte maison. Sans effet si non configure.
     account::pump();
+    social_notify_frame(); // toasts d'evenements sociaux, quelle que soit la page
 
     // ---- Phase 8 : préchauffage et pont de l'API locale ----
     phase8_pump(window);
