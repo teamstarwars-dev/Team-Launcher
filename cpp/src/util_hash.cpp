@@ -374,6 +374,14 @@ std::string sha256_hex_of(std::string_view data) {
     return out;
 }
 
+std::array<unsigned char, 32> sha256_digest(std::string_view data) {
+    Sha256 s;
+    s.update(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());
+    std::array<unsigned char, 32> out{};
+    s.finish(out.data());
+    return out;
+}
+
 std::optional<std::array<unsigned char, 16>> md5_digest(std::string_view data) {
     Md5 m;
     m.update(reinterpret_cast<const std::uint8_t*>(data.data()), data.size());

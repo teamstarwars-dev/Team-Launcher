@@ -28,6 +28,10 @@ std::string sha1_hex_of(std::string_view data);
 std::optional<std::string> sha256_hex(const std::filesystem::path& file);
 std::string sha256_hex_of(std::string_view data);
 
+// SHA-256 brut (32 octets) d'une donnee en memoire. Sert au code_challenge
+// PKCE (OAuth), qui est le base64url du digest BRUT, pas de l'hexa.
+std::array<unsigned char, 32> sha256_digest(std::string_view data);
+
 // MD5 brut (16 octets) d'une donnee en memoire ; nullopt si echec.
 std::optional<std::array<unsigned char, 16>> md5_digest(std::string_view data);
 

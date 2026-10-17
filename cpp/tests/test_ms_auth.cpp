@@ -9,6 +9,7 @@
 
 #include "datastore.hpp"
 #include "obf.hpp" // barriere « lecture de chaines » (securite S3)
+#include "pkce.hpp" // PKCE (page Musique SB'Music)
 
 #include <nlohmann/json.hpp>
 
@@ -401,6 +402,34 @@ int main() {
         CHECK(!octetClair);
         // Round-trip via l'API bas niveau (meme decodeur que TL_OBF).
         CHECK_EQ(tl::obf::decode(e1), clair);
+    }
+
+    // --- PKCE (page Musique SB'Music) : vecteur officiel RFC 7636 ---
+    // Appendix B de la RFC : verifier connu -> challenge S256 connu. Verrouille
+    // base64url (sans '=', '+'/'/' -> '-'/'_') ET le SHA-256 brut.
+    {
+        const std::string verifier =
+            "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        CHECK_EQ(tl::pkce::challenge(verifier),
+                 std::string("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+
+        // base64url : pas de remplissage, pas de '+' ni '/'.
+        const unsigned char raw[] = {0xfb, 0xff, 0xfe, 0x00}; // -> « +/+ » en base64
+        const std::string u = tl::pkce::b64url(raw, sizeof(raw));
+        CHECK(u.find('=') == std::string::npos);
+        CHECK(u.find('+') == std::string::npos);
+        CHECK(u.find('/') == std::string::npos);
+
+        // make_verifier : 43 caracteres, jeu base64url, et deux tirages differents.
+        const std::string v1 = tl::pkce::make_verifier();
+        const std::string v2 = tl::pkce::make_verifier();
+        CHECK_EQ(v1.size(), size_t{43});
+        for (char c : v1)
+            CHECK((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_');
+        CHECK(v1 != v2); // aleatoire
+        // Le challenge de notre propre verifier est stable et non vide.
+        CHECK(!tl::pkce::challenge(v1).empty());
     }
 
     stop(); // sans thread en cours : doit etre sans effet

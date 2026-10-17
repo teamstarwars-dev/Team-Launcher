@@ -94,6 +94,7 @@ constexpr const char* kHostAllow[] = {
     "fabricmc.net",       // meta.fabricmc.net + maven.fabricmc.net
     "quiltmc.org",        // meta.quiltmc.org + maven.quiltmc.org (Quilt)
     "adoptium.net",       // api.adoptium.net (JRE et JDK)
+    "sb-music.com",       // page Musique : API v1 + OAuth + streaming (SB'Music)
     "gradle.org",         // services.gradle.org (distributions Gradle)
     // GitHub (API release, raw, Pages du projet)
     "github.com",
