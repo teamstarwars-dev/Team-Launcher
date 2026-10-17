@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <mutex>
 #include <set>
 #include <string>
@@ -21,6 +22,11 @@ namespace {
 std::mutex g_mutex;
 std::vector<nlohmann::json> g_ready;
 bool g_started = false;
+// tasks::run renvoie un std::async(launch::async) : le destructeur de son
+// future BLOQUE jusqu'a la fin de la tache. Il faut donc le GARDER en vie,
+// sinon start_async (et ui::init) se bloquerait jusqu'a la fin de la copie
+// (ecran fige « ne repond pas » au demarrage).
+std::future<void> g_future;
 
 std::string env_str(const char* k) {
     const char* v = std::getenv(k);
@@ -60,7 +66,7 @@ void start_async() {
         }
     const fs::path root = instances_dir();
 
-    tasks::run(
+    g_future = tasks::run(
         "Import CurseForge",
         [already, root](const std::atomic<bool>& cancel,
                         const std::function<void(const std::string&, double)>& set_status) {
