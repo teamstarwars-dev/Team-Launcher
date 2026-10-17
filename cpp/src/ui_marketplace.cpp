@@ -215,30 +215,8 @@ void marketplace_panel() {
     ImGui::PopStyleColor();
 
     // --- Adresse du serveur ----------------------------------------------
-    if (!s_mk.urlInit) {
-        std::snprintf(s_mk.urlBuf, sizeof(s_mk.urlBuf), "%s", st.marketplaceUrl.c_str());
-        s_mk.urlInit = true;
-    }
-    ImGui::SetNextItemWidth(420);
-    ImGui::InputTextWithHint("##mkurl", "https://…", s_mk.urlBuf, sizeof(s_mk.urlBuf));
-    ImGui::SameLine();
-    if (ImGui::Button(tr("Enregistrer", "Save"))) {
-        std::string err;
-        const std::string raw = s_mk.urlBuf;
-        if (raw.empty()) {
-            st.marketplaceUrl.clear();
-            DataStore::save();
-            set_message(tr("Marketplace désactivée.", "Marketplace disabled."), true);
-        } else if (const auto b = market::normalize_base(raw, &err)) {
-            st.marketplaceUrl = *b;
-            std::snprintf(s_mk.urlBuf, sizeof(s_mk.urlBuf), "%s", b->c_str());
-            DataStore::save();
-            s_mk.revTriedThisSession = false; // synchroniser tout de suite
-            set_message(tr("Adresse enregistrée.", "Address saved."), true);
-        } else {
-            set_message(err, false);
-        }
-    }
+    // L'adresse du marketplace est EMBARQUEE (pre-remplie par defaut) : plus de
+    // champ ici, l'utilisateur ne la configure pas.
 
     // Instantané de l'état partagé : on dessine SANS tenir le verrou, car
     // les boutons ci-dessous lancent des tâches qui le prennent.

@@ -361,13 +361,8 @@ void tab_general() {
         }
     }
 
-    field_label("Salon d'entraide Discord (affiché dans la page Aide)");
-    ImGui::SetNextItemWidth(420.0f);
-    if (ImGui::InputTextWithHint("##helpdisc", "https://discord.gg/...",
-                                 b.helpDiscord, sizeof(b.helpDiscord))) {
-        s.helpDiscordUrl = trimmed(b.helpDiscord);
-        DataStore::save();
-    }
+    // Le salon d'entraide Discord est EMBARQUE : plus de champ ici. Le Discord
+    // n'est pas encore cree, la page Aide affiche « a venir » en attendant.
 }
 
 void tab_appearance() {

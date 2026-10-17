@@ -336,8 +336,7 @@ void help_page() {
     link_row(icons::Id::News, "Signaler un problème", "", support::ticket_url());
     link_row(icons::Id::Star, "Proposer une idée", "", support::suggestion_url());
     link_row(icons::Id::Account, "Salon d'entraide Discord",
-             "Aucun salon configuré (Paramètres > Général).",
-             s.helpDiscordUrl);
+             "À venir.", s.helpDiscordUrl);
 
     ImGui::Spacing();
     ImGui::Separator();
