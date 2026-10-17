@@ -276,6 +276,45 @@ void draw_friend_list(const std::vector<social::Friend>& list) {
         const bool sel = f.id == S.selected;
         if (ImGui::Selectable("##f", sel, 0, ImVec2(0, 42.0f)))
             S.selected = f.id;
+        // Menu contextuel (clic droit) : mini-profil + actions rapides, sans
+        // avoir a ouvrir la conversation (gestion des bloques incluse).
+        if (ImGui::BeginPopupContextItem("##fctx")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, kText);
+            ImGui::TextUnformatted(f.name.c_str());
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, kDim);
+            ImGui::TextUnformatted(
+                f.blocked ? tr("bloqué", "blocked")
+                          : (f.presence == social::Presence::Playing &&
+                                     !f.activity.empty()
+                                 ? f.activity.c_str()
+                                 : tr(presence_label(f.presence))));
+            ImGui::PopStyleColor();
+            ImGui::Separator();
+            if (ImGui::MenuItem(tr("Ouvrir la conversation", "Open chat")))
+                S.selected = f.id;
+            const bool tl = tl_tab();
+            if (f.blocked) {
+                if (ImGui::MenuItem(tr("Débloquer", "Unblock"))) {
+                    std::string err;
+                    const bool ok = tl ? account::friend_unblock(f.name, &err)
+                                       : social::set_blocked(f.id, false, &err);
+                    if (!ok) S.lastError = err;
+                }
+            } else {
+                if (ImGui::MenuItem(tr("Bloquer", "Block"))) {
+                    std::string err;
+                    const bool ok = tl ? account::friend_block(f.name, &err)
+                                       : social::set_blocked(f.id, true, &err);
+                    if (!ok) S.lastError = err;
+                }
+                if (tl && ImGui::MenuItem(tr("Retirer l'ami", "Remove friend"))) {
+                    std::string err;
+                    if (!account::friend_remove(f.name, &err)) S.lastError = err;
+                }
+            }
+            ImGui::EndPopup();
+        }
         const ImVec2 p0 = ImGui::GetItemRectMin();
         const ImVec2 p1 = ImGui::GetItemRectMax();
         ImDrawList* dl = ImGui::GetWindowDrawList();
