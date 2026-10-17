@@ -427,6 +427,9 @@ static json serialize(const AppSettings& s) {
         {"JvmPreload", s.jvmPreload},
         {"LocalApiPort", s.localApiPort},
         {"LocalApiToken", secrets::encrypt_value(s.localApiToken)},
+        {"SbMusicAccessToken", secrets::encrypt_value(s.sbMusicAccessToken)},
+        {"SbMusicRefreshToken", secrets::encrypt_value(s.sbMusicRefreshToken)},
+        {"SbMusicTokenExpiry", s.sbMusicTokenExpiry},
         {"EnabledPlugins", s.enabledPlugins},
         {"PluginDevMode", s.pluginDevMode},
         {"MarketplaceUrl", s.marketplaceUrl},
@@ -573,6 +576,9 @@ static void mergeInto(AppSettings& s, const json& j, bool* plainSecrets = nullpt
     getB("PluginTelemetry", s.pluginTelemetry);
     getI("LocalApiPort", s.localApiPort);
     getSec("LocalApiToken", s.localApiToken);
+    getSec("SbMusicAccessToken", s.sbMusicAccessToken);
+    getSec("SbMusicRefreshToken", s.sbMusicRefreshToken);
+    getI64("SbMusicTokenExpiry", s.sbMusicTokenExpiry);
     getA("ApiKeys", s.apiKeys);
     getA("EventHooks", s.eventHooks);
     {

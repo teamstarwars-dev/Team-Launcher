@@ -120,6 +120,11 @@ struct AppSettings {
     // 127.0.0.1, et toujours protegee par un jeton.
     int localApiPort = 0;
     std::string localApiToken;
+    // Page Musique (SB'Music, OAuth 2.0 PKCE). Jetons chiffres comme les
+    // autres secrets ; expiry = instant (unix) ou l'access token perime.
+    std::string sbMusicAccessToken;
+    std::string sbMusicRefreshToken;
+    long long sbMusicTokenExpiry = 0;
     // Plugins : seuls ceux listes ici s'executent. Un plugin lance des
     // programmes ; il ne peut donc jamais etre actif par defaut du seul
     // fait d'avoir ete depose dans le dossier.

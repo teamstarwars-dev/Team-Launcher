@@ -1,4 +1,5 @@
 #include "localapi.hpp"
+#include "oauth_loopback.hpp"
 
 #include "apikeys.hpp"
 #include "datastore.hpp" // new_guid (aléatoire du système)
@@ -7,7 +8,11 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
+#include <condition_variable>
+#include <functional>
 #include <mutex>
+#include <optional>
 #include <thread>
 
 // cpp-httplib est déjà fourni (il servait d'en-tête de référence pour la
@@ -344,3 +349,84 @@ std::string last_error() {
 }
 
 } // namespace tl::localapi
+
+// ---------------------------------------------------------------------------
+// Capture du code OAuth par boucle locale (voir oauth_loopback.hpp). Ici parce
+// que c'est le TU qui porte déjà cpp-httplib.
+// ---------------------------------------------------------------------------
+namespace tl::oauth {
+
+std::optional<std::string> capture_code(int port, const std::string& path,
+                                        const std::string& expectedState,
+                                        int timeoutSec, std::string* err,
+                                        const std::function<void()>& onReady) {
+    httplib::Server srv;
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+    std::optional<std::string> code;
+    std::string oauthErr;
+
+    srv.Get(path, [&](const httplib::Request& req, httplib::Response& res) {
+        std::string msg;
+        const std::string state =
+            req.has_param("state") ? req.get_param_value("state") : std::string{};
+        if (req.has_param("error")) {
+            oauthErr = "autorisation refusée (" + req.get_param_value("error") + ")";
+            msg = "<h2>Connexion refusée</h2>";
+        } else if (state != expectedState) {
+            oauthErr = "state invalide (anti-CSRF)";
+            msg = "<h2>Erreur de sécurité</h2>";
+        } else if (req.has_param("code")) {
+            {
+                std::lock_guard<std::mutex> lk(m);
+                code = req.get_param_value("code");
+            }
+            msg = "<h2>Connexion réussie &#10003;</h2>"
+                  "<p>Vous pouvez revenir au launcher et fermer cette fenêtre.</p>";
+        } else {
+            oauthErr = "réponse OAuth sans code";
+            msg = "<h2>Réponse incomplète</h2>";
+        }
+        res.set_content(
+            "<!doctype html><meta charset=\"utf-8\"><title>SB'Music</title>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#111;"
+            "color:#eee;text-align:center;padding:3em\">" +
+                msg + "</body>",
+            "text/html; charset=utf-8");
+        {
+            std::lock_guard<std::mutex> lk(m);
+            done = true;
+        }
+        cv.notify_all();
+    });
+
+    std::thread th([&] { srv.listen("127.0.0.1", port); });
+    srv.wait_until_ready();
+    if (!srv.is_running()) {
+        srv.stop();
+        if (th.joinable()) th.join();
+        if (err)
+            *err = "Impossible d'écouter sur 127.0.0.1:" + std::to_string(port) +
+                   " (port déjà utilisé ?).";
+        return std::nullopt;
+    }
+
+    if (onReady) onReady(); // serveur prêt : on peut ouvrir le navigateur
+
+    {
+        std::unique_lock<std::mutex> lk(m);
+        cv.wait_for(lk, std::chrono::seconds(timeoutSec), [&] { return done; });
+    }
+    srv.stop();
+    if (th.joinable()) th.join();
+
+    std::lock_guard<std::mutex> lk(m);
+    if (code) return code;
+    if (err)
+        *err = oauthErr.empty() ? "Délai d'attente de l'autorisation dépassé."
+                                : oauthErr;
+    return std::nullopt;
+}
+
+} // namespace tl::oauth
