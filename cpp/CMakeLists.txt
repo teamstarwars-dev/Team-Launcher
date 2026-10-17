@@ -130,6 +130,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/opusfile/src/opusfile.c")
   # dispatches, que clang-cl n'applique pas (il faudrait /clang:-msse4.1).
   # Le chemin C portable suffit largement pour decoder un flux musical.
   set(OPUS_DISABLE_INTRINSICS ON CACHE BOOL "" FORCE)
+  # ogg declare « cmake_minimum_required(VERSION 2.8.12) » ; CMake 4.x refuse
+  # toute compat < 3.5. On relache le plancher de politique pour ces
+  # sous-projets tiers (sans toucher au notre).
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
   add_subdirectory(third_party/ogg EXCLUDE_FROM_ALL)
   add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
   add_library(opusfile STATIC
